@@ -228,10 +228,13 @@ export class OllamaChatPanel {
       #attachedFiles{display:flex;flex-wrap:wrap;gap:3px;padding:0 2px}
       .file-chip{display:inline-flex;align-items:center;gap:3px;background:rgba(0,120,215,0.14);border:1px solid rgba(0,120,215,0.3);border-radius:10px;padding:1px 8px;font-size:11px}
       .file-chip .rm{padding:0 2px;font-size:12px;background:none;border:none;cursor:pointer;opacity:0.6;color:inherit;line-height:1}
-      details.think { border-left:3px solid var(--vscode-editorInfo-foreground,#4fc1ff); margin:4px 0; padding:3px 8px; background:rgba(128,128,128,0.07); border-radius:2px }
-      details.think summary { cursor:pointer; color:var(--vscode-descriptionForeground,#999); font-style:italic; font-size:0.84em; user-select:none; list-style:none; padding:2px 0 }
-      details.think summary::before { content:'\\25B6  '; font-style:normal; font-size:0.75em }
-      details.think[open] summary::before { content:'\\25BC  '; font-style:normal; font-size:0.75em }
+      details.think { border-left:3px solid var(--vscode-editorInfo-foreground,#4fc1ff); margin:6px 0; padding:4px 10px; background:rgba(79,193,255,0.06); border-radius:4px }
+      details.think summary { cursor:pointer; color:var(--vscode-editorInfo-foreground,#4fc1ff); font-size:0.85em; user-select:none; list-style:none; padding:3px 0; display:flex; align-items:center; gap:6px }
+      details.think summary .think-icon { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--vscode-editorInfo-foreground,#4fc1ff); flex-shrink:0 }
+      details.think summary .think-icon.pulse { animation: pulse 1.5s ease-in-out infinite }
+      @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.7)} }
+      details.think summary::before { content:none }
+      details.think[open] summary::before { content:none }
       details.think pre { margin:4px 0; white-space:pre-wrap; color:var(--vscode-descriptionForeground,#999); font-size:0.83em; max-height:200px; overflow:auto }
       .file-chip { display:inline-flex; align-items:center; gap:3px; background:rgba(0,120,215,0.14); border:1px solid rgba(0,120,215,0.3); border-radius:3px; padding:1px 6px; font-size:11px; margin:2px }
       .file-chip .rm { padding:0 2px; font-size:11px; background:none; border:none; cursor:pointer; opacity:0.6; color:inherit; line-height:1 }
@@ -426,7 +429,10 @@ export class OllamaChatPanel {
       // ── 思考過程 ─────────────────────────────────────────────────────────
       function makeThinkBlock(text, open) {
         const d = document.createElement('details'); d.className = 'think'; if (open) d.setAttribute('open', '');
-        const s = document.createElement('summary'); s.textContent = '\u601d\u8003\u904e\u7a0b';
+        const s = document.createElement('summary');
+        const icon = document.createElement('span'); icon.className = 'think-icon';
+        const label = document.createElement('span'); label.className = 'think-label'; label.textContent = '\u601d\u8003\u904e\u7a0b';
+        s.appendChild(icon); s.appendChild(label);
         const p = document.createElement('pre'); p.textContent = text;
         d.appendChild(s); d.appendChild(p); return d;
       }
@@ -511,14 +517,22 @@ export class OllamaChatPanel {
       }
 
       function appendThinkChunk(chunk) {
+        clearPendingBubble();
         const bubble = getStreamBubble();
         let d = bubble.querySelector('details.think');
         if (!d) {
           d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
-          const s = document.createElement('summary'); s.textContent = '\u601d\u8003\u4e2d\u2026';
+          const s = document.createElement('summary');
+          const icon = document.createElement('span'); icon.className = 'think-icon pulse';
+          const label = document.createElement('span'); label.className = 'think-label'; label.textContent = '\u601d\u8003\u4e2d\u2026';
+          s.appendChild(icon); s.appendChild(label);
           const p = document.createElement('pre'); p.className = 'think-stream';
           d.appendChild(s); d.appendChild(p); bubble.appendChild(d);
+          d._tokenCount = 0;
         }
+        d._tokenCount = (d._tokenCount || 0) + 1;
+        const lbl = d.querySelector('.think-label');
+        if (lbl) lbl.textContent = '\u601d\u8003\u4e2d\u2026 (' + d._tokenCount + ' tokens)';
         const p = d.querySelector('pre.think-stream'); if (p) p.textContent = (p.textContent || '') + chunk;
         chat.scrollTop = chat.scrollHeight;
       }
@@ -528,10 +542,12 @@ export class OllamaChatPanel {
         const d = bubble.querySelector('details.think');
         if (d && d.hasAttribute('open')) {
           d.removeAttribute('open');
-          const s = d.querySelector('summary'); if (s) s.textContent = '\u601d\u8003\u904e\u7a0b';
+          const icon = d.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
+          const lbl = d.querySelector('.think-label');
+          if (lbl) lbl.textContent = '\u601d\u8003\u904e\u7a0b (' + (d._tokenCount || '') + ' tokens)';
         }
         let body = bubble.querySelector('.response-body');
-        if (!body) { body = document.createElement('div'); body.className = 'response-body'; bubble.appendChild(body); }
+        if (!body) { body = document.createElement('div'); body.className = 'response-body'; body.style.whiteSpace = 'pre-wrap'; bubble.appendChild(body); }
         body.textContent = (body.textContent || '') + chunk;
         chat.scrollTop = chat.scrollHeight;
       }
@@ -619,7 +635,10 @@ export class OllamaChatPanel {
         await ollamaGenerateStream(
           baseUrl, model, prompt,
           (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); },
-          (thinkChunk) => { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkChunk }); }
+          (thinkChunk) => {
+            OllamaChatPanel.log('thinkChunk: ' + thinkChunk.substring(0, 50));
+            this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkChunk });
+          }
         );
         this._panel.webview.postMessage({ type: 'streamEnd' });
       } catch (e: unknown) {
