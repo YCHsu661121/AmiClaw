@@ -610,7 +610,10 @@ export class OllamaChatPanel {
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
 
-    if (this._streamMode) {
+    // Always stream when model supports thinking so think chunks appear live
+    const useStream = this._streamMode || supportsThinking(model);
+
+    if (useStream) {
       this._panel.webview.postMessage({ type: 'streamStart' });
       try {
         await ollamaGenerateStream(
