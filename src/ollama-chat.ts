@@ -19,6 +19,9 @@ export class OllamaChatPanel {
   private _agentRunning = false;
   private _agentCancel = false;
   private _agentMessages: ChatMessage[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  private _context!: vscode.ExtensionContext;
+  private _chatHistory: ChatMessage[] = [];
 
   private static log(msg: string): void {
     if (!OllamaChatPanel._log) {
@@ -27,8 +30,9 @@ export class OllamaChatPanel {
     OllamaChatPanel._log.appendLine(`[${new Date().toISOString()}] ${msg}`);
   }
 
-  private constructor(panel: vscode.WebviewPanel, _context: vscode.ExtensionContext) {
+  private constructor(panel: vscode.WebviewPanel, context: vscode.ExtensionContext) {
     this._panel = panel;
+    this._context = context;
     OllamaChatPanel.log('Constructor: start');
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
@@ -80,6 +84,21 @@ export class OllamaChatPanel {
             break;
           case 'clearHistory':
             this._agentMessages = [];
+            this._chatHistory = [];
+            this._panel.webview.postMessage({ type: 'historyCount', count: 0 });
+            break;
+          case 'memoryGet': {
+            const cfg2 = vscode.workspace.getConfiguration('amiClaw');
+            const persona2 = cfg2.get<string>('systemPrompt') ?? '';
+            this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: this.getLongTermMemory(), persona: persona2, historyCount: this._chatHistory.length });
+            break;
+          }
+          case 'memorySave':
+            await this.saveLongTermMemory(message.ltm as string);
+            this._panel.webview.postMessage({ type: 'memorySaved' });
+            break;
+          case 'openSettings':
+            vscode.commands.executeCommand('workbench.action.openSettings', 'amiClaw.systemPrompt');
             break;
           default:
             OllamaChatPanel.log('Unknown message type: ' + message.type);
@@ -256,6 +275,24 @@ export class OllamaChatPanel {
       .tool-step pre{margin:3px 0;white-space:pre-wrap;font-size:0.82em;max-height:140px;overflow:auto;color:var(--vscode-descriptionForeground,#999);background:transparent}
       .code-block-wrap{margin:4px 0}
       .code-actions{display:flex;gap:4px;margin:2px 0 1px;flex-wrap:wrap}
+      /* 記憶管理 Modal */
+      #memModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:flex-start;justify-content:center;padding-top:40px}
+      #memModal.open{display:flex}
+      #memBox{background:var(--vscode-editor-background);border:1px solid rgba(128,128,128,0.35);border-radius:10px;padding:18px;width:min(540px,95vw);max-height:80vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
+      #memBox h3{margin:0;font-size:14px;font-weight:700;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(128,128,128,0.2);padding-bottom:10px}
+      #memBox h3 .mem-close-btn{background:none;border:none;cursor:pointer;font-size:18px;opacity:0.6;color:inherit;padding:0 4px;line-height:1}
+      #memBox h3 .mem-close-btn:hover{opacity:1}
+      .mem-section{border:1px solid rgba(128,128,128,0.2);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+      .mem-section-title{font-size:12px;font-weight:700;opacity:0.9;margin:0}
+      .mem-section-desc{font-size:11px;opacity:0.6;margin:0;line-height:1.4}
+      .mem-section textarea{width:100%;min-height:72px;max-height:200px;resize:vertical;font-size:12px;font-family:inherit;padding:6px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));border-radius:5px;outline:none;line-height:1.5}
+      .mem-section textarea:focus{border-color:var(--vscode-focusBorder,#007fd4)}
+      .mem-section textarea[readonly]{opacity:0.75;cursor:default}
+      .mem-row{display:flex;gap:6px;flex-wrap:wrap}
+      .mem-btn{font-size:11px;padding:4px 10px;cursor:pointer;border-radius:4px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.3);color:inherit}
+      .mem-btn:hover{background:rgba(128,128,128,0.25)}
+      .mem-btn.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border-color:transparent}
+      .mem-btn.primary:hover{opacity:0.88}
     </style>
   </head>
   <body>
@@ -268,6 +305,7 @@ export class OllamaChatPanel {
         <button class="icon-btn" id="toggleStream" title="切換串流模式">⚡</button>
         <button class="icon-btn" id="agentMode" title="Agent 模式 (AI 可讀寫檔案、執行命令)">🤖</button>
         <button class="icon-btn" id="stopAgent" title="停止 Agent">⏹</button>
+        <button class="icon-btn" id="memBtn" title="記憶管理">🧠</button>
         <button class="icon-btn" id="clear" title="清除對話">🗑</button>
         <span style="flex:1"></span>
         <span id="connStatus" style="font-size:11px;opacity:0.8">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
@@ -278,6 +316,32 @@ export class OllamaChatPanel {
         <button id="sendBtn" title="送出 (Enter)">&#9658;</button>
       </div>
       <div id="statusBar"></div>
+    </div>
+    <div id="memModal">
+      <div id="memBox">
+        <h3>&#x1F9E0; 記憶管理 <button class="mem-close-btn" id="memClose">✕</button></h3>
+        <div class="mem-section">
+          <p class="mem-section-title">&#x1F4CB; 角色設定（System Prompt）</p>
+          <p class="mem-section-desc">每次對話都自動套用，在 VS Code 設定中編輯</p>
+          <textarea id="personaPreview" readonly rows="3" placeholder="（讀取中...）"></textarea>
+          <div class="mem-row"><button class="mem-btn" id="editPersonaBtn">&#x2699;&#xFE0F; 在設定中編輯角色</button></div>
+        </div>
+        <div class="mem-section">
+          <p class="mem-section-title">&#x1F5C2; 長期記憶（跨對話持續保存）</p>
+          <p class="mem-section-desc">每次對話都會套用此記憶為背景知識。可寫入專案偏好、環境、重要事實等。</p>
+          <textarea id="ltmArea" rows="5" placeholder="例如：- 用 Windows 11 + WSL2&#10;- 此專案用 TypeScript strict mode，將染色器用 VS Code，编譯器用 GCC 13，板子是 AMI Aptio V，它是基於 x64 UEFI。"></textarea>
+          <div class="mem-row">
+            <button class="mem-btn primary" id="saveLtmBtn">&#x1F4BE; 儲存長期記憶</button>
+            <button class="mem-btn" id="clearLtmBtn">&#x1F5D1; 清除長期記憶</button>
+          </div>
+        </div>
+        <div class="mem-section">
+          <p class="mem-section-title">&#x1F4AC; 短期記憶（本次對話歷史）</p>
+          <p class="mem-section-desc">關閉 Panel 後消失。AI 會記得本次對話中所有問答內容。</p>
+          <p id="historyInfo" style="font-size:12px;margin:2px 0;">對話歷史：0 條訊息</p>
+          <div class="mem-row"><button class="mem-btn" id="clearHistoryBtn2">&#x1F5D1; 清除對話歷史</button></div>
+        </div>
+      </div>
     </div>
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
@@ -304,6 +368,9 @@ export class OllamaChatPanel {
           else if (msg.type === 'modelList')     { updateModelSelect(msg.models, msg.current); }
           else if (msg.type === 'connectionStatus') { updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
+          else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
+          else if (msg.type === 'memorySaved')   { var slb = document.getElementById('saveLtmBtn'); if (slb) { slb.textContent = '\u2713 \u5df2\u5132\u5b58'; setTimeout(function() { slb.textContent = '\uD83D\uDCBE \u5132\u5b58\u9577\u671f\u8a18\u61b6'; }, 1500); } }
+          else if (msg.type === 'historyCount')  { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; }
         } catch(e) { /* swallow */ }
       });
 
@@ -612,6 +679,49 @@ export class OllamaChatPanel {
       // Tell backend the webview is ready; delay to ensure VS Code message bridge is initialized
       setTimeout(function() { vscode.postMessage({ type: 'webviewReady' }); }, 0);
 
+      // ── \u8a18\u61b6\u7ba1\u7406 Modal ──────────────────────────────────────────────────────
+      function onMemoryLoaded(msg) {
+        var area = document.getElementById('ltmArea');
+        if (area) area.value = msg.ltm || '';
+        var pp = document.getElementById('personaPreview');
+        if (pp) pp.value = msg.persona || '(\u672a\u8a2d\u5b9a)';
+        var hii = document.getElementById('historyInfo');
+        if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.historyCount || 0) + ' \u689d\u8a0a\u606f';
+      }
+
+      var memModal = document.getElementById('memModal');
+      var memBtn = document.getElementById('memBtn');
+      if (memBtn) {
+        memBtn.addEventListener('click', function() {
+          if (memModal) memModal.classList.add('open');
+          vscode.postMessage({ type: 'memoryGet' });
+        });
+      }
+      var memClose = document.getElementById('memClose');
+      if (memClose) memClose.addEventListener('click', function() { if (memModal) memModal.classList.remove('open'); });
+      if (memModal) memModal.addEventListener('click', function(e) { if (e.target === memModal) memModal.classList.remove('open'); });
+
+      var saveLtmBtn = document.getElementById('saveLtmBtn');
+      if (saveLtmBtn) saveLtmBtn.addEventListener('click', function() {
+        var area = document.getElementById('ltmArea');
+        vscode.postMessage({ type: 'memorySave', ltm: area ? area.value : '' });
+      });
+      var clearLtmBtn = document.getElementById('clearLtmBtn');
+      if (clearLtmBtn) clearLtmBtn.addEventListener('click', function() {
+        var area = document.getElementById('ltmArea');
+        if (area) area.value = '';
+        vscode.postMessage({ type: 'memorySave', ltm: '' });
+      });
+      var clearHistoryBtn2 = document.getElementById('clearHistoryBtn2');
+      if (clearHistoryBtn2) clearHistoryBtn2.addEventListener('click', function() {
+        chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
+        vscode.postMessage({ type: 'clearHistory' });
+      });
+      var editPersonaBtn = document.getElementById('editPersonaBtn');
+      if (editPersonaBtn) editPersonaBtn.addEventListener('click', function() {
+        vscode.postMessage({ type: 'openSettings' });
+      });
+
       // JS-side safety net: if connectionStatus never arrives in 5s, ask again
       setTimeout(function() {
         var el = document.getElementById('connStatus');
@@ -629,44 +739,69 @@ export class OllamaChatPanel {
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
 
-    // Always stream when model supports thinking so think chunks appear live
-    const useStream = this._streamMode || supportsThinking(model);
-
-    if (useStream) {
-      this._panel.webview.postMessage({ type: 'streamStart' });
-      try {
-        // Batch think chunks every 80ms to avoid flooding the webview message queue
-        let thinkBuf = '';
-        let thinkTimer: ReturnType<typeof setTimeout> | null = null;
-        const flushThink = () => {
-          if (thinkBuf) { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkBuf }); thinkBuf = ''; }
-          thinkTimer = null;
-        };
-        await ollamaGenerateStream(
-          baseUrl, model, prompt,
-          (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); },
-          (thinkChunk) => {
-            OllamaChatPanel.log('thinkChunk: ' + thinkChunk.substring(0, 50));
-            thinkBuf += thinkChunk;
-            if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80);
-          }
-        );
-        if (thinkTimer) { clearTimeout(thinkTimer); }
-        flushThink();
-        this._panel.webview.postMessage({ type: 'streamEnd' });
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        this._panel.webview.postMessage({ type: 'error', text: msg });
-      }
-    } else {
-      try {
-        const result = await ollamaGenerate(baseUrl, model, prompt);
-        this._panel.webview.postMessage({ type: 'assistant', text: result.response, thinking: result.thinking });
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        this._panel.webview.postMessage({ type: 'error', text: msg });
-      }
+    // Build messages: system (persona + long-term memory) + short-term history + current user msg
+    const systemContent = this.buildSystemContent();
+    const messages: ChatMessage[] = [];
+    if (systemContent.trim()) {
+      messages.push({ role: 'system', content: systemContent });
     }
+    // Keep last 30 messages to stay within context window
+    const recent = this._chatHistory.slice(-30);
+    messages.push(...recent);
+    messages.push({ role: 'user', content: prompt });
+
+    // Optimistically add user msg to history
+    this._chatHistory.push({ role: 'user', content: prompt });
+
+    this._panel.webview.postMessage({ type: 'streamStart' });
+    let fullResponse = '';
+    try {
+      let thinkBuf = '';
+      let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+      const flushThink = () => {
+        if (thinkBuf) { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkBuf }); thinkBuf = ''; }
+        thinkTimer = null;
+      };
+      fullResponse = await ollamaChatStream(
+        baseUrl, model, messages,
+        (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); },
+        (thinkChunk) => {
+          OllamaChatPanel.log('thinkChunk: ' + thinkChunk.substring(0, 50));
+          thinkBuf += thinkChunk;
+          if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80);
+        }
+      );
+      if (thinkTimer) { clearTimeout(thinkTimer); }
+      flushThink();
+      // Save assistant response to short-term memory
+      this._chatHistory.push({ role: 'assistant', content: fullResponse });
+      this._panel.webview.postMessage({ type: 'streamEnd' });
+      this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length });
+    } catch (e: unknown) {
+      // Roll back optimistic user msg
+      this._chatHistory.pop();
+      const msg = e instanceof Error ? e.message : String(e);
+      this._panel.webview.postMessage({ type: 'error', text: msg });
+    }
+  }
+
+  private getLongTermMemory(): string {
+    return this._context.globalState.get<string>('amiClaw.longTermMemory') ?? '';
+  }
+
+  private async saveLongTermMemory(text: string): Promise<void> {
+    await this._context.globalState.update('amiClaw.longTermMemory', text);
+  }
+
+  private buildSystemContent(): string {
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const persona = cfg.get<string>('systemPrompt') ?? '';
+    const ltm = this.getLongTermMemory();
+    let content = persona.trim();
+    if (ltm.trim()) {
+      content += '\n\n## 長期記憶（關於使用者的重要資訊）\n' + ltm.trim();
+    }
+    return content;
   }
 
   private async summarizeText(text: string, modelOverride?: string): Promise<void> {
@@ -1155,6 +1290,71 @@ function ollamaGenerateStream(
       req.on('error', (e) => reject(new Error(`無法連線到 Ollama (${baseUrl})：${e.message}`)));
       req.write(body);
       req.end();
+    } catch (e) { reject(e); }
+  });
+}
+
+function ollamaChatStream(
+  baseUrl: string, model: string, messages: ChatMessage[],
+  onResponseChunk: (chunk: string) => void,
+  onThinkChunk?: (chunk: string) => void
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    try {
+      const url = new URL('/api/chat', baseUrl);
+      const params: Record<string, unknown> = { model, messages, stream: true };
+      if (supportsThinking(model)) { params.think = true; }
+      const body = JSON.stringify(params);
+      const protocol = url.protocol === 'https:' ? https : http;
+      const options: http.RequestOptions = {
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+        path: url.pathname,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      };
+
+      let lineBuffer = '';
+      let fullResponse = '';
+      let inThink = false;
+      const processToken = (token: string) => {
+        let rem = token;
+        while (rem.length > 0) {
+          if (!inThink) {
+            const ts = rem.indexOf('<think>');
+            if (ts === -1) { fullResponse += rem; onResponseChunk(rem); break; }
+            if (ts > 0) { const b = rem.slice(0, ts); fullResponse += b; onResponseChunk(b); }
+            inThink = true; rem = rem.slice(ts + 7);
+          } else {
+            const te = rem.indexOf('</think>');
+            if (te === -1) { if (onThinkChunk) onThinkChunk(rem); break; }
+            const tc = rem.slice(0, te);
+            if (onThinkChunk && tc) onThinkChunk(tc);
+            inThink = false; rem = rem.slice(te + 8);
+          }
+        }
+      };
+
+      const req = protocol.request(options, (res) => {
+        res.setEncoding('utf8');
+        res.on('data', (data: string) => {
+          lineBuffer += data;
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop() ?? '';
+          for (const line of lines) {
+            const t = line.trim(); if (!t) continue;
+            try {
+              const json = JSON.parse(t);
+              // /api/chat stream format: json.message.thinking + json.message.content
+              if (json.message?.thinking && onThinkChunk) onThinkChunk(json.message.thinking as string);
+              if (json.message?.content) processToken(json.message.content as string);
+            } catch { /* partial */ }
+          }
+        });
+        res.on('end', () => resolve(fullResponse));
+      });
+      req.on('error', (e) => reject(new Error(`\u7121\u6cd5\u9023\u7dda\u5230 Ollama (${baseUrl})\uff1a${e.message}`)));
+      req.write(body); req.end();
     } catch (e) { reject(e); }
   });
 }

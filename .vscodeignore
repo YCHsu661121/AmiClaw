@@ -1,0 +1,14 @@
+node_modules/**
+dist/**
+src/**
+openclaw/**
+*.vsix
+*.bat
+*.ps1
+tools/**
+WCL_Abe_031208_B07/**
+.gitignore
+tsconfig.json
+rebuild.json.template
+Dockerfile
+README.md

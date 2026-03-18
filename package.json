@@ -65,6 +65,12 @@
             "items": { "type": "string" },
             "default": ["llama3", "llama2", "vicuna", "mistral"],
             "description": "Available model options shown in the chat UI"
+          },
+          "amiClaw.systemPrompt": {
+            "type": "string",
+            "editPresentation": "multilineText",
+            "default": "你是一位資深頂尖全端軟體工程師，精通 TypeScript/JavaScript、Python、C/C++、Rust、Go、Shell/PowerShell、UEFI/BIOS 韌體工程。你邏輯嚴密、思路清晰，能直接找出問題根因並提供完整可執行的解法，不說廢話。請用繁體中文回答，技術術語附上英文原文。",
+            "description": "AI 角色設定（System Prompt），每次對話都會自動套用。可在此自訂角色、背景知識與回答風格。"
           }
         }
       }
