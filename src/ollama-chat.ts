@@ -80,8 +80,11 @@ export class OllamaChatPanel {
           case 'agentStop':
             this._agentCancel = true;
             break;
+          case 'fetchTeamModels':
+            await this.fetchTeamModels();
+            break;
           case 'teamSend':
-            this.handleTeamSend(message.prompt).catch(() => {});
+            this.handleTeamSend(message.prompt, message.models).catch(() => {});
             break;
           case 'teamStop':
             this._teamCancel = true;
@@ -291,6 +294,15 @@ export class OllamaChatPanel {
       .team-synth-node .bubble { border-left:3px solid #f0c040; background:rgba(240,192,64,0.06); padding:8px 10px; width:100%; border-radius:6px }
       .team-synth-header { font-size:0.8em; font-weight:700; color:#f0c040; padding:0 0 5px; margin-bottom:6px; border-bottom:1px solid rgba(240,192,64,0.25) }
       .team-agent-header { text-align:center; color:#f7cc65; font-size:0.82em; font-weight:700; margin:14px 0 6px; padding:5px 0; border-top:1px dashed rgba(247,204,101,0.4); border-bottom:1px dashed rgba(247,204,101,0.4); letter-spacing:0.03em }
+      /* 團隊模式 — 成員選擇面板 */
+      #teamPicker{display:none;padding:4px 8px 6px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;margin:2px 0;background:rgba(128,128,128,0.05);max-height:130px;overflow-y:auto}
+      #teamPicker.visible{display:block}
+      #teamPickerBar{display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap}
+      .team-pick-row{display:flex;align-items:center;gap:5px;padding:1px 2px}
+      .team-pick-row label{font-size:12px;cursor:pointer;user-select:none}
+      .tpl-copilot{color:#f7cc65}.tpl-ollama{color:#4fc1ff}
+      .team-pick-mini-btn{font-size:11px;padding:1px 7px;border-radius:3px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.3);color:inherit;cursor:pointer}
+      #teamPickerCount{font-size:11px;opacity:0.7}
       /* 記憶管理 Modal */
       #memModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:flex-start;justify-content:center;padding-top:40px}
       #memModal.open{display:flex}
@@ -328,6 +340,15 @@ export class OllamaChatPanel {
         <span id="connStatus" style="font-size:11px;opacity:0.8">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
       </div>
       <div id="attachedFiles"></div>
+      <div id="teamPicker">
+        <div id="teamPickerBar">
+          <span style="font-size:11px;font-weight:700">&#x1F465; 選擇團隊成員（最多 5 個）</span>
+          <button class="team-pick-mini-btn" id="teamPickerRefresh">&#x1F504;</button>
+          <span style="flex:1"></span>
+          <span id="teamPickerCount">0/5 已選</span>
+        </div>
+        <div id="teamPickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
+      </div>
       <div id="inputRow">
         <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
         <button id="sendBtn" title="送出 (Enter)">&#9658;</button>
@@ -381,6 +402,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
           else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
           else if (msg.type === 'teamAgentStart')  { var tah = document.createElement('div'); tah.className = 'team-agent-header'; tah.textContent = '\uD83E\uDD16 Agent \u63A5\u529B\u57F7\u884C\u8A08\u5283\uFF08' + (msg.model||'') + '\uFF09'; chat.appendChild(tah); chat.scrollTop = chat.scrollHeight; }
+          else if (msg.type === 'teamModelList')   { populateTeamPicker(msg.models); }
           else if (msg.type === 'agentStatus')   {
             if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             setSendEnabled(!msg.running);
@@ -411,6 +433,7 @@ export class OllamaChatPanel {
       let _agentStepNode = null;
       const _teamNodes = {}; // id -> { node, bubble, thinkNode, responseNode, charCount, thinkStart, thinkTimer }
       let _synthNode = null;
+      let _teamAvailModels = []; // [{id, label, vendor}]
 
       const sendBtn = document.getElementById('sendBtn');
       const statusBar = document.getElementById('statusBar');
@@ -443,7 +466,8 @@ export class OllamaChatPanel {
         const label = text.length > 60 ? text.slice(0, 60) + '\u2026' : text;
         appendMessage('user', label + (attachedFiles.length ? ' (\uD83D\uDCCE ' + attachedFiles.length + ')' : ''));
         if (teamMode) {
-          vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text) });
+          var selModels = getSelectedTeamModels();
+          vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels });
           prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
           if (statusBar) statusBar.textContent = '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
           return;
@@ -488,9 +512,14 @@ export class OllamaChatPanel {
         teamMode = !teamMode;
         document.getElementById('teamMode').classList.toggle('active', teamMode);
         if (teamMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
-        if (statusBar) statusBar.textContent = teamMode ? '\uD83D\uDC65 \u5718\u968a\u6a21\u5f0f \u2014 \u591a\u500b AI \u4e26\u884c\u601d\u8003\uff0c\u904e\u7a0b\u5206\u6b21\u986f\u793a' : '';
-        prompt.placeholder = teamMode ? '\u8f38\u5165\u554f\u984c\u2026 \u5718\u968a\u6240\u6709\u6a21\u578b\u6703\u540c\u6642\u5206\u6790 (Enter \u9001\u51fa)' : '\u8f38\u5165\u8a0a\u606f\u2026 (Enter \u9001\u51fa / Ctrl+Enter \u63db\u884c)';
+        var picker = document.getElementById('teamPicker');
+        if (picker) picker.classList.toggle('visible', teamMode);
+        if (teamMode) { vscode.postMessage({ type: 'fetchTeamModels' }); if (statusBar) statusBar.textContent = '\u{1F465} \u9078\u64c7\u5718\u968a\u6210\u54e1\u5f8c\u8f38\u5165\u554f\u984c'; }
+        else { if (statusBar) statusBar.textContent = ''; }
+        prompt.placeholder = teamMode ? '\u8f38\u5165\u554f\u984c\u2026 \u6240\u9078 AI \u6703\u540c\u6642\u56de\u7b54 (Enter \u9001\u51fa)' : '\u8f38\u5165\u8a0a\u606f\u2026 (Enter \u9001\u51fa / Ctrl+Enter \u63db\u884c)';
       });
+      var tpr = document.getElementById('teamPickerRefresh');
+      if (tpr) tpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
 
       document.getElementById('stopAgent').addEventListener('click', function() { vscode.postMessage({ type: 'agentStop' }); vscode.postMessage({ type: 'teamStop' }); });
 
@@ -793,6 +822,38 @@ export class OllamaChatPanel {
         chat.scrollTop = chat.scrollHeight;
       }
 
+      // ── 團隊模式 — 成員選擇面板 ──────────────────────────────────────
+      function populateTeamPicker(models) {
+        _teamAvailModels = models || [];
+        var list = document.getElementById('teamPickerList'); if (!list) return;
+        list.innerHTML = '';
+        if (!_teamAvailModels.length) {
+          list.innerHTML = '<span style="font-size:11px;opacity:0.6">\u7121\u53ef\u7528\u6a21\u578b\uff08Ollama \u672a\u5b89\u88dd\u6a21\u578b / Copilot \u672a\u767b\u5165\uff09</span>';
+          return;
+        }
+        _teamAvailModels.forEach(function(m, i) {
+          var row = document.createElement('div'); row.className = 'team-pick-row';
+          var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'tp' + i; cb.value = m.id;
+          cb.addEventListener('change', updateTeamPickerCount);
+          var lbl = document.createElement('label'); lbl.htmlFor = 'tp' + i;
+          lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
+          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label;
+          row.appendChild(cb); row.appendChild(lbl); list.appendChild(row);
+        });
+        updateTeamPickerCount();
+      }
+      function updateTeamPickerCount() {
+        var cbs = document.querySelectorAll('#teamPickerList input[type=checkbox]');
+        var n = 0; cbs.forEach(function(c) { if (c.checked) n++; });
+        var el = document.getElementById('teamPickerCount'); if (el) el.textContent = n + '/5 \u5df2\u9078';
+        cbs.forEach(function(c) { if (!c.checked) c.disabled = n >= 5; });
+      }
+      function getSelectedTeamModels() {
+        var r = [];
+        document.querySelectorAll('#teamPickerList input[type=checkbox]:checked').forEach(function(c) { r.push(c.value); });
+        return r;
+      }
+
       function updateModelSelect(models, current) {
         if (!modelSelect || !models || !models.length) return;
         modelSelect.innerHTML = '';
@@ -875,22 +936,13 @@ export class OllamaChatPanel {
 </html>`;
   }
 
-  private async handleTeamSend(prompt: string): Promise<void> {
+  private async handleTeamSend(prompt: string, selectedModels?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    // Use live server models instead of static config list
-    let models: string[];
-    try {
-      models = await ollamaListModels(baseUrl);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this._panel.webview.postMessage({ type: 'error', text: '無法取得模型清單：' + msg });
-      return;
-    }
-    if (models.length === 0) {
-      this._panel.webview.postMessage({ type: 'error', text: '伺服器上沒有安裝任何模型，請先 ollama pull 一個模型' });
-      return;
-    }
+    const primaryOllamaModel = cfg.get<string>('model') ?? 'llama3';
+    // Use selected team members; fall back to primary model only
+    const models = (selectedModels && selectedModels.length > 0) ? selectedModels.slice(0, 5) : [primaryOllamaModel];
+
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
     this._teamCancel = false;
     const systemContent = this.buildSystemContent();
@@ -902,29 +954,38 @@ export class OllamaChatPanel {
     await Promise.all(models.map(async (model, idx) => {
       const id = `team_${idx}`;
       const color = COLORS[idx % COLORS.length];
-      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model, color });
-      let thinkBuf = '';
-      let thinkTimer: ReturnType<typeof setTimeout> | null = null;
-      const flushThink = () => {
-        if (thinkBuf) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: thinkBuf }); thinkBuf = ''; }
-        thinkTimer = null;
-      };
+      const isCopilot = model.startsWith('copilot/');
+      const displayName = isCopilot ? '🐙 ' + model.slice('copilot/'.length) : model;
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: displayName, color });
       try {
-        const response = await ollamaGenerateStream(
-          baseUrl, model, fullPrompt,
-          (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); },
-          (thinkChunk) => {
-            if (!this._teamCancel) { thinkBuf += thinkChunk; if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80); }
-          }
-        );
-        if (thinkTimer) { clearTimeout(thinkTimer); }
-        flushThink();
-        results.push({ model, response });
+        let response: string;
+        if (isCopilot) {
+          response = await this.copilotStream(
+            model.slice('copilot/'.length), fullPrompt,
+            (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); }
+          );
+        } else {
+          let thinkBuf = '';
+          let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+          const flushThink = () => {
+            if (thinkBuf) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: thinkBuf }); thinkBuf = ''; }
+            thinkTimer = null;
+          };
+          response = await ollamaGenerateStream(
+            baseUrl, model, fullPrompt,
+            (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); },
+            (thinkChunk) => {
+              if (!this._teamCancel) { thinkBuf += thinkChunk; if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80); }
+            }
+          );
+          if (thinkTimer) { clearTimeout(thinkTimer); }
+          flushThink();
+        }
+        results.push({ model: displayName, response });
       } catch (e) {
-        if (thinkTimer) { clearTimeout(thinkTimer); }
         const msg = e instanceof Error ? e.message : String(e);
         this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
-        results.push({ model, response: `錯誤: ${msg}` });
+        results.push({ model: displayName, response: `錯誤: ${msg}` });
       }
       this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
     }));
@@ -934,8 +995,7 @@ export class OllamaChatPanel {
       return;
     }
 
-    // Phase 2: Synthesis — primary model synthesizes all opinions into an action plan
-    const primaryModel = cfg.get<string>('model') ?? models[0];
+    // Phase 2: Synthesis — use primary Ollama model to synthesize all opinions
     let synthResult = '';
     if (results.length > 1) {
       const synthPrompt = [
@@ -948,7 +1008,7 @@ export class OllamaChatPanel {
       this._panel.webview.postMessage({ type: 'teamSynthStart' });
       try {
         synthResult = await ollamaGenerateStream(
-          baseUrl, primaryModel, synthPrompt,
+          baseUrl, primaryOllamaModel, synthPrompt,
           (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); }
         );
       } catch { /* ignore */ }
@@ -961,10 +1021,61 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: willRunAgent });
 
     if (willRunAgent) {
-      this._panel.webview.postMessage({ type: 'teamAgentStart', model: primaryModel });
-      this._agentMessages = []; // Start fresh agent session for team execution
+      this._panel.webview.postMessage({ type: 'teamAgentStart', model: primaryOllamaModel });
+      this._agentMessages = [];
       const agentTaskPrompt = `根據以下團隊討論結論，請執行必要的程式碼或檔案操作來完成使用者的任務。\n\n【原始任務】\n${prompt}\n\n【團隊綜合建議】\n${synthResult}\n\n請逐步執行，必要時可讀寫檔案、執行命令。`;
-      await this.handleAgent(agentTaskPrompt, primaryModel);
+      await this.handleAgent(agentTaskPrompt, primaryOllamaModel);
+    }
+  }
+
+  private async fetchTeamModels(): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const teamModels: { id: string; label: string; vendor: string }[] = [];
+    // Ollama models
+    try {
+      const ollamaModels = await ollamaListModels(baseUrl);
+      for (const m of ollamaModels) { teamModels.push({ id: m, label: m, vendor: 'ollama' }); }
+    } catch { /* Ollama not reachable */ }
+    // GitHub Copilot models
+    try {
+      const copilotModels = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+      const seen = new Set<string>();
+      for (const m of copilotModels) {
+        const id = `copilot/${m.family}`;
+        if (!seen.has(id)) { seen.add(id); teamModels.push({ id, label: m.name || m.family, vendor: 'copilot' }); }
+      }
+    } catch { /* Copilot not available */ }
+    this._panel.webview.postMessage({ type: 'teamModelList', models: teamModels });
+  }
+
+  private async copilotStream(
+    modelFamily: string,
+    prompt: string,
+    onChunk: (chunk: string) => void
+  ): Promise<string> {
+    const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot', family: modelFamily });
+    if (!model) { throw new Error(`Copilot 模型 "${modelFamily}" 不可用，請確認 GitHub Copilot 已安裝並登入`); }
+    const cts = new vscode.CancellationTokenSource();
+    const cancelInterval = setInterval(() => { if (this._teamCancel) { cts.cancel(); } }, 200);
+    try {
+      const response = await model.sendRequest(
+        [vscode.LanguageModelChatMessage.User(prompt)],
+        {},
+        cts.token
+      );
+      let fullText = '';
+      for await (const part of response.stream) {
+        if (this._teamCancel) { break; }
+        if (part instanceof vscode.LanguageModelTextPart) {
+          fullText += part.value;
+          onChunk(part.value);
+        }
+      }
+      return fullText;
+    } finally {
+      clearInterval(cancelInterval);
+      cts.dispose();
     }
   }
 
