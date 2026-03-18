@@ -782,10 +782,11 @@ export class OllamaChatPanel {
     const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
 
     if (this._agentMessages.length === 0) {
-      const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      const folderList = folders.map(f => f.uri.fsPath).join(', ') || process.cwd();
       this._agentMessages.push({
         role: 'system',
-        content: `你是 VS Code 程式開發助手 Agent，工作目錄: ${wsRoot}。你可以使用工具自動讀寫檔案、執行命令來完成任務。請使用繁體中文回答，并在完成後告知使用者結果。`
+        content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。你可以使用工具自動讀寫檔案、執行命令來完成任務。請使用繁體中文回答，并在完成後告知使用者結果。`
       });
     }
     this._agentMessages.push({ role: 'user', content: userPrompt });
@@ -831,10 +832,21 @@ export class OllamaChatPanel {
   }
 
   private async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
-    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const wsRoot = folders[0]?.uri.fsPath ?? '';
     const resolvePath = (p: string) => {
       if (!p) { return wsRoot; }
-      return path.isAbsolute(p) ? p : path.join(wsRoot, p);
+      if (path.isAbsolute(p)) { return p; }
+      // Check if the relative path exists under any workspace folder
+      for (const f of folders) {
+        const candidate = path.join(f.uri.fsPath, p);
+        // Return first folder that contains the relative prefix
+        const rel = p.split(/[\\/]/)[0];
+        if (rel) {
+          try { require('fs').accessSync(path.join(f.uri.fsPath, rel)); return candidate; } catch { /* try next */ }
+        }
+      }
+      return path.join(wsRoot, p);
     };
     switch (name) {
       case 'get_active_file': {
@@ -865,7 +877,18 @@ export class OllamaChatPanel {
         return `已更新 ${fpath}`;
       }
       case 'list_dir': {
-        const dpath = resolvePath((args.path as string) || '');
+        const dirArg = (args.path as string) || '';
+        if (!dirArg && folders.length > 1) {
+          // List all workspace folders
+          const results: string[] = [];
+          for (const f of folders) {
+            const entries = await vscode.workspace.fs.readDirectory(f.uri);
+            const listing = entries.map(([n, t]) => t === vscode.FileType.Directory ? n + '/' : n).sort().join('\n');
+            results.push(`=== ${f.uri.fsPath} ===\n${listing}`);
+          }
+          return results.join('\n\n');
+        }
+        const dpath = resolvePath(dirArg);
         const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(dpath));
         return entries.map(([n, t]) => t === vscode.FileType.Directory ? n + '/' : n).sort().join('\n');
       }
