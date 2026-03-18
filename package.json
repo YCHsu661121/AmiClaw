@@ -1,0 +1,55 @@
+{
+  "name": "ollama-chat",
+  "displayName": "Ollama Chat",
+  "description": "Local Ollama-based chat assistant for code generation and insertion.",
+  "version": "0.0.1",
+  "publisher": "localdev",
+  "engines": { "vscode": "^1.80.0" },
+  "main": "./out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p .",
+    "watch": "tsc -p . -w",
+    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ollama-chat.vsix --no-dependencies"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.4.2",
+    "@types/vscode": "^1.80.0",
+    "vsce": "^2.12.0"
+  },
+  "dependencies": {},
+  "activationEvents": ["onCommand:ollama.chat"],
+  "contributes": {
+    "commands": [
+      {
+        "command": "ollama.chat",
+        "title": "Ollama Chat"
+      }
+    ],
+    "configuration": [
+      {
+        "id": "ollamaChat",
+        "title": "Ollama Chat",
+        "properties": {
+          "ollamaChat.url": {
+            "type": "string",
+            "default": "http://localhost:11434",
+            "description": "Ollama server URL"
+          },
+          "ollamaChat.model": {
+            "type": "string",
+            "default": "llama3",
+            "description": "Ollama model name"
+          },
+          "ollamaChat.models": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["llama3", "llama2", "vicuna", "mistral"],
+            "description": "Available model options shown in the chat UI"
+          }
+        }
+      }
+    ]
+  }
+}

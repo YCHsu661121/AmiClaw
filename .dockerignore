@@ -1,0 +1,14 @@
+node_modules
+out
+dist
+.git
+**/node_modules
+**/out
+node_modules
+out
+dist
+.git
+.vscode
+*.vsix
+npm-debug.log
+Dockerfile
