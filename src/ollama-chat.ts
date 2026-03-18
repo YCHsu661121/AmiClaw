@@ -739,16 +739,20 @@ export class OllamaChatPanel {
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
 
-    // Build messages: system (persona + long-term memory) + short-term history + current user msg
+    // Build a single prompt string from system + history + current message
+    // (uses /api/generate which has confirmed thinking field support)
     const systemContent = this.buildSystemContent();
-    const messages: ChatMessage[] = [];
+    const recent = this._chatHistory.slice(-20);
+
+    let fullPrompt = '';
     if (systemContent.trim()) {
-      messages.push({ role: 'system', content: systemContent });
+      fullPrompt += `System: ${systemContent}\n\n`;
     }
-    // Keep last 30 messages to stay within context window
-    const recent = this._chatHistory.slice(-30);
-    messages.push(...recent);
-    messages.push({ role: 'user', content: prompt });
+    for (const m of recent) {
+      const role = m.role === 'user' ? 'User' : 'Assistant';
+      fullPrompt += `${role}: ${m.content ?? ''}\n\n`;
+    }
+    fullPrompt += `User: ${prompt}`;
 
     // Optimistically add user msg to history
     this._chatHistory.push({ role: 'user', content: prompt });
@@ -762,8 +766,8 @@ export class OllamaChatPanel {
         if (thinkBuf) { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkBuf }); thinkBuf = ''; }
         thinkTimer = null;
       };
-      fullResponse = await ollamaChatStream(
-        baseUrl, model, messages,
+      fullResponse = await ollamaGenerateStream(
+        baseUrl, model, fullPrompt,
         (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); },
         (thinkChunk) => {
           OllamaChatPanel.log('thinkChunk: ' + thinkChunk.substring(0, 50));
