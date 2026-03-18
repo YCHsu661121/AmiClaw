@@ -290,6 +290,7 @@ export class OllamaChatPanel {
       .team-status-text { font-size:0.75em; opacity:0.65 }
       .team-synth-node .bubble { border-left:3px solid #f0c040; background:rgba(240,192,64,0.06); padding:8px 10px; width:100%; border-radius:6px }
       .team-synth-header { font-size:0.8em; font-weight:700; color:#f0c040; padding:0 0 5px; margin-bottom:6px; border-bottom:1px solid rgba(240,192,64,0.25) }
+      .team-agent-header { text-align:center; color:#f7cc65; font-size:0.82em; font-weight:700; margin:14px 0 6px; padding:5px 0; border-top:1px dashed rgba(247,204,101,0.4); border-bottom:1px dashed rgba(247,204,101,0.4); letter-spacing:0.03em }
       /* 記憶管理 Modal */
       #memModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:flex-start;justify-content:center;padding-top:40px}
       #memModal.open{display:flex}
@@ -378,7 +379,8 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamMemberEnd')   { finalizeTeamMember(msg.id); }
           else if (msg.type === 'teamSynthStart')  { createTeamSynthBubble(); }
           else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
-          else if (msg.type === 'teamEnd')         { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; }
+          else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
+          else if (msg.type === 'teamAgentStart')  { var tah = document.createElement('div'); tah.className = 'team-agent-header'; tah.textContent = '\uD83E\uDD16 Agent \u63A5\u529B\u57F7\u884C\u8A08\u5283\uFF08' + (msg.model||'') + '\uFF09'; chat.appendChild(tah); chat.scrollTop = chat.scrollHeight; }
           else if (msg.type === 'agentStatus')   {
             if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             setSendEnabled(!msg.running);
@@ -876,9 +878,17 @@ export class OllamaChatPanel {
   private async handleTeamSend(prompt: string): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const models = cfg.get<string[]>('models') ?? [];
+    // Use live server models instead of static config list
+    let models: string[];
+    try {
+      models = await ollamaListModels(baseUrl);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this._panel.webview.postMessage({ type: 'error', text: '無法取得模型清單：' + msg });
+      return;
+    }
     if (models.length === 0) {
-      this._panel.webview.postMessage({ type: 'error', text: '請先在 amiClaw.models 設定中加入多個模型' });
+      this._panel.webview.postMessage({ type: 'error', text: '伺服器上沒有安裝任何模型，請先 ollama pull 一個模型' });
       return;
     }
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
@@ -919,27 +929,43 @@ export class OllamaChatPanel {
       this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
     }));
 
-    if (this._teamCancel || results.length <= 1) {
+    if (this._teamCancel) {
       this._panel.webview.postMessage({ type: 'teamEnd' });
       return;
     }
 
-    // Phase 2: Synthesis — ask first model to pick best answer
-    const synthPrompt = [
-      `原始問題：${prompt}`, '',
-      `以下是 ${results.length} 位 AI 專家的分析意見：`,
-      ...results.map((r, i) => `\n--- 專家 ${i + 1}（${r.model}）---\n${r.response}`),
-      '',
-      '請以繁體中文，綜合所有意見，給出最終最佳建議（條列重點，100-200字）：'
-    ].join('\n');
-    this._panel.webview.postMessage({ type: 'teamSynthStart' });
-    try {
-      await ollamaGenerateStream(
-        baseUrl, models[0], synthPrompt,
-        (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); }
-      );
-    } catch { /* ignore */ }
-    this._panel.webview.postMessage({ type: 'teamEnd' });
+    // Phase 2: Synthesis — primary model synthesizes all opinions into an action plan
+    const primaryModel = cfg.get<string>('model') ?? models[0];
+    let synthResult = '';
+    if (results.length > 1) {
+      const synthPrompt = [
+        `原始問題：${prompt}`, '',
+        `以下是 ${results.length} 位 AI 專家的分析意見：`,
+        ...results.map((r, i) => `\n--- 專家 ${i + 1}（${r.model}）---\n${r.response}`),
+        '',
+        '請以繁體中文，綜合所有意見，給出最終最佳建議（條列重點，100-200字）：'
+      ].join('\n');
+      this._panel.webview.postMessage({ type: 'teamSynthStart' });
+      try {
+        synthResult = await ollamaGenerateStream(
+          baseUrl, primaryModel, synthPrompt,
+          (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); }
+        );
+      } catch { /* ignore */ }
+    } else if (results.length === 1) {
+      synthResult = results[0].response;
+    }
+
+    // Phase 3: Agent executor — designated model runs Agent loop to carry out the plan
+    const willRunAgent = !this._teamCancel && synthResult.trim().length > 0;
+    this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: willRunAgent });
+
+    if (willRunAgent) {
+      this._panel.webview.postMessage({ type: 'teamAgentStart', model: primaryModel });
+      this._agentMessages = []; // Start fresh agent session for team execution
+      const agentTaskPrompt = `根據以下團隊討論結論，請執行必要的程式碼或檔案操作來完成使用者的任務。\n\n【原始任務】\n${prompt}\n\n【團隊綜合建議】\n${synthResult}\n\n請逐步執行，必要時可讀寫檔案、執行命令。`;
+      await this.handleAgent(agentTaskPrompt, primaryModel);
+    }
   }
 
   private async handleSend(prompt: string, modelOverride?: string): Promise<void> {
