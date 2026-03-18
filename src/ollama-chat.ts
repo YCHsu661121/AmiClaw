@@ -228,14 +228,14 @@ export class OllamaChatPanel {
       #attachedFiles{display:flex;flex-wrap:wrap;gap:3px;padding:0 2px}
       .file-chip{display:inline-flex;align-items:center;gap:3px;background:rgba(0,120,215,0.14);border:1px solid rgba(0,120,215,0.3);border-radius:10px;padding:1px 8px;font-size:11px}
       .file-chip .rm{padding:0 2px;font-size:12px;background:none;border:none;cursor:pointer;opacity:0.6;color:inherit;line-height:1}
-      details.think { border-left:3px solid var(--vscode-editorInfo-foreground,#4fc1ff); margin:6px 0; padding:4px 10px; background:rgba(79,193,255,0.06); border-radius:4px }
-      details.think summary { cursor:pointer; color:var(--vscode-editorInfo-foreground,#4fc1ff); font-size:0.85em; user-select:none; list-style:none; padding:3px 0; display:flex; align-items:center; gap:6px }
+      details.think { border:1px solid rgba(79,193,255,0.5); margin:8px 0 4px; padding:0; background:rgba(79,193,255,0.06); border-radius:6px; overflow:hidden; width:100% }
+      details.think summary { background:rgba(79,193,255,0.2); padding:5px 10px; cursor:pointer; color:var(--vscode-editorInfo-foreground,#4fc1ff); font-size:0.83em; font-weight:600; user-select:none; list-style:none; display:flex; align-items:center; gap:6px }
       details.think summary .think-icon { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--vscode-editorInfo-foreground,#4fc1ff); flex-shrink:0 }
-      details.think summary .think-icon.pulse { animation: pulse 1.5s ease-in-out infinite }
-      @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.7)} }
+      details.think summary .think-icon.pulse { animation: pulse 1.2s ease-in-out infinite }
+      @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.3;transform:scale(0.6)} }
       details.think summary::before { content:none }
       details.think[open] summary::before { content:none }
-      details.think pre { margin:4px 0; white-space:pre-wrap; color:var(--vscode-descriptionForeground,#999); font-size:0.83em; max-height:200px; overflow:auto }
+      details.think pre { margin:0; padding:6px 10px; white-space:pre-wrap; color:var(--vscode-editor-foreground); opacity:0.85; font-size:0.82em; max-height:260px; overflow-y:auto; background:transparent }
       .file-chip { display:inline-flex; align-items:center; gap:3px; background:rgba(0,120,215,0.14); border:1px solid rgba(0,120,215,0.3); border-radius:3px; padding:1px 6px; font-size:11px; margin:2px }
       .file-chip .rm { padding:0 2px; font-size:11px; background:none; border:none; cursor:pointer; opacity:0.6; color:inherit; line-height:1 }
       #attachedFiles { padding:2px 8px; display:flex; flex-wrap:wrap; min-height:0 }
@@ -524,16 +524,18 @@ export class OllamaChatPanel {
           d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
           const s = document.createElement('summary');
           const icon = document.createElement('span'); icon.className = 'think-icon pulse';
-          const label = document.createElement('span'); label.className = 'think-label'; label.textContent = '\u601d\u8003\u4e2d\u2026';
+          const label = document.createElement('span'); label.className = 'think-label'; label.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
           s.appendChild(icon); s.appendChild(label);
           const p = document.createElement('pre'); p.className = 'think-stream';
           d.appendChild(s); d.appendChild(p); bubble.appendChild(d);
-          d._tokenCount = 0;
+          d._charCount = 0;
         }
-        d._tokenCount = (d._tokenCount || 0) + 1;
+        d._charCount = (d._charCount || 0) + chunk.length;
+        const approxTok = Math.round(d._charCount / 4);
         const lbl = d.querySelector('.think-label');
-        if (lbl) lbl.textContent = '\u601d\u8003\u4e2d\u2026 (' + d._tokenCount + ' tokens)';
-        const p = d.querySelector('pre.think-stream'); if (p) p.textContent = (p.textContent || '') + chunk;
+        if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + approxTok + ' tokens)';
+        const p = d.querySelector('pre.think-stream');
+        if (p) { p.textContent = (p.textContent || '') + chunk; p.scrollTop = p.scrollHeight; }
         chat.scrollTop = chat.scrollHeight;
       }
 
@@ -544,7 +546,8 @@ export class OllamaChatPanel {
           d.removeAttribute('open');
           const icon = d.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
           const lbl = d.querySelector('.think-label');
-          if (lbl) lbl.textContent = '\u601d\u8003\u904e\u7a0b (' + (d._tokenCount || '') + ' tokens)';
+          const approxTok = Math.round((d._charCount || 0) / 4);
+          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (~' + approxTok + ' tokens)';
         }
         let body = bubble.querySelector('.response-body');
         if (!body) { body = document.createElement('div'); body.className = 'response-body'; body.style.whiteSpace = 'pre-wrap'; bubble.appendChild(body); }
@@ -632,14 +635,24 @@ export class OllamaChatPanel {
     if (useStream) {
       this._panel.webview.postMessage({ type: 'streamStart' });
       try {
+        // Batch think chunks every 80ms to avoid flooding the webview message queue
+        let thinkBuf = '';
+        let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushThink = () => {
+          if (thinkBuf) { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkBuf }); thinkBuf = ''; }
+          thinkTimer = null;
+        };
         await ollamaGenerateStream(
           baseUrl, model, prompt,
           (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); },
           (thinkChunk) => {
             OllamaChatPanel.log('thinkChunk: ' + thinkChunk.substring(0, 50));
-            this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkChunk });
+            thinkBuf += thinkChunk;
+            if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80);
           }
         );
+        if (thinkTimer) { clearTimeout(thinkTimer); }
+        flushThink();
         this._panel.webview.postMessage({ type: 'streamEnd' });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
