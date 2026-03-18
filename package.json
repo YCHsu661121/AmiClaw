@@ -1,7 +1,7 @@
 {
-  "name": "ollama-chat",
-  "displayName": "Ollama Chat",
-  "description": "Local Ollama-based chat assistant for code generation and insertion.",
+  "name": "ami-claw",
+  "displayName": "AmiClaw",
+  "description": "AmiClaw - Local Ollama chat assistant for code generation and insertion.",
   "version": "0.0.1",
   "publisher": "localdev",
   "engines": { "vscode": "^1.80.0" },
@@ -10,7 +10,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -p . -w",
-    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ollama-chat.vsix --no-dependencies"
+    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ami-claw.vsix --no-dependencies"
   },
   "devDependencies": {
     "typescript": "^5.3.3",
@@ -19,30 +19,48 @@
     "vsce": "^2.12.0"
   },
   "dependencies": {},
-  "activationEvents": ["onCommand:ollama.chat"],
+  "activationEvents": ["onCommand:amiClaw.chat", "onCommand:amiClaw.sendToChat"],
   "contributes": {
     "commands": [
       {
-        "command": "ollama.chat",
-        "title": "Ollama Chat"
+        "command": "amiClaw.chat",
+        "title": "AmiClaw"
+      },
+      {
+        "command": "amiClaw.sendToChat",
+        "title": "傳送到 AmiClaw"
       }
     ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "amiClaw.sendToChat",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "amiClaw.sendToChat",
+          "group": "navigation@99"
+        }
+      ]
+    },
     "configuration": [
       {
-        "id": "ollamaChat",
-        "title": "Ollama Chat",
+        "id": "amiClaw",
+        "title": "AmiClaw",
         "properties": {
-          "ollamaChat.url": {
+          "amiClaw.url": {
             "type": "string",
             "default": "http://localhost:11434",
             "description": "Ollama server URL"
           },
-          "ollamaChat.model": {
+          "amiClaw.model": {
             "type": "string",
             "default": "llama3",
             "description": "Ollama model name"
           },
-          "ollamaChat.models": {
+          "amiClaw.models": {
             "type": "array",
             "items": { "type": "string" },
             "default": ["llama3", "llama2", "vicuna", "mistral"],

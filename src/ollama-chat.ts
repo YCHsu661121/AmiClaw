@@ -7,7 +7,7 @@ import { URL } from 'url';
 // (Copied implementation from top-level file)
 export class OllamaChatPanel {
   public static currentPanel: OllamaChatPanel | undefined;
-  public static readonly viewType = 'ollama.chat';
+  public static readonly viewType = 'amiClaw.chat';
   private static _log: vscode.OutputChannel;
 
   private readonly _panel: vscode.WebviewPanel;
@@ -22,7 +22,7 @@ export class OllamaChatPanel {
 
   private static log(msg: string): void {
     if (!OllamaChatPanel._log) {
-      OllamaChatPanel._log = vscode.window.createOutputChannel('Ollama Chat');
+      OllamaChatPanel._log = vscode.window.createOutputChannel('AmiClaw');
     }
     OllamaChatPanel._log.appendLine(`[${new Date().toISOString()}] ${msg}`);
   }
@@ -98,7 +98,7 @@ export class OllamaChatPanel {
     const _webview = this._panel.webview;
     const _self = this;
     (async () => {
-      const cfg = vscode.workspace.getConfiguration('ollamaChat');
+      const cfg = vscode.workspace.getConfiguration('amiClaw');
       const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
       let liveModels: string[] = [];
       let connOk = false;
@@ -132,12 +132,54 @@ export class OllamaChatPanel {
 
     const panel = vscode.window.createWebviewPanel(
       OllamaChatPanel.viewType,
-      'Ollama Chat',
+      'AmiClaw',
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
       { enableScripts: true, retainContextWhenHidden: true }
     );
 
     OllamaChatPanel.currentPanel = new OllamaChatPanel(panel, context);
+  }
+
+  /**
+   * Send one or more URIs (files or folders) to the open chat panel as context.
+   * Call AFTER createOrShow so currentPanel is guaranteed to exist.
+   */
+  public static async sendUrisToChat(uris: vscode.Uri[]): Promise<void> {
+    const panel = OllamaChatPanel.currentPanel;
+    if (!panel) { return; }
+
+    // Small delay so the webview has time to initialize if it was just created
+    await new Promise(r => setTimeout(r, 500));
+
+    for (const uri of uris) {
+      let stat: vscode.FileStat;
+      try { stat = await vscode.workspace.fs.stat(uri); } catch { continue; }
+
+      if (stat.type & vscode.FileType.Directory) {
+        // Send directory listing
+        const entries = await vscode.workspace.fs.readDirectory(uri);
+        const listing = entries.map(([name, type]) =>
+          (type & vscode.FileType.Directory) ? name + '/' : name
+        ).join('\n');
+        panel._panel.webview.postMessage({
+          type: 'fileAttached',
+          name: uri.fsPath,
+          content: `[目錄列表]\n${listing}`
+        });
+      } else {
+        // Send file content (limit to 500 KB)
+        const MAX = 500 * 1024;
+        const raw = await vscode.workspace.fs.readFile(uri);
+        const content = raw.byteLength > MAX
+          ? Buffer.from(raw).toString('utf8', 0, MAX) + '\n...(截斷)'
+          : Buffer.from(raw).toString('utf8');
+        panel._panel.webview.postMessage({
+          type: 'fileAttached',
+          name: uri.fsPath,
+          content
+        });
+      }
+    }
   }
 
   public dispose() {
@@ -148,7 +190,7 @@ export class OllamaChatPanel {
 
   private getHtmlForWebview(_webview: vscode.Webview): string {
     const nonce = getNonce();
-    const cfg = vscode.workspace.getConfiguration('ollamaChat');
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
     const defaultModel = cfg.get<string>('model') ?? 'llama3';
     const models = cfg.get<string[]>('models') ?? [defaultModel, 'llama3', 'llama2', 'vicuna', 'mistral'];
     const optionsHtml = models.map(m => `<option value="${m}" ${m === defaultModel ? 'selected' : ''}>${m}</option>`).join('');
@@ -159,7 +201,7 @@ export class OllamaChatPanel {
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ollama Chat</title>
+    <title>AmiClaw</title>
     <style>
       *{box-sizing:border-box}
       body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;margin:0;padding:0;height:100vh;display:flex;flex-direction:column;background:var(--vscode-editor-background);color:var(--vscode-editor-foreground)}
@@ -564,7 +606,7 @@ export class OllamaChatPanel {
   }
 
   private async handleSend(prompt: string, modelOverride?: string): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('ollamaChat');
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
 
@@ -593,7 +635,7 @@ export class OllamaChatPanel {
   }
 
   private async summarizeText(text: string, modelOverride?: string): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('ollamaChat');
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
 
@@ -641,7 +683,7 @@ export class OllamaChatPanel {
     this._autoCancel = false;
     this._panel.webview.postMessage({ type: 'autoStatus', running: true });
 
-    const cfg = vscode.workspace.getConfiguration('ollamaChat');
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
 
@@ -713,7 +755,7 @@ export class OllamaChatPanel {
     this._agentCancel = false;
     this._panel.webview.postMessage({ type: 'agentStatus', running: true });
 
-    const cfg = vscode.workspace.getConfiguration('ollamaChat');
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
 
@@ -836,7 +878,7 @@ export class OllamaChatPanel {
   }
 
   private async fetchModelsFromServer(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('ollamaChat');
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     OllamaChatPanel.log('fetchModelsFromServer: ' + baseUrl);
     try {
@@ -854,7 +896,7 @@ export class OllamaChatPanel {
   }
 
   private async testConnectionStatus(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('ollamaChat');
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const result = await ollamaCheckConnection(baseUrl);
     this._panel.webview.postMessage({ type: 'connectionStatus', ok: result.ok, url: baseUrl, message: result.message });
