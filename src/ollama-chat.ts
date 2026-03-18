@@ -19,6 +19,7 @@ export class OllamaChatPanel {
   private _agentRunning = false;
   private _agentCancel = false;
   private _agentMessages: ChatMessage[] = [];
+  private _teamCancel = false;
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
   private _chatHistory: ChatMessage[] = [];
@@ -78,6 +79,12 @@ export class OllamaChatPanel {
             break;
           case 'agentStop':
             this._agentCancel = true;
+            break;
+          case 'teamSend':
+            this.handleTeamSend(message.prompt).catch(() => {});
+            break;
+          case 'teamStop':
+            this._teamCancel = true;
             break;
           case 'applyToFile':
             await this.handleApplyToFile(message.code);
@@ -275,6 +282,14 @@ export class OllamaChatPanel {
       .tool-step pre{margin:3px 0;white-space:pre-wrap;font-size:0.82em;max-height:140px;overflow:auto;color:var(--vscode-descriptionForeground,#999);background:transparent}
       .code-block-wrap{margin:4px 0}
       .code-actions{display:flex;gap:4px;margin:2px 0 1px;flex-wrap:wrap}
+      /* 團隊討論模式 */
+      .team-member-node { width:100% }
+      .team-member-node .bubble { border-left:3px solid; padding-left:10px; width:100% }
+      .team-header { display:flex; align-items:center; gap:6px; padding:0 0 5px; border-bottom:1px solid rgba(128,128,128,0.12); margin-bottom:6px }
+      .team-badge { border-radius:3px; padding:1px 8px; font-size:0.75em; font-weight:700; border:1px solid }
+      .team-status-text { font-size:0.75em; opacity:0.65 }
+      .team-synth-node .bubble { border-left:3px solid #f0c040; background:rgba(240,192,64,0.06); padding:8px 10px; width:100%; border-radius:6px }
+      .team-synth-header { font-size:0.8em; font-weight:700; color:#f0c040; padding:0 0 5px; margin-bottom:6px; border-bottom:1px solid rgba(240,192,64,0.25) }
       /* 記憶管理 Modal */
       #memModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:flex-start;justify-content:center;padding-top:40px}
       #memModal.open{display:flex}
@@ -304,6 +319,7 @@ export class OllamaChatPanel {
         <button class="icon-btn" id="pickFile" title="附加檔案">📎</button>
         <button class="icon-btn" id="toggleStream" title="切換串流模式">⚡</button>
         <button class="icon-btn" id="agentMode" title="Agent 模式 (AI 可讀寫檔案、執行命令)">🤖</button>
+        <button class="icon-btn" id="teamMode" title="團隊討論模式 (多個 AI 並行思考👥)">👥</button>
         <button class="icon-btn" id="stopAgent" title="停止 Agent">⏹</button>
         <button class="icon-btn" id="memBtn" title="記憶管理">🧠</button>
         <button class="icon-btn" id="clear" title="清除對話">🗑</button>
@@ -356,6 +372,13 @@ export class OllamaChatPanel {
           else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
           else if (msg.type === 'streamEnd')     { _agentStepNode = null; _streamNode = null; setSendEnabled(true); }
           else if (msg.type === 'error')         { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', '\u932f\u8aa4\uff1a' + msg.text); }
+          else if (msg.type === 'teamMemberStart') { createTeamMember(msg.id, msg.model, msg.color); }
+          else if (msg.type === 'teamThinkChunk')  { appendTeamThinkChunk(msg.id, msg.color, msg.chunk); }
+          else if (msg.type === 'teamResponseChunk'){ appendTeamResponseChunk(msg.id, msg.chunk); }
+          else if (msg.type === 'teamMemberEnd')   { finalizeTeamMember(msg.id); }
+          else if (msg.type === 'teamSynthStart')  { createTeamSynthBubble(); }
+          else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
+          else if (msg.type === 'teamEnd')         { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; }
           else if (msg.type === 'agentStatus')   {
             if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             setSendEnabled(!msg.running);
@@ -382,7 +405,10 @@ export class OllamaChatPanel {
       let _streamNode = null;
       let _pendingBubble = null;
       let agentMode = false;
+      let teamMode = false;
       let _agentStepNode = null;
+      const _teamNodes = {}; // id -> { node, bubble, thinkNode, responseNode, charCount, thinkStart, thinkTimer }
+      let _synthNode = null;
 
       const sendBtn = document.getElementById('sendBtn');
       const statusBar = document.getElementById('statusBar');
@@ -414,6 +440,12 @@ export class OllamaChatPanel {
         const m = modelSelect ? modelSelect.value : undefined;
         const label = text.length > 60 ? text.slice(0, 60) + '\u2026' : text;
         appendMessage('user', label + (attachedFiles.length ? ' (\uD83D\uDCCE ' + attachedFiles.length + ')' : ''));
+        if (teamMode) {
+          vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text) });
+          prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
+          if (statusBar) statusBar.textContent = '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
+          return;
+        }
         vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m });
         prompt.value = ''; resizePrompt(); clearFiles();
         setSendEnabled(false);
@@ -438,17 +470,27 @@ export class OllamaChatPanel {
 
       document.getElementById('clear').addEventListener('click', function() {
         chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
+        Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; }); _synthNode = null;
         vscode.postMessage({ type: 'clearHistory' });
       });
 
       document.getElementById('agentMode').addEventListener('click', function() {
         agentMode = !agentMode;
         document.getElementById('agentMode').classList.toggle('active', agentMode);
+        if (agentMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); }
         if (statusBar) statusBar.textContent = agentMode ? '🤖 Agent 模式 — AI 可自動讀寫檔案、執行命令' : '';
         prompt.placeholder = agentMode ? '輸入任務… Agent 會自動使用工具 (Enter 送出)' : '輸入訊息… (Enter 送出 / Ctrl+Enter 換行)';
       });
 
-      document.getElementById('stopAgent').addEventListener('click', function() { vscode.postMessage({ type: 'agentStop' }); });
+      document.getElementById('teamMode').addEventListener('click', function() {
+        teamMode = !teamMode;
+        document.getElementById('teamMode').classList.toggle('active', teamMode);
+        if (teamMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
+        if (statusBar) statusBar.textContent = teamMode ? '\uD83D\uDC65 \u5718\u968a\u6a21\u5f0f \u2014 \u591a\u500b AI \u4e26\u884c\u601d\u8003\uff0c\u904e\u7a0b\u5206\u6b21\u986f\u793a' : '';
+        prompt.placeholder = teamMode ? '\u8f38\u5165\u554f\u984c\u2026 \u5718\u968a\u6240\u6709\u6a21\u578b\u6703\u540c\u6642\u5206\u6790 (Enter \u9001\u51fa)' : '\u8f38\u5165\u8a0a\u606f\u2026 (Enter \u9001\u51fa / Ctrl+Enter \u63db\u884c)';
+      });
+
+      document.getElementById('stopAgent').addEventListener('click', function() { vscode.postMessage({ type: 'agentStop' }); vscode.postMessage({ type: 'teamStop' }); });
 
       document.getElementById('toggleStream').addEventListener('click', function() {
         streamMode = !streamMode;
@@ -664,6 +706,91 @@ export class OllamaChatPanel {
         _agentStepNode = null; chat.scrollTop = chat.scrollHeight;
       }
 
+      // ── 團隊模式 ──────────────────────────────────────────────────────────
+      var TEAM_COLORS = ['#4fc1ff','#89d185','#ce9178','#c586c0','#dcdcaa','#f7cc65'];
+
+      function createTeamMember(id, model, color) {
+        clearPendingBubble();
+        var node = document.createElement('div'); node.className = 'msg assistant team-member-node';
+        var bub = document.createElement('div'); bub.className = 'bubble'; bub.style.borderLeftColor = color;
+        var hdr = document.createElement('div'); hdr.className = 'team-header';
+        var badge = document.createElement('span'); badge.className = 'team-badge';
+        badge.textContent = model; badge.style.color = color; badge.style.borderColor = color; badge.style.background = color + '22';
+        var st = document.createElement('span'); st.className = 'team-status-text'; st.textContent = '\u601d\u8003\u4e2d\u2026';
+        hdr.appendChild(badge); hdr.appendChild(st); bub.appendChild(hdr); node.appendChild(bub);
+        chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
+        _teamNodes[id] = { node: node, bubble: bub, status: st, thinkNode: null, responseNode: null, charCount: 0, thinkStart: null, thinkTimer: null };
+      }
+
+      function appendTeamThinkChunk(id, color, chunk) {
+        var m = _teamNodes[id]; if (!m) return;
+        if (!m.thinkNode) {
+          var d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
+          var s = document.createElement('summary');
+          var icon = document.createElement('span'); icon.className = 'think-icon pulse'; icon.style.background = color;
+          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+          s.appendChild(icon); s.appendChild(lbl);
+          var p = document.createElement('pre'); p.className = 'think-stream';
+          d.appendChild(s); d.appendChild(p); m.bubble.appendChild(d);
+          m.thinkNode = d; m.thinkStart = Date.now(); m.charCount = 0;
+          m.thinkTimer = setInterval(function() {
+            if (!d.hasAttribute('open')) { clearInterval(m.thinkTimer); return; }
+            var secs = Math.round((Date.now() - m.thinkStart) / 1000);
+            var tok = Math.round((m.charCount || 0) / 4);
+            var l2 = d.querySelector('.think-label'); if (l2) l2.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + tok + ' tokens, ' + secs + 's)';
+          }, 1000);
+        }
+        m.charCount = (m.charCount || 0) + chunk.length;
+        var tok = Math.round(m.charCount / 4);
+        var secs = Math.round((Date.now() - (m.thinkStart || Date.now())) / 1000);
+        var ll = m.thinkNode.querySelector('.think-label'); if (ll) ll.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + tok + ' tokens, ' + secs + 's)';
+        var pre = m.thinkNode.querySelector('pre.think-stream'); if (pre) { pre.textContent += chunk; pre.scrollTop = pre.scrollHeight; }
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      function appendTeamResponseChunk(id, chunk) {
+        var m = _teamNodes[id]; if (!m) return;
+        if (m.thinkNode && m.thinkNode.hasAttribute('open')) {
+          m.thinkNode.removeAttribute('open');
+          if (m.thinkTimer) { clearInterval(m.thinkTimer); m.thinkTimer = null; }
+          var icon = m.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
+          var lbl = m.thinkNode.querySelector('.think-label');
+          var tok = Math.round((m.charCount || 0) / 4);
+          var secs = Math.round((Date.now() - (m.thinkStart || Date.now())) / 1000);
+          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (~' + tok + ' tokens, \u8017\u6642 ' + secs + 's)';
+        }
+        if (m.status) m.status.textContent = '\u56de\u7b54\u4e2d\u2026';
+        if (!m.responseNode) {
+          var rb = document.createElement('div'); rb.className = 'response-body'; rb.style.whiteSpace = 'pre-wrap';
+          m.bubble.appendChild(rb); m.responseNode = rb;
+        }
+        m.responseNode.textContent += chunk;
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      function finalizeTeamMember(id) {
+        var m = _teamNodes[id]; if (!m) return;
+        if (m.status) m.status.textContent = '\u2713 \u5b8c\u6210';
+        if (m.thinkTimer) { clearInterval(m.thinkTimer); m.thinkTimer = null; }
+        if (m.thinkNode && m.thinkNode.hasAttribute('open')) { m.thinkNode.removeAttribute('open'); }
+      }
+
+      function createTeamSynthBubble() {
+        var node = document.createElement('div'); node.className = 'msg assistant team-synth-node';
+        var bub = document.createElement('div'); bub.className = 'bubble';
+        var hdr = document.createElement('div'); hdr.className = 'team-synth-header'; hdr.textContent = '\u2728 \u5718\u968a\u7d9c\u5408\u5efa\u8b70';
+        var body = document.createElement('div'); body.className = 'response-body'; body.style.whiteSpace = 'pre-wrap';
+        bub.appendChild(hdr); bub.appendChild(body); node.appendChild(bub);
+        chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
+        _synthNode = { node: node, bubble: bub, body: body };
+      }
+
+      function appendTeamSynthChunk(chunk) {
+        if (!_synthNode) return;
+        _synthNode.body.textContent += chunk;
+        chat.scrollTop = chat.scrollHeight;
+      }
+
       function updateModelSelect(models, current) {
         if (!modelSelect || !models || !models.length) return;
         modelSelect.innerHTML = '';
@@ -744,6 +871,75 @@ export class OllamaChatPanel {
     </script>
   </body>
 </html>`;
+  }
+
+  private async handleTeamSend(prompt: string): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const models = cfg.get<string[]>('models') ?? [];
+    if (models.length === 0) {
+      this._panel.webview.postMessage({ type: 'error', text: '請先在 amiClaw.models 設定中加入多個模型' });
+      return;
+    }
+    const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
+    this._teamCancel = false;
+    const systemContent = this.buildSystemContent();
+    const fullPrompt = systemContent.trim() ? `System: ${systemContent}\n\nUser: ${prompt}` : prompt;
+
+    const results: { model: string; response: string }[] = [];
+
+    // Phase 1: All models think and respond in parallel
+    await Promise.all(models.map(async (model, idx) => {
+      const id = `team_${idx}`;
+      const color = COLORS[idx % COLORS.length];
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model, color });
+      let thinkBuf = '';
+      let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+      const flushThink = () => {
+        if (thinkBuf) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: thinkBuf }); thinkBuf = ''; }
+        thinkTimer = null;
+      };
+      try {
+        const response = await ollamaGenerateStream(
+          baseUrl, model, fullPrompt,
+          (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); },
+          (thinkChunk) => {
+            if (!this._teamCancel) { thinkBuf += thinkChunk; if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80); }
+          }
+        );
+        if (thinkTimer) { clearTimeout(thinkTimer); }
+        flushThink();
+        results.push({ model, response });
+      } catch (e) {
+        if (thinkTimer) { clearTimeout(thinkTimer); }
+        const msg = e instanceof Error ? e.message : String(e);
+        this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
+        results.push({ model, response: `錯誤: ${msg}` });
+      }
+      this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+    }));
+
+    if (this._teamCancel || results.length <= 1) {
+      this._panel.webview.postMessage({ type: 'teamEnd' });
+      return;
+    }
+
+    // Phase 2: Synthesis — ask first model to pick best answer
+    const synthPrompt = [
+      `原始問題：${prompt}`, '',
+      `以下是 ${results.length} 位 AI 專家的分析意見：`,
+      ...results.map((r, i) => `\n--- 專家 ${i + 1}（${r.model}）---\n${r.response}`),
+      '',
+      '請以繁體中文，綜合所有意見，給出最終最佳建議（條列重點，100-200字）：'
+    ].join('\n');
+    this._panel.webview.postMessage({ type: 'teamSynthStart' });
+    try {
+      await ollamaGenerateStream(
+        baseUrl, models[0], synthPrompt,
+        (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); }
+      );
+    } catch { /* ignore */ }
+    this._panel.webview.postMessage({ type: 'teamEnd' });
   }
 
   private async handleSend(prompt: string, modelOverride?: string): Promise<void> {
