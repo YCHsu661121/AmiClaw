@@ -360,7 +360,7 @@ export class OllamaChatPanel {
             if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             setSendEnabled(!msg.running);
           }
-          else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title); }
+          else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
@@ -596,11 +596,20 @@ export class OllamaChatPanel {
           const p = document.createElement('pre'); p.className = 'think-stream';
           d.appendChild(s); d.appendChild(p); bubble.appendChild(d);
           d._charCount = 0;
+          d._thinkStart = Date.now();
+          d._thinkTimer = setInterval(function() {
+            if (!d.hasAttribute('open')) { clearInterval(d._thinkTimer); return; }
+            const secs = Math.round((Date.now() - d._thinkStart) / 1000);
+            const approxTok2 = Math.round((d._charCount || 0) / 4);
+            const lbl2 = d.querySelector('.think-label');
+            if (lbl2) lbl2.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + approxTok2 + ' tokens, ' + secs + 's)';
+          }, 1000);
         }
         d._charCount = (d._charCount || 0) + chunk.length;
         const approxTok = Math.round(d._charCount / 4);
+        const secs = Math.round((Date.now() - (d._thinkStart || Date.now())) / 1000);
         const lbl = d.querySelector('.think-label');
-        if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + approxTok + ' tokens)';
+        if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + approxTok + ' tokens, ' + secs + 's)';
         const p = d.querySelector('pre.think-stream');
         if (p) { p.textContent = (p.textContent || '') + chunk; p.scrollTop = p.scrollHeight; }
         chat.scrollTop = chat.scrollHeight;
@@ -611,10 +620,12 @@ export class OllamaChatPanel {
         const d = bubble.querySelector('details.think');
         if (d && d.hasAttribute('open')) {
           d.removeAttribute('open');
+          if (d._thinkTimer) { clearInterval(d._thinkTimer); d._thinkTimer = null; }
           const icon = d.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
           const lbl = d.querySelector('.think-label');
           const approxTok = Math.round((d._charCount || 0) / 4);
-          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (~' + approxTok + ' tokens)';
+          const totalSecs = Math.round((Date.now() - (d._thinkStart || Date.now())) / 1000);
+          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (~' + approxTok + ' tokens, \u8017\u6642 ' + totalSecs + 's)';
         }
         let body = bubble.querySelector('.response-body');
         if (!body) { body = document.createElement('div'); body.className = 'response-body'; body.style.whiteSpace = 'pre-wrap'; bubble.appendChild(body); }
@@ -634,11 +645,12 @@ export class OllamaChatPanel {
         node.appendChild(bub); chat.appendChild(node); return bub;
       }
 
-      function appendAgentStep(icon, title) {
+      function appendAgentStep(icon, title, fullPath) {
         var bub = ensureLastAssistantBubble();
         var d = document.createElement('details'); d.className = 'tool-step'; d.dataset.s = 'running';
         var s = document.createElement('summary');
         var span = document.createElement('span'); span.textContent = (icon || '\uD83D\uDD27') + '\u00A0' + title;
+        if (fullPath) { span.title = fullPath; }
         var status = document.createElement('span'); status.className = 'step-status';
         s.appendChild(span); s.appendChild(status);
         d.appendChild(s); bub.appendChild(d); _agentStepNode = d;
@@ -953,7 +965,7 @@ export class OllamaChatPanel {
           for (const tc of resp.tool_calls) {
             const fn = tc.function;
             const args = (typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments) as Record<string, unknown>;
-            this._panel.webview.postMessage({ type: 'agentStep', icon: getToolIcon(fn.name), title: formatToolTitle(fn.name, args) });
+            this._panel.webview.postMessage({ type: 'agentStep', icon: getToolIcon(fn.name), title: formatToolTitle(fn.name, args), fullPath: (args.path as string) || (args.command as string) || '' });
             let result: string;
             let isError = false;
             try {
@@ -1161,7 +1173,7 @@ function ollamaChatCall(baseUrl: string, model: string, messages: ChatMessage[],
         });
       });
       req.on('error', (e: NodeJS.ErrnoException) => reject(ollamaConnectError(new URL(baseUrl).hostname, e)));
-      req.setTimeout(120000, () => { req.destroy(new Error('Agent 呼叫逾時 (120s)')); });
+      req.setTimeout(600000, () => { req.destroy(new Error('Agent \u547c\u53eb\u903e\u6642 (600s)')); });
       req.write(body);
       req.end();
     } catch (e) { reject(e); }
