@@ -40,6 +40,14 @@ export class OllamaChatPanel {
     OllamaChatPanel.log('Constructor: start');
     vscode.window.showInformationMessage('AmiClaw: Extension activated');
 
+    // Seed long-term memory with Jira key recognition rule if not already present
+    const existingLtm = context.globalState.get<string>('amiClaw.longTermMemory') ?? '';
+    const jiraRule = '【規則】訊息中出現形如 PROJ-123、UOEM2-3476（大寫字母加數字、連字號、數字）的組合，應優先視為 Jira Issue Key，主動使用 jira_open 工具開啟，或向使用者確認是否要搜尋該 Jira Issue。';
+    if (!existingLtm.includes('Jira Issue Key')) {
+      const seeded = existingLtm.trim() ? existingLtm.trim() + '\n\n' + jiraRule : jiraRule;
+      context.globalState.update('amiClaw.longTermMemory', seeded);
+    }
+
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
     this._panel.webview.onDidReceiveMessage(async message => {
@@ -497,6 +505,35 @@ export class OllamaChatPanel {
         prompt.style.height = Math.min(prompt.scrollHeight, 160) + 'px';
       }
       prompt.addEventListener('input', resizePrompt);
+
+      // ── Jira key auto-detect ──────────────────────────────────────────────
+      var _jiraChips = document.createElement('div');
+      _jiraChips.id = 'jiraChips';
+      _jiraChips.style.cssText = 'display:none;padding:2px 6px 4px;display:flex;flex-wrap:wrap;gap:4px;';
+      prompt.parentNode.insertBefore(_jiraChips, prompt);
+      var _jiraKeyRe = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
+      prompt.addEventListener('input', function() {
+        _jiraChips.innerHTML = '';
+        var text = prompt.value;
+        var keys = [];
+        var m2;
+        _jiraKeyRe.lastIndex = 0;
+        while ((m2 = _jiraKeyRe.exec(text)) !== null) {
+          if (keys.indexOf(m2[1]) === -1) keys.push(m2[1]);
+        }
+        if (keys.length === 0) { _jiraChips.style.display = 'none'; return; }
+        _jiraChips.style.display = 'flex';
+        keys.forEach(function(key) {
+          var chip = document.createElement('button');
+          chip.textContent = '\uD83C\uDFAB ' + key;
+          chip.title = '\u958b\u555f Jira Issue: ' + key;
+          chip.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:10px;background:rgba(0,122,204,0.25);border:1px solid rgba(0,122,204,0.5);color:inherit;cursor:pointer;';
+          chip.addEventListener('click', function() {
+            vscode.postMessage({ type: 'agentSend', prompt: '\u5f9e Jira \u67e5\u770b Issue ' + key, model: modelSelect ? modelSelect.value : undefined });
+          });
+          _jiraChips.appendChild(chip);
+        });
+      });
 
       // ── 送出 helper ──────────────────────────────────────────────────────
       function appendLoadingBubble() {
@@ -1587,6 +1624,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     if (ltm.trim()) {
       content += '\n\n## 長期記憶（關於使用者的重要資訊）\n' + ltm.trim();
     }
+    content += '\n\n## 工具提示\n- 當使用者訊息包含形如 [A-Z][A-Z0-9]*-\\d+（例如 UOEM2-3476、PROJ-123）的字串時，代表 Jira Issue Key，請優先使用 jira_open 工具開啟，或詢問使用者是否要查看該 Issue。';
     return content;
   }
 
