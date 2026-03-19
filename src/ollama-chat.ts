@@ -36,6 +36,7 @@ export class OllamaChatPanel {
     this._panel = panel;
     this._context = context;
     OllamaChatPanel.log('Constructor: start');
+    vscode.window.showInformationMessage('AmiClaw: Extension activated');
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -357,6 +358,7 @@ export class OllamaChatPanel {
         <button class="icon-btn" id="stopAgent" title="停止 Agent">⏹</button>
         <button class="icon-btn" id="memBtn" title="記憶管理">🧠</button>
         <button class="icon-btn" id="clear" title="清除對話">🗑</button>
+        <button class="icon-btn" id="debugBtn" title="Debug Console" style="font-size:12px;">🐛</button>
         <span style="flex:1"></span>
         <span id="connStatus" style="font-size:11px;opacity:0.8">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
       </div>
@@ -405,10 +407,21 @@ export class OllamaChatPanel {
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
 
+      // ── Debug Console ──────
+      var _debugLog = [];
+      function dbg(msg) { var t = new Date().toISOString().slice(11,23); _debugLog.push(t + ' ' + msg); }
+      dbg('webview init start');
+      var debugPanel = document.createElement('pre');
+      debugPanel.id = 'debugPanel';
+      debugPanel.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;bottom:60px;z-index:9999;background:rgba(0,0,0,0.92);color:#0f0;font-size:11px;padding:10px;overflow:auto;white-space:pre-wrap;font-family:Consolas,monospace;';
+      document.body.appendChild(debugPanel);
+
       // ── 訊息處理 (最先掛上，避免後續程式碼拋例外導致 listener 遺失) ──────
       window.addEventListener('message', function(event) {
         try {
           const msg = event.data;
+          dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
+          if (debugPanel.style.display === 'block') { debugPanel.textContent = _debugLog.join('\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
           if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking); }
           else if (msg.type === 'streamStart')   { clearPendingBubble(); _streamNode = null; }
           else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk); }
@@ -443,8 +456,8 @@ export class OllamaChatPanel {
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
-          else if (msg.type === 'modelList')     { updateModelSelect(msg.models, msg.current); }
-          else if (msg.type === 'connectionStatus') { updateConnStatus(msg.ok, msg.url, msg.message); }
+          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' models'); updateModelSelect(msg.models, msg.current); }
+          else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
           else if (msg.type === 'memorySaved')   { var slb = document.getElementById('saveLtmBtn'); if (slb) { slb.textContent = '\u2713 \u5df2\u5132\u5b58'; setTimeout(function() { slb.textContent = '\uD83D\uDCBE \u5132\u5b58\u9577\u671f\u8a18\u61b6'; }, 1500); } }
@@ -1017,7 +1030,7 @@ export class OllamaChatPanel {
       });
 
       // Tell backend the webview is ready; delay to ensure VS Code message bridge is initialized
-      setTimeout(function() { vscode.postMessage({ type: 'webviewReady' }); }, 0);
+      setTimeout(function() { dbg('posting webviewReady'); vscode.postMessage({ type: 'webviewReady' }); dbg('webviewReady posted'); }, 0);
 
       // ── \u8a18\u61b6\u7ba1\u7406 Modal ──────────────────────────────────────────────────────
       function onMemoryLoaded(msg) {
@@ -1063,7 +1076,17 @@ export class OllamaChatPanel {
       });
 
       // JS-side safety net: if connectionStatus never arrives in 5s, ask again
+      var debugBtnEl = document.getElementById('debugBtn');
+      if (debugBtnEl) debugBtnEl.addEventListener('click', function() {
+        if (debugPanel.style.display === 'none') {
+          debugPanel.style.display = 'block';
+          debugPanel.textContent = _debugLog.join('\n');
+        } else { debugPanel.style.display = 'none'; }
+      });
+      dbg('connStatus initial: ' + (document.getElementById('connStatus') || {}).textContent);
+
       setTimeout(function() {
+        dbg('safety-net timer fired, connStatus=' + ((document.getElementById('connStatus') || {}).textContent || '?'));
         var el = document.getElementById('connStatus');
         if (el && el.textContent.indexOf('\u6aa2\u67e5\u4e2d') !== -1) {
           vscode.postMessage({ type: 'fetchModels' });
