@@ -1282,7 +1282,7 @@ export class OllamaChatPanel {
           var s = document.createElement('summary');
           var color = speaker === 'A' ? _debateColorA : speaker === 'B' ? _debateColorB : _debateColorJ;
           var icon = document.createElement('span'); icon.className = 'think-icon pulse'; icon.style.background = color;
-          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '\\u{1F9E0} \\u601d\\u8003\\u4e2d\\u2026';
+          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '🧠 思考中…';
           s.appendChild(icon); s.appendChild(lbl);
           var p = document.createElement('pre'); p.className = 'think-stream';
           det.appendChild(s); det.appendChild(p);
@@ -1292,7 +1292,7 @@ export class OllamaChatPanel {
             if (!det.hasAttribute('open')) { clearInterval(d.thinkTimer); return; }
             var secs = Math.round((Date.now() - d.thinkStart) / 1000);
             var tok = Math.round((d.thinkChars || 0) / 4);
-            var ll = det.querySelector('.think-label'); if (ll) ll.textContent = '\\u{1F9E0} \\u601d\\u8003\\u4e2d\\u2026 (~' + tok + ' tokens, ' + secs + 's)';
+            var ll = det.querySelector('.think-label'); if (ll) ll.textContent = '🧠 思考中… (~' + tok + ' tokens, ' + secs + 's)';
           }, 1000);
         }
         d.thinkChars = (d.thinkChars || 0) + chunk.length;
@@ -1307,7 +1307,7 @@ export class OllamaChatPanel {
           var icon = d.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
           var lbl = d.thinkNode.querySelector('.think-label');
           var tok = Math.round((d.thinkChars || 0) / 4); var secs = Math.round((Date.now() - d.thinkStart) / 1000);
-          if (lbl) lbl.textContent = '\\u{1F9E0} \\u601d\\u8003\\u904e\\u7a0b (~' + tok + ' tokens, \\u8017\\u6642 ' + secs + 's)';
+          if (lbl) lbl.textContent = '🧠 思考過程 (~' + tok + ' tokens, 耗時 ' + secs + 's)';
         }
         d.body.textContent += chunk; chat.scrollTop = chat.scrollHeight;
       }
@@ -1821,6 +1821,7 @@ export class OllamaChatPanel {
         const family = model.startsWith('copilot/') ? model.slice('copilot/'.length) : model.slice('copilot::'.length);
         return await this.copilotStream(family, fullContext, onChunk);
       } else {
+        await this.ensureModelReady(baseUrl, model);
         return await ollamaGenerateStream(baseUrl, model, fullContext, onChunk, onThink);
       }
     };
@@ -1845,7 +1846,10 @@ export class OllamaChatPanel {
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: c }); },
           (t) => { thinkBuf += t; if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); }
         );
-      } catch (e) { responseA = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']'; }
+      } catch (e) {
+        responseA = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: responseA });
+      }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A' });
       if (this._teamCancel) break;
       historyA.push({ role: 'assistant', content: responseA });
@@ -1860,7 +1864,10 @@ export class OllamaChatPanel {
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: c }); },
           (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'B', chunk: t }); }
         );
-      } catch (e) { responseB = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']'; }
+      } catch (e) {
+        responseB = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: responseB });
+      }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B' });
       if (this._teamCancel) break;
       historyA.push({ role: 'user', content: responseB });
@@ -1887,7 +1894,10 @@ export class OllamaChatPanel {
           [{ role: 'user', content: '請做出最終裁決。' }],
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); }
         );
-      } catch { /* ignore */ }
+      } catch (e) {
+        const errJ = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: errJ });
+      }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J' });
     }
 
