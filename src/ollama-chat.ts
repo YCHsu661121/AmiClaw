@@ -1801,13 +1801,13 @@ export class OllamaChatPanel {
 
     // Determine context type from prompt keywords
     const isGame = /圍棋|象棋|西洋棋|chess|go\b|tic.tac|game|遊戲|下棋/i.test(prompt);
-    const roleADesc = isGame ? '你是玩家 A，正在進行: ' + prompt + '\n請直接回應你的走法或行動，並解釋思路。' : '你是「提案者」，針對以下問題提出解決方案或觀點:\n' + prompt + '\n請提出具體、有理據的立場。';
-    const roleBDesc = isGame ? '你是玩家 B，正在與玩家 A 對弈: ' + prompt + '\n根據玩家 A 的走法，回應你的走法，並解釋思路。' : '你是「質疑者」，針對提案者的觀點提出尖銳質疑或反駁:\n' + prompt + '\n找出邏輯漏洞、盲點或替代方案。若對方論述已嚴謹且你同意，請明確說「我同意」。';
-    const roleJDesc = labelJ ? '你是「裁判/仲裁者」。聽完雙方的辯論後，評估論點優劣，做出公正裁決並說明理由。' : '';
-
-    const wsFolders = vscode.workspace.workspaceFolders ?? [];
-    const wsRoot = wsFolders.map(f => f.uri.fsPath).join(', ') || '';
-    const wsCtx = wsRoot ? `\n【工作區】${wsRoot}` : '';
+    const roleADesc = isGame
+      ? '你是玩家 A，正在進行以下對弈：\n\n' + prompt + '\n\n請直接回應你的走法或行動，並解釋思路。'
+      : '這是一場建設性的學術討論。你扮演「提案者」，針對以下議題提出具體的解決方案或觀點：\n\n' + prompt + '\n\n請以條理分明的方式陳述你的立場與理由。';
+    const roleBDesc = isGame
+      ? '你是玩家 B，正在進行以下對弈：\n\n' + prompt + '\n\n請閱讀玩家 A 的走法，回應你的走法並解釋思路。'
+      : '這是一場建設性的學術討論。你扮演「回應者」，針對以下議題分享你的觀點或補充不同角度的分析：\n\n' + prompt + '\n\n請提出有建設性的見解。若你認同對方的論述，請說「我同意」。';
+    const roleJDesc = labelJ ? '這是一場學術討論，你擔任「總結者」。請聽完雙方的陳述後，客觀整合各方觀點，做出綜合性的總結並說明你的判斷依據。' : '';
 
     const callModel = async (
       model: string,
@@ -1816,7 +1816,7 @@ export class OllamaChatPanel {
       onChunk: (c: string) => void,
       onThink?: (c: string) => void
     ): Promise<string> => {
-      const fullContext = systemPrompt + wsCtx + '\n\n' + history.map(m => (m.role === 'user' ? '[對方]: ' : '[我]: ') + m.content).join('\n\n');
+      const fullContext = systemPrompt + '\n\n' + history.map(m => (m.role === 'user' ? '[對方]: ' : '[我]: ') + m.content).join('\n\n');
       if (model.startsWith('copilot/') || model.startsWith('copilot::')) {
         const family = model.startsWith('copilot/') ? model.slice('copilot/'.length) : model.slice('copilot::'.length);
         return await this.copilotStream(family, fullContext, onChunk);
