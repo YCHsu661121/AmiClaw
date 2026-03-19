@@ -150,12 +150,21 @@ export class OllamaChatPanel {
           case 'memoryGet': {
             const cfg2 = vscode.workspace.getConfiguration('amiClaw');
             const persona2 = cfg2.get<string>('systemPrompt') ?? '';
-            this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: this.getLongTermMemory(), persona: persona2, historyCount: this._chatHistory.length });
+            const previewMsgs = this._chatHistory.slice(-10);
+            const historyPreview = previewMsgs.map(m => {
+              const role = m.role === 'user' ? '👤 你' : '🤖 AI';
+              const text = (m.content ?? '').slice(0, 200);
+              return `${role}：${text}${(m.content ?? '').length > 200 ? '…' : ''}`;
+            }).join('\n\n');
+            this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: this.getLongTermMemory(), persona: persona2, historyCount: this._chatHistory.length, historyPreview });
             break;
           }
           case 'memorySave':
             await this.saveLongTermMemory(message.ltm as string);
             this._panel.webview.postMessage({ type: 'memorySaved' });
+            break;
+          case 'memoryConsolidate':
+            await this.handleMemoryConsolidate();
             break;
           case 'openSettings':
             vscode.commands.executeCommand('workbench.action.openSettings', 'amiClaw.systemPrompt');
@@ -494,7 +503,12 @@ export class OllamaChatPanel {
           <p class="mem-section-title">&#x1F4AC; 短期記憶（本次對話歷史）</p>
           <p class="mem-section-desc">關閉 Panel 後消失。AI 會記得本次對話中所有問答內容。</p>
           <p id="historyInfo" style="font-size:12px;margin:2px 0;">對話歷史：0 條訊息</p>
-          <div class="mem-row"><button class="mem-btn" id="clearHistoryBtn2">&#x1F5D1; 清除對話歷史</button></div>
+          <textarea id="historyPreview" readonly rows="5" placeholder="（開啟此面板時載入最近 10 條）" style="font-size:11px;opacity:0.85;background:var(--vscode-input-background,#1e1e1e);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,#555);border-radius:4px;width:100%;box-sizing:border-box;padding:4px 6px;resize:vertical;margin:4px 0"></textarea>
+          <div class="mem-row" style="gap:6px;flex-wrap:wrap">
+            <button class="mem-btn primary" id="consolidateLtmBtn">&#x1F9E0; AI 整理為長期記憶</button>
+            <button class="mem-btn" id="clearHistoryBtn2">&#x1F5D1; 清除對話歷史</button>
+          </div>
+          <p id="consolidateStatus" style="font-size:11px;opacity:0.7;margin:2px 0;display:none"></p>
         </div>
       </div>
     </div>
@@ -568,6 +582,15 @@ export class OllamaChatPanel {
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
           else if (msg.type === 'memorySaved')   { var slb = document.getElementById('saveLtmBtn'); if (slb) { slb.textContent = '\u2713 \u5df2\u5132\u5b58'; setTimeout(function() { slb.textContent = '\uD83D\uDCBE \u5132\u5b58\u9577\u671f\u8a18\u61b6'; }, 1500); } }
           else if (msg.type === 'historyCount')  { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; }
+          else if (msg.type === 'consolidateStart') { var cs = document.getElementById('consolidateStatus'); if (cs) { cs.style.display = ''; cs.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026'; } var clb = document.getElementById('consolidateLtmBtn'); if (clb) clb.disabled = true; }
+          else if (msg.type === 'consolidateChunk') { var cs2 = document.getElementById('consolidateStatus'); if (cs2) cs2.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026 ' + (msg.chunk || '').slice(0, 40); }
+          else if (msg.type === 'consolidateDone') {
+            var clb2 = document.getElementById('consolidateLtmBtn'); if (clb2) clb2.disabled = false;
+            var cs3 = document.getElementById('consolidateStatus');
+            if (msg.error) { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u274c \u6574\u7406\u5931\u6557\uff1a' + msg.error; } }
+            else if (msg.skipped) { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u26a0\ufe0f \u5c0d\u8a71\u6b77\u53f2\u70ba\u7a7a\uff0c\u7121\u9700\u6574\u7406'; } }
+            else { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u2713 \u5df2\u6574\u7406\u4e26\u5132\u5b58\u5230\u9577\u671f\u8a18\u61b6'; } var a2 = document.getElementById('ltmArea'); if (a2) a2.value = msg.ltm || ''; chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null; var hp2 = document.getElementById('historyPreview'); if (hp2) hp2.value = '（已整理並清除）'; var hii2 = document.getElementById('historyInfo'); if (hii2) hii2.textContent = '對話歷史：0 條訊息'; }
+          }
         } catch(e) { dbg('CATCH: ' + (e && e.message ? e.message : String(e))); }
       });
 
@@ -1377,6 +1400,8 @@ export class OllamaChatPanel {
         if (pp) pp.value = msg.persona || '(\u672a\u8a2d\u5b9a)';
         var hii = document.getElementById('historyInfo');
         if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.historyCount || 0) + ' \u689d\u8a0a\u606f';
+        var hp = document.getElementById('historyPreview');
+        if (hp) hp.value = msg.historyPreview || (msg.historyCount ? '（歷史存在但無預覽）' : '（目前沒有對話歷史）');
       }
 
       var memModal = document.getElementById('memModal');
@@ -1405,7 +1430,13 @@ export class OllamaChatPanel {
       var clearHistoryBtn2 = document.getElementById('clearHistoryBtn2');
       if (clearHistoryBtn2) clearHistoryBtn2.addEventListener('click', function() {
         chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
+        var hp = document.getElementById('historyPreview'); if (hp) hp.value = '（已清除）';
+        var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '對話歷史：0 條訊息';
         vscode.postMessage({ type: 'clearHistory' });
+      });
+      var consolidateLtmBtn = document.getElementById('consolidateLtmBtn');
+      if (consolidateLtmBtn) consolidateLtmBtn.addEventListener('click', function() {
+        vscode.postMessage({ type: 'memoryConsolidate' });
       });
       var editPersonaBtn = document.getElementById('editPersonaBtn');
       if (editPersonaBtn) editPersonaBtn.addEventListener('click', function() {
@@ -2190,6 +2221,52 @@ ${reviewText.replace('[APPROVED]', '').trim()}
       this._chatHistory.pop();
       const msg = e instanceof Error ? e.message : String(e);
       this._panel.webview.postMessage({ type: 'error', text: msg });
+    }
+  }
+
+  private async handleMemoryConsolidate(): Promise<void> {
+    if (this._chatHistory.length < 2) {
+      this._panel.webview.postMessage({ type: 'consolidateDone', ltm: this.getLongTermMemory(), skipped: true });
+      return;
+    }
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const model = cfg.get<string>('model') ?? '';
+    const currentLtm = this.getLongTermMemory();
+    const historyText = this._chatHistory.map(m => {
+      const role = m.role === 'user' ? '使用者' : 'AI';
+      return `[${role}]: ${(m.content ?? '').slice(0, 500)}`;
+    }).join('\n\n');
+    const consolidatePrompt = `你是記憶整理助手。請從以下【短期對話記錄】中，提取值得長期保存的重要資訊（使用者習慣、偏好、結論、技術事實、環境設定等），與【現有長期記憶】合併，去掉重複或過時的內容，以簡潔的條列格式（每行一個重點，用 - 開頭）輸出整合後的長期記憶。不要加任何前言或說明，直接輸出條列內容。
+
+【現有長期記憶】
+${currentLtm.trim() || '（空）'}
+
+【短期對話記錄】
+${historyText}
+
+整合後的長期記憶：`;
+    this._panel.webview.postMessage({ type: 'consolidateStart' });
+    try {
+      let newLtm = '';
+      if (model.startsWith('copilot::')) {
+        const cts = new vscode.CancellationTokenSource();
+        try {
+          newLtm = await copilotStreamText(model.slice('copilot::'.length), [vscode.LanguageModelChatMessage.User(consolidatePrompt)], (chunk) => { this._panel.webview.postMessage({ type: 'consolidateChunk', chunk }); }, cts.token);
+        } finally { cts.dispose(); }
+      } else {
+        newLtm = await ollamaGenerateStream(baseUrl, model, consolidatePrompt, (chunk) => { this._panel.webview.postMessage({ type: 'consolidateChunk', chunk }); });
+      }
+      newLtm = newLtm.trim();
+      if (newLtm) {
+        await this.saveLongTermMemory(newLtm);
+      }
+      this._chatHistory = [];
+      this._agentMessages = [];
+      this._panel.webview.postMessage({ type: 'consolidateDone', ltm: newLtm || currentLtm });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this._panel.webview.postMessage({ type: 'consolidateDone', ltm: currentLtm, error: msg });
     }
   }
 
