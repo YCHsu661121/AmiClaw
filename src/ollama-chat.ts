@@ -42,7 +42,7 @@ export class OllamaChatPanel {
 
     // Seed long-term memory with Jira key recognition rule if not already present
     const existingLtm = context.globalState.get<string>('amiClaw.longTermMemory') ?? '';
-    const jiraRule = '【規則】訊息中出現形如 PROJ-123、UOEM2-3476（大寫字母加數字、連字號、數字）的組合，應優先視為 Jira Issue Key，主動使用 jira_open 工具開啟，或向使用者確認是否要搜尋該 Jira Issue。';
+    const jiraRule = '【Atlassian 規則】訊息中出現 PROJ-123、UOEM2-3476 等形如 [A-Z][A-Z0-9]*-\\d+ 的組合（Jira Issue Key），一律直接呼叫 jira_open 工具開啟，不需詢問使用者確認。多個 key 逐一呼叫。需要 Rovo Dev AI 回答時用 rovo_ask；建立 PR 用 bb_create_pr；新增/更新 Jira Issue 用 jira_create/jira_transition。';
     if (!existingLtm.includes('Jira Issue Key')) {
       const seeded = existingLtm.trim() ? existingLtm.trim() + '\n\n' + jiraRule : jiraRule;
       context.globalState.update('amiClaw.longTermMemory', seeded);
@@ -1662,7 +1662,25 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     if (ltm.trim()) {
       content += '\n\n## 長期記憶（關於使用者的重要資訊）\n' + ltm.trim();
     }
-    content += '\n\n## 工具提示\n- 當使用者訊息包含形如 [A-Z][A-Z0-9]*-\\d+（例如 UOEM2-3476、PROJ-123）的字串時，代表 Jira Issue Key，請優先使用 jira_open 工具開啟，或詢問使用者是否要查看該 Issue。';
+    content += `\n\n## Atlassian 整合（識別碼: atlassian.atlascode 4.1.149）\n\
+VS Code 已安裝 Atlassian for VS Code，可直接操作 Jira、Rovo Dev、Bitbucket。\n\
+\n\
+### 偵測規則\n\
+訊息中出現符合 \`[A-Z][A-Z0-9]*-\\d+\` 的組合（例如 UOEM2-3476、BIOS-123、PROJ-456），**一律視為 Jira Issue Key**，不需詢問直接呼叫 \`jira_open\`。\n\
+\n\
+### 可用工具與使用時機\n\
+| 工具 | 使用時機 |\n\
+|------|----------|\n\
+| \`jira_open(issue_key)\` | 訊息含 Jira Key → **立即開啟**；或使用者說「看一下 XXX-123」「查 XXX-123」 |\n\
+| \`jira_create(summary, description)\` | 使用者說「開一個 Jira」「建立 Issue」「新增 ticket」 |\n\
+| \`jira_transition(issue_key)\` | 使用者說「把 XXX-123 標為完成 / In Progress / 關閉」 |\n\
+| \`bb_create_pr()\` | 使用者說「開 PR」「建立 Pull Request」「發 code review」 |\n\
+| \`rovo_ask(question)\` | 需要查詢 Atlassian 知識庫、詢問專案資訊、或使用者說「問一下 Rovo」 |\n\
+\n\
+### 回應格式\n\
+- 開啟 Jira Issue 後，簡短告知使用者「已在 VS Code 開啟 XXX-123」。\n\
+- 若 Issue key 無效（工具回傳錯誤），告知使用者並建議確認格式。\n\
+- 多個 Issue key 時逐一呼叫 \`jira_open\`。`;
     return content;
   }
 
