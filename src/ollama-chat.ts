@@ -1186,8 +1186,12 @@ export class OllamaChatPanel {
   private async handleTeamSend(prompt: string, selectedModels?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const primaryOllamaModel = cfg.get<string>('model') ?? 'llama3';
-    const allModels = (selectedModels && selectedModels.length > 0) ? selectedModels.slice(0, 5) : [primaryOllamaModel];
+    // Use first selected model as primary; fallback to config or first live model (never hardcode llama3)
+    const configuredModel = cfg.get<string>('model') ?? '';
+    const primaryOllamaModel = (selectedModels && selectedModels.length > 0)
+      ? selectedModels.find(m => !m.startsWith('copilot/') && !m.startsWith('copilot::')) ?? selectedModels[0]
+      : configuredModel;
+    const allModels = (selectedModels && selectedModels.length > 0) ? selectedModels.slice(0, 5) : (primaryOllamaModel ? [primaryOllamaModel] : []);
 
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
     this._teamCancel = false;
@@ -1275,12 +1279,13 @@ export class OllamaChatPanel {
       }
 
       // Phase 3: Agent executor
-      const willRunAgent = !this._teamCancel && synthResult.trim().length > 0;
+      const agentModel = effectiveWorkers.find(m => !m.startsWith('copilot/') && !m.startsWith('copilot::')) ?? primaryOllamaModel ?? effectiveWorkers[0] ?? '';
+      const willRunAgent = !this._teamCancel && synthResult.trim().length > 0 && !!agentModel;
       this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: willRunAgent });
       if (willRunAgent) {
-        this._panel.webview.postMessage({ type: 'teamAgentStart', model: primaryOllamaModel });
+        this._panel.webview.postMessage({ type: 'teamAgentStart', model: agentModel });
         this._agentMessages = [];
-        await this.handleAgent(`\u6839\u64da\u4ee5\u4e0b\u5718\u968a\u8a0e\u8ad6\u7d50\u8ad6\uff0c\u8acb\u57f7\u884c\u5fc5\u8981\u7684\u7a0b\u5f0f\u78bc\u6216\u6a94\u6848\u64cd\u4f5c\u4f86\u5b8c\u6210\u4f7f\u7528\u8005\u7684\u4efb\u52d9\u3002\n\n\u3010\u539f\u59cb\u4efb\u52d9\u3011\n${prompt}\n\n\u3010\u5718\u968a\u7d9c\u5408\u7d50\u8ad6\u3011\n${synthResult}\n\n\u8acb\u9010\u6b65\u57f7\u884c\u3002`, primaryOllamaModel);
+        await this.handleAgent(`\u6839\u64da\u4ee5\u4e0b\u5718\u968a\u8a0e\u8ad6\u7d50\u8ad6\uff0c\u8acb\u57f7\u884c\u5fc5\u8981\u7684\u7a0b\u5f0f\u78bc\u6216\u6a94\u6848\u64cd\u4f5c\u4f86\u5b8c\u6210\u4f7f\u7528\u8005\u7684\u4efb\u52d9\u3002\n\n\u3010\u539f\u59cb\u4efb\u52d9\u3011\n${prompt}\n\n\u3010\u5718\u968a\u7d9c\u5408\u7d50\u8ad6\u3011\n${synthResult}\n\n\u8acb\u9010\u6b65\u57f7\u884c\u3002`, agentModel);
       }
 
     } else {
