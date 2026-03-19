@@ -19,6 +19,7 @@ export class OllamaChatPanel {
   private _agentRunning = false;
   private _agentCancel = false;
   private _agentMessages: ChatMessage[] = [];
+  private _agentTodos: { id: number; text: string; done: boolean }[] = [];
   private _teamCancel = false;
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
@@ -1630,6 +1631,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
         .map(d => d.uri.fsPath);
       const openFilesStr = openFiles.length > 0 ? `\n目前編輯器中開啟的檔案:\n${openFiles.join('\n')}` : '';
       const activeFileStr = activeFile ? `\n目前作用中的檔案: ${activeFile}` : '';
+      this._agentTodos = [];
       this._agentMessages.push({
         role: 'system',
         content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。${activeFileStr}${openFilesStr}\n\n執行策略（依優先順序）：\n1. 先用 search_workspace 搜尋工作區中的檔案名稱、函式名稱、類別名稱等\n2. 讀取相關檔案確認實際內容\n3. 根據工作區實際程式碼進行修改或回答\n不確定時優先查閱本地程式碼，而非假設或憑空生成。\n\n請使用繁體中文回答，完成後告知使用者結果。`
@@ -1772,6 +1774,112 @@ ${reviewText.replace('[APPROVED]', '').trim()}
         if (contentMatches.length > 0) { parts.push(`=== 程式碼內容匹配 (${contentMatches.length}) ===\n${contentMatches.join('\n')}`); }
         return parts.length > 0 ? parts.join('\n\n') : `找不到符合 "${args.query}" 的結果`;
       }
+      case 'delete_file': {
+        const fpath = resolvePath(args.path as string);
+        await vscode.workspace.fs.delete(vscode.Uri.file(fpath), { recursive: (args.recursive as boolean) ?? false });
+        return `已刪除 ${fpath}`;
+      }
+      case 'create_dir': {
+        const dpath = resolvePath(args.path as string);
+        await vscode.workspace.fs.createDirectory(vscode.Uri.file(dpath));
+        return `已建立目錄 ${dpath}`;
+      }
+      case 'run_command': {
+        const cmd = args.command as string;
+        const cwd = (args.cwd as string) ? resolvePath(args.cwd as string) : (folders[0]?.uri.fsPath ?? process.cwd());
+        return new Promise<string>((resolve) => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { exec } = require('child_process') as typeof import('child_process');
+          exec(cmd, { cwd, timeout: 30000, shell: true as unknown as string }, (_err, stdout, stderr) => {
+            const out = (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
+            resolve(out.trim().slice(0, 8000) || '(無輸出)');
+          });
+        });
+      }
+      case 'fetch_url': {
+        const rawUrl = args.url as string;
+        return new Promise<string>((resolve) => {
+          const protocol = rawUrl.startsWith('https') ? https : http;
+          let buf = '';
+          const req = protocol.get(rawUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (AmiClaw-Agent)' } }, (res) => {
+            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              resolve(`重導到: ${res.headers.location} (請再呼叫 fetch_url)`);
+              return;
+            }
+            res.setEncoding('utf8');
+            res.on('data', (d: string) => { buf += d; if (buf.length > 300000) { res.destroy(); } });
+            res.on('end', () => {
+              const stripped = buf
+                .replace(/<script[\s\S]*?<\/script>/gi, '')
+                .replace(/<style[\s\S]*?<\/style>/gi, '')
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/[ \t]{2,}/g, ' ')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+              resolve(stripped.slice(0, 12000));
+            });
+            res.on('error', (e: Error) => resolve(`網路錯誤: ${e.message}`));
+          });
+          req.on('error', (e: Error) => resolve(`網路錯誤: ${e.message}`));
+          req.setTimeout(15000, () => { req.destroy(); resolve('超時 (15s)'); });
+        });
+      }
+      case 'open_browser': {
+        const url = args.url as string;
+        try {
+          await vscode.commands.executeCommand('simpleBrowser.api.open', url);
+          return `已在 VS Code 簡易瀏覽器開啟: ${url}`;
+        } catch {
+          await vscode.env.openExternal(vscode.Uri.parse(url));
+          return `已在系統瀏覽器開啟: ${url}`;
+        }
+      }
+      case 'manage_todo': {
+        const action = (args.action as string) || 'list';
+        if (action === 'add') {
+          const text = args.text as string;
+          if (!text) { return '請提供 todo 內容 (text 參數)'; }
+          this._agentTodos.push({ id: this._agentTodos.length + 1, text, done: false });
+          return `已新增 Todo #${this._agentTodos.length}: ${text}`;
+        } else if (action === 'done') {
+          const id = Number(args.id);
+          const item = this._agentTodos.find(t => t.id === id);
+          if (!item) { return `找不到 Todo #${id}`; }
+          item.done = true;
+          return `✅ Todo #${id} 已完成: ${item.text}`;
+        } else if (action === 'clear') {
+          this._agentTodos = [];
+          return 'Todo 清單已清空';
+        } else {
+          if (this._agentTodos.length === 0) { return 'Todo 清單是空的，請先用 add 新增任務'; }
+          return this._agentTodos.map(t => `${t.done ? '✅' : '⏳'} #${t.id}: ${t.text}`).join('\n');
+        }
+      }
+      case 'vscode_action': {
+        const action = (args.action as string) || '';
+        if (action === 'open_file') {
+          const fpath = resolvePath(args.path as string);
+          const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(fpath));
+          const editor = await vscode.window.showTextDocument(doc, { preview: true });
+          if (args.line) {
+            const pos = new vscode.Position(Math.max(0, Number(args.line) - 1), 0);
+            editor.selection = new vscode.Selection(pos, pos);
+            editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+          }
+          return `已開啟 ${fpath}${args.line ? ` 第 ${args.line} 行` : ''}`;
+        } else if (action === 'get_workspace_info') {
+          const wsFolders = vscode.workspace.workspaceFolders ?? [];
+          const openDocs = vscode.workspace.textDocuments.filter(d => !d.isUntitled && d.uri.scheme === 'file');
+          return `工作區: ${wsFolders.map(f => f.uri.fsPath).join(', ') || '(none)'}\n開啟中檔案:\n${openDocs.map(d => d.uri.fsPath).join('\n') || '(none)'}`;
+        } else if (action === 'show_notification') {
+          vscode.window.showInformationMessage(String(args.message ?? ''));
+          return '已顯示通知';
+        } else if (action === 'run_command') {
+          await vscode.commands.executeCommand(args.command as string, ...(Array.isArray(args.args) ? args.args : []));
+          return `已執行 VS Code 指令: ${args.command}`;
+        }
+        return `未知 vscode_action: ${action}`;
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -1833,12 +1941,19 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'write_file', description: '寫入(建立/覆寫)檔案', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
   { type: 'function', function: { name: 'replace_in_file', description: '在檔案中替換特定字串', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '要替換的原始字串' }, new_str: { type: 'string', description: '替換後的字串' } }, required: ['path', 'old_str', 'new_str'] } } },
   { type: 'function', function: { name: 'list_dir', description: '列出目錄內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '目錄路徑，空白表示工作區根目錄' } }, required: [] } } },
-  { type: 'function', function: { name: 'run_terminal', description: '在 VS Code 終端機執行命令', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'run_terminal', description: '在 VS Code 終端機執行命令（無輸出捕獲）', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
   { type: 'function', function: { name: 'search_workspace', description: '在工作區中搜尋檔案名稱、函式名稱、類別名稱或程式碼關鍵字。處理任何問題前請優先呼叫此工具確認工作區現有程式碼', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜尋關鍵字（如檔案名稱、函式名稱、類別名稱、變數名稱）' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'delete_file', description: '刪除檔案或目錄', parameters: { type: 'object', properties: { path: { type: 'string' }, recursive: { type: 'boolean', description: '是否遞迴刪除目錄' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'create_dir', description: '建立目錄（包含中間目錄）', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'run_command', description: '執行指令並回傳輸出結果（stdout+stderr）。適合需要知道執行結果的場合', parameters: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string', description: '執行目錄，空白表示工作區根目錄' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'fetch_url', description: '下載網頁內容（自動去除 HTML 標籤）。適合查閱文件、API 文件、搜尋網路資料', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'open_browser', description: '在 VS Code 簡易瀏覽器中開啟網址', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'manage_todo', description: 'Agent 內部任務清單。複雜任務請先建立任務清單，逐一完成後標記为done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=新增, done=完成, list=查看, clear=清空' }, text: { type: 'string', description: '任務內容（action=add 時必須）' }, id: { type: 'number', description: '任務 ID（action=done 時必須）' } }, required: ['action'] } } },
+  { type: 'function', function: { name: 'vscode_action', description: 'VS Code 操作：開啟檔案到指定行、取得工作區信息、顯示通知、執行 VS Code 內建指令', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=開檔, get_workspace_info=工作區信息, show_notification=通知, run_command=執行内建指令' }, path: { type: 'string', description: 'open_file 用' }, line: { type: 'number', description: '開啟到哪一行' }, message: { type: 'string', description: 'show_notification 用' }, command: { type: 'string', description: 'run_command 用，VS Code 指令 ID' }, args: { type: 'array', description: '指令參數' } }, required: ['action'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨' };
   return m[name] ?? '🔧';
 }
 
@@ -1851,6 +1966,13 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'list_dir': return `列出目錄: ${args.path || '(根目錄)'}`;
     case 'run_terminal': return `執行命令: ${args.command}`;
     case 'search_workspace': return `搜尋工作區: ${args.query}`;
+    case 'delete_file': return `刪除: ${args.path}`;
+    case 'create_dir': return `建立目錄: ${args.path}`;
+    case 'run_command': return `執行並捕獲輸出: ${args.command}`;
+    case 'fetch_url': return `擷取網頁: ${args.url}`;
+    case 'open_browser': return `開啟瀏覽器: ${args.url}`;
+    case 'manage_todo': return `Todo (${args.action}${args.text ? ': ' + args.text : args.id ? ' #' + args.id : ''})`;
+    case 'vscode_action': return `VS Code (${args.action}${args.path ? ': ' + args.path : args.command ? ': ' + args.command : ''})`;
     default: return name;
   }
 }
