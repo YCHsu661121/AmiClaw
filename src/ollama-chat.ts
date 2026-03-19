@@ -154,7 +154,7 @@ export class OllamaChatPanel {
         connMsg = e instanceof Error ? e.message : String(e);
         OllamaChatPanel.log('Model fetch error: ' + connMsg);
       }
-      const current = cfg.get<string>('model') ?? liveModels[0] ?? 'llama3';
+      const current = cfg.get<string>('model') ?? liveModels[0] ?? '';
       // Push result to webview via postMessage (safe: listener is already registered)
       const r1 = await _webview.postMessage({ type: 'modelList', models: liveModels, current });
       OllamaChatPanel.log('postMessage modelList delivered=' + r1);
@@ -232,8 +232,8 @@ export class OllamaChatPanel {
   private getHtmlForWebview(_webview: vscode.Webview): string {
     const nonce = getNonce();
     const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const defaultModel = cfg.get<string>('model') ?? 'llama3';
-    const models = cfg.get<string[]>('models') ?? [defaultModel, 'llama3', 'llama2', 'vicuna', 'mistral'];
+    const defaultModel = cfg.get<string>('model') ?? '';
+    const models = cfg.get<string[]>('models') ?? (defaultModel ? [defaultModel] : []);
     const optionsHtml = models.map(m => `<option value="${m}" ${m === defaultModel ? 'selected' : ''}>${m}</option>`).join('');
 
     return `<!doctype html>
