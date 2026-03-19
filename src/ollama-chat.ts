@@ -154,9 +154,17 @@ export class OllamaChatPanel {
         connMsg = e instanceof Error ? e.message : String(e);
         OllamaChatPanel.log('Model fetch error: ' + connMsg);
       }
+      let copilotModels0: { id: string; name: string; multiplier: string }[] = [];
+      try {
+        const lms0 = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+        const seen0 = new Set<string>();
+        for (const m of lms0) {
+          if (!seen0.has(m.id)) { seen0.add(m.id); copilotModels0.push({ id: m.id, name: m.name || m.family, multiplier: getCopilotMultiplier(m) }); }
+        }
+      } catch { /* Copilot not available */ }
       const current = cfg.get<string>('model') ?? liveModels[0] ?? '';
       // Push result to webview via postMessage (safe: listener is already registered)
-      const r1 = await _webview.postMessage({ type: 'modelList', models: liveModels, current });
+      const r1 = await _webview.postMessage({ type: 'modelList', models: liveModels, copilotModels: copilotModels0, current });
       OllamaChatPanel.log('postMessage modelList delivered=' + r1);
       const r2 = await _webview.postMessage({ type: 'connectionStatus', ok: connOk, url: baseUrl, message: connMsg });
       OllamaChatPanel.log('postMessage connectionStatus delivered=' + r2);
@@ -256,7 +264,7 @@ export class OllamaChatPanel {
       .bubble button{font-size:11px;padding:2px 7px;margin:3px 3px 0 0;cursor:pointer;border-radius:4px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.25);color:inherit}
       #bottomBar{border-top:1px solid rgba(128,128,128,0.15);background:var(--vscode-editor-background);padding:6px 8px;display:flex;flex-direction:column;gap:4px}
       #topBar{display:flex;align-items:center;gap:6px;padding:0 2px 2px}
-      #modelSelect{flex:1;max-width:180px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
+      #modelSelect{flex:1;max-width:240px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
       .icon-btn{background:none;border:none;cursor:pointer;padding:3px 6px;border-radius:4px;font-size:15px;color:var(--vscode-editor-foreground);opacity:0.7;line-height:1}
       .icon-btn:hover{opacity:1;background:rgba(128,128,128,0.15)}
       .icon-btn.active{color:var(--vscode-button-background,#0e639c);opacity:1}
@@ -470,7 +478,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
-          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' models'); updateModelSelect(msg.models, msg.current); }
+          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); }
           else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
@@ -1048,15 +1056,31 @@ export class OllamaChatPanel {
         return r;
       }
 
-      function updateModelSelect(models, current) {
-        if (!modelSelect || !models || !models.length) return;
+      function updateModelSelect(models, current, copilotModels) {
+        if (!modelSelect) return;
         modelSelect.innerHTML = '';
-        models.forEach(function(m) {
-          const opt = document.createElement('option'); opt.value = m; opt.textContent = m;
-          if (m === current) opt.selected = true;
-          modelSelect.appendChild(opt);
-        });
-        if (!modelSelect.value && models.length) modelSelect.value = models[0];
+        var hasAny = false;
+        if (models && models.length) {
+          var grpO = document.createElement('optgroup'); grpO.label = '\u2B2C Ollama';
+          models.forEach(function(m) {
+            var opt = document.createElement('option'); opt.value = m; opt.textContent = m;
+            if (m === current) opt.selected = true;
+            grpO.appendChild(opt); hasAny = true;
+          });
+          modelSelect.appendChild(grpO);
+        }
+        if (copilotModels && copilotModels.length) {
+          var grpC = document.createElement('optgroup'); grpC.label = '\u2728 Copilot';
+          copilotModels.forEach(function(cm) {
+            var opt = document.createElement('option');
+            var val = 'copilot::' + cm.id;
+            opt.value = val; opt.textContent = cm.name + (cm.multiplier ? '\u2002' + cm.multiplier : '');
+            if (val === current) opt.selected = true;
+            grpC.appendChild(opt); hasAny = true;
+          });
+          modelSelect.appendChild(grpC);
+        }
+        if (!modelSelect.value && hasAny) { var firstOpt = modelSelect.querySelector('option'); if (firstOpt) modelSelect.value = firstOpt.value; }
       }
 
       function updateConnStatus(ok, url, message) {
@@ -1556,7 +1580,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
   private async handleSend(prompt: string, modelOverride?: string): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
+    const model = modelOverride ?? cfg.get<string>('model') ?? '';
 
     // Build a single prompt string from system + history + current message
     // (uses /api/generate which has confirmed thinking field support)
@@ -1585,15 +1609,29 @@ ${reviewText.replace('[APPROVED]', '').trim()}
         if (thinkBuf) { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkBuf }); thinkBuf = ''; }
         thinkTimer = null;
       };
-      fullResponse = await ollamaGenerateStream(
-        baseUrl, model, fullPrompt,
-        (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); },
-        (thinkChunk) => {
-          OllamaChatPanel.log('thinkChunk: ' + thinkChunk.substring(0, 50));
-          thinkBuf += thinkChunk;
-          if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80);
-        }
-      );
+      if (model.startsWith('copilot::')) {
+        const copilotId = model.slice('copilot::'.length);
+        const cts0 = new vscode.CancellationTokenSource();
+        try {
+          const vmMsgs0: vscode.LanguageModelChatMessage[] = [];
+          if (systemContent.trim()) { vmMsgs0.push(vscode.LanguageModelChatMessage.User(`[系統]\n${systemContent}`)); }
+          for (const h of recent) {
+            vmMsgs0.push(h.role === 'user' ? vscode.LanguageModelChatMessage.User(h.content ?? '') : vscode.LanguageModelChatMessage.Assistant(h.content ?? ''));
+          }
+          vmMsgs0.push(vscode.LanguageModelChatMessage.User(prompt));
+          fullResponse = await copilotStreamText(copilotId, vmMsgs0, (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); }, cts0.token);
+        } finally { cts0.dispose(); }
+      } else {
+        fullResponse = await ollamaGenerateStream(
+          baseUrl, model, fullPrompt,
+          (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); },
+          (thinkChunk) => {
+            OllamaChatPanel.log('thinkChunk: ' + thinkChunk.substring(0, 50));
+            thinkBuf += thinkChunk;
+            if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80);
+          }
+        );
+      }
       if (thinkTimer) { clearTimeout(thinkTimer); }
       flushThink();
       // Save assistant response to short-term memory
@@ -1631,7 +1669,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
   private async summarizeText(text: string, modelOverride?: string): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
+    const model = modelOverride ?? cfg.get<string>('model') ?? '';
 
     const prompt = `請以繁體中文，將下面內容濃縮成三條要點（每條 1 行），簡潔扼要：\n\n${text}`;
     try {
@@ -1679,7 +1717,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
+    const model = modelOverride ?? cfg.get<string>('model') ?? '';
 
     let currentPrompt = initialPrompt + "\n\n請開始並持續改進直到完成；若需要存取工作目錄外的檔案，請回傳 'NEEDS_ACCESS: <path>'；完成時回傳 'DONE'.";
     let lastResult = '';
@@ -1751,7 +1789,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const model = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
+    const model = modelOverride ?? cfg.get<string>('model') ?? '';
 
     if (this._agentMessages.length === 0) {
       const folders = vscode.workspace.workspaceFolders ?? [];
@@ -1772,7 +1810,9 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 
     try {
       for (let step = 0; step < 20 && !this._agentCancel; step++) {
-        const resp = await ollamaChatCall(baseUrl, model, this._agentMessages, AGENT_TOOLS);
+        const resp = model.startsWith('copilot::')
+          ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
+          : await ollamaChatCall(baseUrl, model, this._agentMessages, AGENT_TOOLS);
         if (!resp) { break; }
 
         if (resp.tool_calls && resp.tool_calls.length > 0) {
@@ -2073,18 +2113,30 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     OllamaChatPanel.log('fetchModelsFromServer: ' + baseUrl);
+    let ollamaModels: string[] = [];
+    let copilotModels: { id: string; name: string; multiplier: string }[] = [];
+    let connOk2 = false;
+    let connMsg2 = '連線失敗';
     try {
-      const models = await ollamaListModels(baseUrl);
-      const current = cfg.get<string>('model') ?? 'llama3';
-      OllamaChatPanel.log('fetchModelsFromServer OK: models=' + models.join(', '));
-      const r1 = await this._panel.webview.postMessage({ type: 'modelList', models, current });
-      const r2 = await this._panel.webview.postMessage({ type: 'connectionStatus', ok: true, url: baseUrl, message: 'OK' });
-      OllamaChatPanel.log('fetchModelsFromServer postMessage results: modelList=' + r1 + ' connectionStatus=' + r2);
+      ollamaModels = await ollamaListModels(baseUrl);
+      connOk2 = true; connMsg2 = 'OK';
+      OllamaChatPanel.log('fetchModelsFromServer OK: models=' + ollamaModels.join(', '));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      connMsg2 = msg;
       OllamaChatPanel.log('fetchModelsFromServer error: ' + msg);
-      this._panel.webview.postMessage({ type: 'connectionStatus', ok: false, url: baseUrl, message: msg });
     }
+    try {
+      const lms2 = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+      const seen2 = new Set<string>();
+      for (const m of lms2) {
+        if (!seen2.has(m.id)) { seen2.add(m.id); copilotModels.push({ id: m.id, name: m.name || m.family, multiplier: getCopilotMultiplier(m) }); }
+      }
+    } catch { /* Copilot not available */ }
+    const current2 = cfg.get<string>('model') ?? ollamaModels[0] ?? '';
+    const r1 = await this._panel.webview.postMessage({ type: 'modelList', models: ollamaModels, copilotModels, current: current2 });
+    const r2 = await this._panel.webview.postMessage({ type: 'connectionStatus', ok: connOk2, url: baseUrl, message: connMsg2 });
+    OllamaChatPanel.log('fetchModelsFromServer postMessage results: modelList=' + r1 + ' connectionStatus=' + r2);
   }
 
   private async testConnectionStatus(): Promise<void> {
@@ -2187,6 +2239,74 @@ function ollamaChatCall(baseUrl: string, model: string, messages: ChatMessage[],
       req.end();
     } catch (e) { reject(e); }
   });
+}
+
+function getCopilotMultiplier(m: vscode.LanguageModelChat): string {
+  const id = m.id.toLowerCase();
+  const fam = (m.family || '').toLowerCase();
+  if (id === 'auto' || fam === 'auto') return '10% off';
+  if (id.includes('opus') || fam.includes('opus')) return '3x';
+  if (id.includes('mini') || fam.includes('mini')) return '0x';
+  if ((id.startsWith('gpt-4o') && !id.includes('mini')) || fam === 'gpt-4o' || id === 'gpt-4o') return '0x';
+  return '1x';
+}
+
+async function copilotStreamText(
+  modelId: string,
+  messages: vscode.LanguageModelChatMessage[],
+  onChunk: (c: string) => void,
+  token: vscode.CancellationToken
+): Promise<string> {
+  const lms = await vscode.lm.selectChatModels({ id: modelId });
+  const lm = lms[0];
+  if (!lm) { throw new Error(`Copilot 找不到模型: ${modelId}`); }
+  const response = await lm.sendRequest(messages, {}, token);
+  let full = '';
+  for await (const chunk of response.text) { full += chunk; onChunk(chunk); }
+  return full;
+}
+
+async function copilotChatCallWithCts(
+  modelId: string,
+  messages: ChatMessage[],
+  tools: unknown[]
+): Promise<ChatMessage> {
+  const lms = await vscode.lm.selectChatModels({ id: modelId });
+  const lm = lms[0];
+  if (!lm) { throw new Error(`Copilot 找不到模型: ${modelId}`); }
+  const vmMsgs = messages.map(m => {
+    const content = m.content ?? '';
+    if (m.role === 'assistant') { return vscode.LanguageModelChatMessage.Assistant(content); }
+    return vscode.LanguageModelChatMessage.User(content);
+  });
+  type OllamaTool = { function: { name: string; description: string; parameters: object } };
+  const vmTools = (tools as OllamaTool[]).map(t => ({
+    name: t.function.name,
+    description: t.function.description,
+    inputSchema: t.function.parameters,
+  }));
+  const cts = new vscode.CancellationTokenSource();
+  try {
+    const response = await lm.sendRequest(vmMsgs, { tools: vmTools }, cts.token);
+    let text = '';
+    const toolCalls: NonNullable<ChatMessage['tool_calls']> = [];
+    for await (const part of response.stream) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        text += part.value;
+      } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        toolCalls.push({
+          id: part.callId,
+          function: {
+            name: part.name,
+            arguments: (typeof part.input === 'object' ? part.input : JSON.parse(String(part.input))) as Record<string, unknown>,
+          },
+        });
+      }
+    }
+    return { role: 'assistant', content: text || null, ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}) };
+  } finally {
+    cts.dispose();
+  }
 }
 
 function supportsThinking(model: string): boolean {
