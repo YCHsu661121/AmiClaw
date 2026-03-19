@@ -37,7 +37,8 @@ export class OllamaChatPanel {
   private _alwaysAllow = new Set<string>();
   /** 等待使用者確認的 pending promise resolve */
   private _pendingPermission: ((allow: boolean) => void) | null = null;
-  /** 最後一次送出請求的 Ollama model 名稱（切換時需清 VRAM）*/
+  /** 最後一次送出請求的 Ollama server URL + model（切換時需清 VRAM，但只在同一台 server）*/
+  private _lastOllamaUrl = '';
   private _lastOllamaModel = '';
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
@@ -2998,12 +2999,21 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
   }
 
   /** 切換 Ollama 模型時先卸載舊模型（keep_alive=0），然後輪詢 /api/ps 確認卸載完成。
-   *  最長等待 90s；確認消失後立即繼續。Copilot 模型不需此流程。*/
+   *  最長等待 90s；確認消失後立即繼續。Copilot 模型不需此流程。
+   *  注意：只有切換到「相同 Ollama server」時才需要等待 VRAM 釋放；
+   *  若新模型在不同 server，直接繼續即可。*/
   private async ensureModelReady(baseUrl: string, model: string): Promise<void> {
     if (model.startsWith('copilot::')) { return; }
+    const prevUrl = this._lastOllamaUrl;
     const prev = this._lastOllamaModel;
+    this._lastOllamaUrl = baseUrl;
     this._lastOllamaModel = model;
+    // No previous model, same model, or different server → no VRAM wait needed
     if (!prev || prev === model) { return; }
+    if (prevUrl && prevUrl !== baseUrl) {
+      OllamaChatPanel.log(`Model switch: ${prev}@${prevUrl} -> ${model}@${baseUrl}，不同 server，跳過 VRAM 釋放`);
+      return;
+    }
 
     OllamaChatPanel.log(`Model switch: ${prev} -> ${model}，正在卸載舊模型並等待 VRAM 釋放`);
     // Await unload request so Ollama receives the keep_alive=0 signal
