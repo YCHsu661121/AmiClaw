@@ -2097,8 +2097,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     } catch { return null; }
   }
 
-  /** 切換 Ollama 模型時先卸載舊模型（keep_alive=0），然後等待 60s VRAM 釋放。
-   *  切換期間向 webview 顯示倒數提示。Copilot 模型不需此流程。*/
+  /** 切換 Ollama 模型時先卸載舊模型（keep_alive=0），然後輪詢 /api/ps 確認卸載完成。
+   *  最長等待 90s；確認消失後立即繼續。Copilot 模型不需此流程。*/
   private async ensureModelReady(baseUrl: string, model: string): Promise<void> {
     if (model.startsWith('copilot::')) { return; }
     const prev = this._lastOllamaModel;
@@ -2106,15 +2106,23 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     if (!prev || prev === model) { return; }
 
     OllamaChatPanel.log(`Model switch: ${prev} -> ${model}，正在卸載舊模型並等待 VRAM 釋放`);
-    // Fire-and-forget unload
-    ollamaUnloadModel(baseUrl, prev).catch(() => {});
+    // Await unload request so Ollama receives the keep_alive=0 signal
+    await ollamaUnloadModel(baseUrl, prev);
 
-    const waitSec = 60;
-    for (let s = waitSec; s > 0; s--) {
+    // Poll /api/ps until the previous model disappears (max 90s)
+    const maxWait = 90;
+    for (let s = maxWait; s > 0; s--) {
       this._panel.webview.postMessage({
         type: 'assistant',
-        text: `⏳ 模型已切換（${prev} → ${model}），等待 VRAM 釋放中… ${s}s`
+        text: `⏳ 模型切換（${prev.split('/').pop()} → ${model.split('/').pop()}），等待 VRAM 釋放… ${s}s`
       });
+      const running = await ollamaListRunningModels(baseUrl);
+      const stillLoaded = running.some(n => n === prev || n.startsWith(prev.split(':')[0]));
+      if (!stillLoaded) {
+        OllamaChatPanel.log(`VRAM 已釋放，等待結束（剩 ${s}s）`);
+        this._panel.webview.postMessage({ type: 'assistant', text: `✅ VRAM 釋放完成，正在載入 ${model.split('/').pop()}…` });
+        break;
+      }
       await new Promise(r => setTimeout(r, 1000));
     }
   }
@@ -2630,23 +2638,53 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
   }
 }
 
-/** 傳送 keep_alive=0 給 Ollama 要求立即卸載模型（釋放 VRAM）。Fire-and-forget。*/
+/** 傳送 keep_alive=0 給 Ollama 要求立即卸載模型（釋放 VRAM）。等待 Ollama 回應後 resolve。*/
 function ollamaUnloadModel(baseUrl: string, model: string): Promise<void> {
   return new Promise(resolve => {
     try {
       const url = new URL('/api/generate', baseUrl);
-      const body = JSON.stringify({ model, keep_alive: 0 });
+      // prompt:'' must be present; keep_alive:0 tells Ollama to unload immediately
+      const body = JSON.stringify({ model, prompt: '', keep_alive: 0 });
       const protocol = url.protocol === 'https:' ? https : http;
       const req = protocol.request({
         hostname: url.hostname,
         port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
         path: url.pathname, method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      }, res => { res.resume(); resolve(); });
+      }, res => { res.resume(); res.on('end', () => resolve()); res.on('error', () => resolve()); });
       req.on('error', () => resolve());
-      req.setTimeout(10000, () => { req.destroy(); resolve(); });
+      req.setTimeout(30000, () => { req.destroy(); resolve(); });
       req.write(body); req.end();
     } catch { resolve(); }
+  });
+}
+
+/** GET /api/ps → 傳回目前 Ollama 正在執行（已載入）的模型名稱清單。*/
+function ollamaListRunningModels(baseUrl: string): Promise<string[]> {
+  return new Promise(resolve => {
+    try {
+      const url = new URL('/api/ps', baseUrl);
+      const protocol = url.protocol === 'https:' ? https : http;
+      const req = protocol.request({
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+        path: url.pathname, method: 'GET',
+      }, res => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            const names = ((json.models ?? []) as { name: string }[]).map(m => m.name);
+            resolve(names);
+          } catch { resolve([]); }
+        });
+        res.on('error', () => resolve([]));
+      });
+      req.on('error', () => resolve([]));
+      req.setTimeout(5000, () => { req.destroy(); resolve([]); });
+      req.end();
+    } catch { resolve([]); }
   });
 }
 
