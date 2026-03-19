@@ -29,6 +29,8 @@ export class OllamaChatPanel {
   private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
   private _rovoDevCache: { url: string; token: string; expiry: number } | undefined = undefined;
   private _rovoDevNullUntil = 0;
+  /** 最後一次送出請求的 Ollama model 名稱（切換時需清 VRAM）*/
+  private _lastOllamaModel = '';
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
   private _chatHistory: ChatMessage[] = [];
@@ -1612,6 +1614,9 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? '';
 
+    // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
+    await this.ensureModelReady(baseUrl, model);
+
     // Build a single prompt string from system + history + current message
     // (uses /api/generate which has confirmed thinking field support)
     const systemContent = this.buildSystemContent();
@@ -1763,6 +1768,9 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? '';
 
+    // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
+    await this.ensureModelReady(baseUrl, model);
+
     let currentPrompt = initialPrompt + "\n\n請開始並持續改進直到完成；若需要存取工作目錄外的檔案，請回傳 'NEEDS_ACCESS: <path>'；完成時回傳 'DONE'.";
     let lastResult = '';
 
@@ -1834,6 +1842,9 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const model = modelOverride ?? cfg.get<string>('model') ?? '';
+
+    // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
+    await this.ensureModelReady(baseUrl, model);
 
     if (this._agentMessages.length === 0) {
       const folders = vscode.workspace.workspaceFolders ?? [];
@@ -2084,6 +2095,28 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       }
       return null;
     } catch { return null; }
+  }
+
+  /** 切換 Ollama 模型時先卸載舊模型（keep_alive=0），然後等待 60s VRAM 釋放。
+   *  切換期間向 webview 顯示倒數提示。Copilot 模型不需此流程。*/
+  private async ensureModelReady(baseUrl: string, model: string): Promise<void> {
+    if (model.startsWith('copilot::')) { return; }
+    const prev = this._lastOllamaModel;
+    this._lastOllamaModel = model;
+    if (!prev || prev === model) { return; }
+
+    OllamaChatPanel.log(`Model switch: ${prev} -> ${model}，正在卸載舊模型並等待 VRAM 釋放`);
+    // Fire-and-forget unload
+    ollamaUnloadModel(baseUrl, prev).catch(() => {});
+
+    const waitSec = 60;
+    for (let s = waitSec; s > 0; s--) {
+      this._panel.webview.postMessage({
+        type: 'assistant',
+        text: `⏳ 模型已切換（${prev} → ${model}），等待 VRAM 釋放中… ${s}s`
+      });
+      await new Promise(r => setTimeout(r, 1000));
+    }
   }
 
   /** 向 Rovo Dev 本地 HTTP server 提問並以 SSE stream 收集文字回覆。
@@ -2595,6 +2628,26 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'rovo_ask': return `Rovo Dev: ${args.question}`;
     default: return name;
   }
+}
+
+/** 傳送 keep_alive=0 給 Ollama 要求立即卸載模型（釋放 VRAM）。Fire-and-forget。*/
+function ollamaUnloadModel(baseUrl: string, model: string): Promise<void> {
+  return new Promise(resolve => {
+    try {
+      const url = new URL('/api/generate', baseUrl);
+      const body = JSON.stringify({ model, keep_alive: 0 });
+      const protocol = url.protocol === 'https:' ? https : http;
+      const req = protocol.request({
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+        path: url.pathname, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      }, res => { res.resume(); resolve(); });
+      req.on('error', () => resolve());
+      req.setTimeout(10000, () => { req.destroy(); resolve(); });
+      req.write(body); req.end();
+    } catch { resolve(); }
+  });
 }
 
 function ollamaChatCall(baseUrl: string, model: string, messages: ChatMessage[], tools: unknown[]): Promise<ChatMessage> {
