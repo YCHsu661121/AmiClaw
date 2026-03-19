@@ -634,7 +634,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
-          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); var _pickerModels = []; (msg.models||[]).forEach(function(m) { var id = (typeof m === 'string') ? m : m.id; var label = (typeof m === 'string') ? m : m.label; _pickerModels.push({ id: id, label: label, vendor: 'ollama' }); }); (msg.copilotModels||[]).forEach(function(cm) { _pickerModels.push({ id: 'copilot::' + cm.id, label: cm.name, vendor: 'copilot' }); }); if (_pickerModels.length) { populateTeamPicker(_pickerModels); populateDebatePicker(_pickerModels); } }
+          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); var _pickerModels = []; (msg.models||[]).forEach(function(m) { var id = (typeof m === 'string') ? m : m.id; var label = (typeof m === 'string') ? m : m.label; _pickerModels.push({ id: id, label: label, vendor: 'ollama' }); }); (msg.copilotModels||[]).forEach(function(cm) { _pickerModels.push({ id: 'copilot::' + cm.id, label: cm.name, vendor: 'copilot', multiplier: cm.multiplier || '' }); }); if (_pickerModels.length) { populateTeamPicker(_pickerModels); populateDebatePicker(_pickerModels); } }
           else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
@@ -1432,7 +1432,7 @@ export class OllamaChatPanel {
           cb.addEventListener('change', updateTeamPickerCount);
           var lbl = document.createElement('label'); lbl.htmlFor = 'tp' + i;
           lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
-          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label;
+          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label + (m.vendor === 'copilot' && m.multiplier ? '  ' + m.multiplier : '');
           row.appendChild(cb); row.appendChild(lbl); list.appendChild(row);
         });
         updateTeamPickerCount();
@@ -1463,7 +1463,7 @@ export class OllamaChatPanel {
           cb.addEventListener('change', updateDebatePickerCount);
           var lbl = document.createElement('label'); lbl.htmlFor = 'dp' + i;
           lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
-          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label;
+          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label + (m.vendor === 'copilot' && m.multiplier ? '  ' + m.multiplier : '');
           row.appendChild(cb); row.appendChild(lbl); list.appendChild(row);
         });
         updateDebatePickerCount();
@@ -1599,7 +1599,7 @@ export class OllamaChatPanel {
           copilotModels.forEach(function(cm) {
             var opt = document.createElement('option');
             var val = 'copilot::' + cm.id;
-            opt.value = val; opt.textContent = cm.name;
+            opt.value = val; opt.textContent = cm.name + (cm.multiplier ? '  ' + cm.multiplier : '');
             if (cm.multiplier) opt.dataset.multiplier = cm.multiplier;
             if (val === current) opt.selected = true;
             grpC.appendChild(opt); hasAny = true;
