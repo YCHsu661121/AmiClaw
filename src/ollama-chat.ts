@@ -1921,9 +1921,10 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       if (!fs.existsSync(localStatePath)) { return null; }
 
       // Python 腳本：使用內建模組讀 SQLite + DPAPI 解密 master key，輸出 JSON
+      // 路徑用 JSON.stringify 嵌入：Python 解析 "C:\\Users\\..." = C:\Users\... (正確)
       const pyScript = [
         'import sqlite3,json,ctypes,base64,os,sys',
-        `app=r'${appData.replace(/\\/g, '\\\\')}'`,
+        `app=${JSON.stringify(appData)}`,
         `db=os.path.join(app,'Code','User','globalStorage','state.vscdb')`,
         `ls_path=os.path.join(app,'Code','Local State')`,
         'with open(ls_path,encoding="utf-8") as f: ls=json.load(f)',
@@ -1946,7 +1947,25 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         'print(json.dumps({"mk":mk,"buf":ed["data"],"baseApiUrl":s["baseApiUrl"],"host":s.get("host","")}))',
       ].join('\n');
 
-      const raw = execSync('python -', { input: pyScript, encoding: 'utf-8', timeout: 10_000 }).trim();
+      // 寫入 temp file 執行，避免 Windows stdin pipe hang 問題
+      // 嘗試 py (Windows Launcher) → python → python3
+      const tmpPy = path.join(appData, 'ami-atlas-auth-tmp.py');
+      fs.writeFileSync(tmpPy, pyScript, 'utf-8');
+      let raw = '';
+      let lastErr: unknown;
+      const pythonCmds = process.platform === 'win32' ? ['py', 'python'] : ['python3', 'python'];
+      try {
+        for (const cmd of pythonCmds) {
+          try {
+            raw = execSync(`${cmd} "${tmpPy}"`, { encoding: 'utf-8', timeout: 12_000 }).trim();
+            lastErr = undefined;
+            break;
+          } catch (e) { lastErr = e; }
+        }
+        if (lastErr) { throw lastErr; }
+      } finally {
+        try { fs.unlinkSync(tmpPy); } catch { /* ignore */ }
+      }
       const parsed = JSON.parse(raw) as {
         error?: string; mk?: number[]; buf?: number[];
         baseApiUrl?: string; host?: string;
