@@ -197,7 +197,7 @@ export class OllamaChatPanel {
         const lms0 = await vscode.lm.selectChatModels({ vendor: 'copilot' });
         const seen0 = new Set<string>();
         for (const m of lms0) {
-          if (!seen0.has(m.id)) { seen0.add(m.id); copilotModels0.push({ id: m.id, name: m.name || m.family, multiplier: getCopilotMultiplier(m) }); }
+          if (!seen0.has(m.id)) { seen0.add(m.id); const n0 = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi,'').trim(); copilotModels0.push({ id: m.id, name: n0, multiplier: '' }); }
         }
       } catch { /* Copilot not available */ }
       const current = cfg.get<string>('model') ?? liveModels[0] ?? '';
@@ -1344,7 +1344,7 @@ export class OllamaChatPanel {
           copilotModels.forEach(function(cm) {
             var opt = document.createElement('option');
             var val = 'copilot::' + cm.id;
-            opt.value = val; opt.textContent = cm.name + (cm.multiplier ? '\u2002' + cm.multiplier : '');
+            opt.value = val; opt.textContent = cm.name;
             if (val === current) opt.selected = true;
             grpC.appendChild(opt); hasAny = true;
           });
@@ -1930,7 +1930,9 @@ export class OllamaChatPanel {
       const seen = new Set<string>();
       for (const m of copilotModels) {
         const id = `copilot/${m.family}`;
-        if (!seen.has(id)) { seen.add(id); teamModels.push({ id, label: m.name || m.family, vendor: 'copilot' }); }
+        const rawName = m.name || m.family;
+        const cleanName = rawName.replace(/\s+\d+x\b|\s+x\d+\b/gi, '').trim();
+        if (!seen.has(id)) { seen.add(id); teamModels.push({ id, label: cleanName, vendor: 'copilot' }); }
       }
     } catch { /* Copilot not available */ }
     this._panel.webview.postMessage({ type: 'teamModelList', models: teamModels });
@@ -3121,7 +3123,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       const lms2 = await vscode.lm.selectChatModels({ vendor: 'copilot' });
       const seen2 = new Set<string>();
       for (const m of lms2) {
-        if (!seen2.has(m.id)) { seen2.add(m.id); copilotModels.push({ id: m.id, name: m.name || m.family, multiplier: getCopilotMultiplier(m) }); }
+        if (!seen2.has(m.id)) { seen2.add(m.id); const n2 = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi, '').trim(); copilotModels.push({ id: m.id, name: n2, multiplier: '' }); }
       }
     } catch { /* Copilot not available */ }
     const current2 = cfg.get<string>('model') ?? ollamaModels[0] ?? '';
