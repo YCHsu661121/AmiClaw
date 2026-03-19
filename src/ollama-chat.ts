@@ -1354,7 +1354,7 @@ export class OllamaChatPanel {
       this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: orchestratorDisplay });
       const numCopilotTasks = Math.max(effectiveWorkers.length * 2, 4);
       const planPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numCopilotTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
-      let assignments: { index: number; task: string }[] = Array.from({ length: numCopilotTasks }, (_, i) => ({ index: i, task: prompt }));
+      let assignments: { index: number; task: string }[] = [{ index: 0, task: prompt }];
       try {
         const planText = await this.copilotStream(
           orchestratorFamily, planPrompt,
@@ -1364,9 +1364,13 @@ export class OllamaChatPanel {
         const jsonStr = (jsonMatch[1] ?? planText).trim();
         const parsed = JSON.parse(jsonStr);
         if (Array.isArray(parsed.assignments)) {
-          assignments = parsed.assignments.map((a: { index: number; task: string }) => ({ index: Number(a.index), task: String(a.task) }));
+          const raw = parsed.assignments.map((a: { index: number; task: string }) => ({ index: Number(a.index), task: String(a.task) }));
+          // Deduplicate: remove tasks with identical text
+          const seen = new Set<string>();
+          assignments = raw.filter((a: { index: number; task: string }) => { if (seen.has(a.task)) return false; seen.add(a.task); return true; });
+          if (assignments.length === 0) assignments = [{ index: 0, task: prompt }];
         }
-      } catch { /* use default assignments */ }
+      } catch { /* use default single-task fallback */ }
       this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
       this._panel.webview.postMessage({ type: 'teamTodoList', tasks: assignments.map(a => a.task) });
 
@@ -1477,7 +1481,7 @@ export class OllamaChatPanel {
         // Tasks: pending=not started, running=in progress, done=completed, failed=error
         type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
         interface TaskItem { index: number; task: string; status: TaskStatus; assignedTo?: string; response?: string; }
-        let tTasks: TaskItem[] = Array.from({ length: numOllamaTasks }, (_, i) => ({ index: i, task: prompt, status: 'pending' as TaskStatus }));
+        let tTasks: TaskItem[] = [{ index: 0, task: prompt, status: 'pending' as TaskStatus }];
         try {
           const tPlanText = await ollamaCall(
             thinkModel, tPlanPrompt,
@@ -1488,11 +1492,14 @@ export class OllamaChatPanel {
           const tJsonStr = (tJsonMatch[1] ?? tPlanText).trim();
           const tParsed = JSON.parse(tJsonStr);
           if (Array.isArray(tParsed.assignments)) {
-            tTasks = tParsed.assignments.map((a: { index: number; task: string }) => ({
+            const raw = tParsed.assignments.map((a: { index: number; task: string }) => ({
               index: Number(a.index), task: String(a.task), status: 'pending' as TaskStatus
             }));
+            const seen = new Set<string>();
+            tTasks = raw.filter((a: TaskItem) => { if (seen.has(a.task)) return false; seen.add(a.task); return true; });
+            if (tTasks.length === 0) tTasks = [{ index: 0, task: prompt, status: 'pending' as TaskStatus }];
           }
-        } catch { /* use default assignments */ }
+        } catch { /* use default single-task fallback */ }
         this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
         this._panel.webview.postMessage({ type: 'teamTodoList', tasks: tTasks.map(a => a.task) });
         if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
