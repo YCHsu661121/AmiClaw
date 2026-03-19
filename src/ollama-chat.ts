@@ -1799,16 +1799,6 @@ export class OllamaChatPanel {
     const labelB = getLabel(modelB);
     const labelJ = judgeModel ? getLabel(judgeModel) : null;
 
-    // Determine context type from prompt keywords
-    const isGame = /圍棋|象棋|西洋棋|chess|go\b|tic.tac|game|遊戲|下棋/i.test(prompt);
-    const roleADesc = isGame
-      ? '你是一位棋手，以下是對局題目：\n\n' + prompt + '\n\n請說明你的走法與思路。'
-      : '請針對以下議題提出你的分析與見解：\n\n' + prompt;
-    const roleBDesc = isGame
-      ? '你是一位棋手，以下是對局題目：\n\n' + prompt + '\n\n請說明你的走法與思路。'
-      : '請針對以下議題提出你的分析與見解：\n\n' + prompt;
-    const roleJDesc = '請整合以下多份針對同一議題的分析，做出客觀的綜合總結：';
-
     const callModel = async (
       model: string,
       systemPrompt: string,
@@ -1818,7 +1808,6 @@ export class OllamaChatPanel {
     ): Promise<string> => {
       if (model.startsWith('copilot/') || model.startsWith('copilot::')) {
         const family = model.startsWith('copilot/') ? model.slice('copilot/'.length) : model.slice('copilot::'.length);
-        // Send system + history as structured Copilot messages
         const [lm] = await vscode.lm.selectChatModels({ vendor: 'copilot', family });
         if (!lm) { throw new Error(`Copilot 模型 "${family}" 不可用`); }
         const cts = new vscode.CancellationTokenSource();
@@ -1839,7 +1828,6 @@ export class OllamaChatPanel {
           return full;
         } finally { clearInterval(cancelInterval); cts.dispose(); }
       } else {
-        // Ollama: use /api/chat with proper role separation
         await this.ensureModelReady(baseUrl, model);
         const messages: ChatMessage[] = [
           { role: 'system', content: systemPrompt },
@@ -1851,6 +1839,80 @@ export class OllamaChatPanel {
         return await ollamaChatStream(baseUrl, model, messages, onChunk, onThink);
       }
     };
+
+    // Determine context type from prompt keywords
+    const isGame = /五子棋|圍棋|象棋|將棋|西洋棋|chess|go\b|tic.tac|gomoku|shogi|遊戲|下棋/i.test(prompt);
+
+    // ── Game mode: A & B take turns, A's move is passed to B as board state ──
+    if (isGame) {
+      this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
+      const gameSystemA = '你是棋手，正在進行以下棋局。每次只說明你這一步的落子位置（使用標準座標）和簡短理由，不要發表其他評論。';
+      const gameSystemB = '你是棋手，正在進行以下棋局。根據對手的上一步，回應你的落子位置（使用標準座標）和簡短理由，不要發表其他評論。';
+      const initPrompt = prompt;
+      // historyA = A's own turns; gameMoves = shared move log passed to B each turn
+      const historyA: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: initPrompt + '\n\n請下第一手。' }];
+      const gameMoves: string[] = [];
+      const MAX_GAME_ROUNDS = 6;
+
+      for (let round = 0; round < MAX_GAME_ROUNDS && !this._teamCancel; round++) {
+        // A moves
+        this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'A', round });
+        let moveA = '';
+        try {
+          moveA = await callModel(modelA, gameSystemA, historyA,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: c }); },
+            (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); });
+        } catch (e) {
+          moveA = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: moveA });
+        }
+        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A' });
+        if (this._teamCancel) break;
+        historyA.push({ role: 'assistant', content: moveA });
+        gameMoves.push(`第 ${round + 1} 手（${labelA}）：${moveA}`);
+
+        // B responds to A's move
+        this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'B', round });
+        let moveB = '';
+        const boardState = initPrompt + '\n\n目前棋譜：\n' + gameMoves.join('\n') + '\n\n請回應你的下一手。';
+        try {
+          moveB = await callModel(modelB, gameSystemB, [{ role: 'user', content: boardState }],
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: c }); },
+            (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'B', chunk: t }); });
+        } catch (e) {
+          moveB = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: moveB });
+        }
+        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B' });
+        if (this._teamCancel) break;
+        gameMoves.push(`第 ${round + 1} 手（${labelB}）：${moveB}`);
+        // Feed B's reply back to A as the next user turn
+        historyA.push({ role: 'user', content: `對手（${labelB}）下了：${moveB}\n請回應你的下一手。` });
+      }
+
+      // Judge summarizes the game if present
+      if (judgeModel && !this._teamCancel) {
+        this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'J', round: -1 });
+        const gameSummary = initPrompt + '\n\n完整棋譜：\n' + gameMoves.join('\n') + '\n\n請分析這場對局，說明雙方的策略與得失。';
+        try {
+          await callModel(judgeModel, '你是棋局分析師，請客觀分析以下對局。', [{ role: 'user', content: gameSummary }],
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); });
+        } catch (e) {
+          const errJ = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: errJ });
+        }
+        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J' });
+      }
+
+      this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
+      this._panel.webview.postMessage({ type: 'agentStatus', running: false });
+      return;
+    }
+
+    // ── Discussion mode (non-game) ────────────────────────────────────────────
+    const roleADesc = '請針對以下議題提出你的分析與見解：\n\n' + prompt;
+    const roleBDesc = '請針對以下議題提出你的分析與見解：\n\n' + prompt;
+    const roleJDesc = '請整合以下多份針對同一議題的分析，做出客觀的綜合總結：';
 
     // Announce start
     this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
