@@ -1266,16 +1266,19 @@ export class OllamaChatPanel {
       var permAlways = document.getElementById('permAlways');
       var permDeny = document.getElementById('permDeny');
       if (permAllow) permAllow.addEventListener('click', function() {
+        var cat = _currentPermCategory;
         hidePermissionBar();
-        vscode.postMessage({ type: 'permissionResponse', allow: true, always: false, category: _currentPermCategory });
+        vscode.postMessage({ type: 'permissionResponse', allow: true, always: false, category: cat });
       });
       if (permAlways) permAlways.addEventListener('click', function() {
+        var cat = _currentPermCategory;
         hidePermissionBar();
-        vscode.postMessage({ type: 'permissionResponse', allow: true, always: true, category: _currentPermCategory });
+        vscode.postMessage({ type: 'permissionResponse', allow: true, always: true, category: cat });
       });
       if (permDeny) permDeny.addEventListener('click', function() {
+        var cat = _currentPermCategory;
         hidePermissionBar();
-        vscode.postMessage({ type: 'permissionResponse', allow: false, always: false, category: _currentPermCategory });
+        vscode.postMessage({ type: 'permissionResponse', allow: false, always: false, category: cat });
       });
 
       var debugBtnEl = document.getElementById('debugBtn');
