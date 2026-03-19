@@ -335,6 +335,7 @@ export class OllamaChatPanel {
       .team-agent-header { text-align:center; color:#f7cc65; font-size:0.82em; font-weight:700; margin:14px 0 6px; padding:5px 0; border-top:1px dashed rgba(247,204,101,0.4); border-bottom:1px dashed rgba(247,204,101,0.4); letter-spacing:0.03em }
       .team-orchestrator-node .bubble { border-left:3px solid #f7cc65; background:rgba(247,204,101,0.05); padding:8px 10px; width:100%; border-radius:6px }
       .team-orchestrator-header { font-size:0.78em; font-weight:700; color:#f7cc65; display:flex; align-items:center; gap:6px; padding:0 0 5px; margin-bottom:5px; border-bottom:1px solid rgba(247,204,101,0.25) }
+      .team-orchestrator-body { white-space:pre-wrap; font-size:0.85em; max-height:12em; overflow-y:auto; background:rgba(0,0,0,0.14); border-radius:4px; padding:4px 8px; margin-top:3px; }
       .team-task-label { font-size:0.78em; opacity:0.72; margin:3px 0 5px; font-style:italic; line-height:1.4; padding:2px 0 }
       .team-round-sep { font-size:0.73em; opacity:0.55; text-align:center; margin:7px 0 3px; border-top:1px solid rgba(128,128,128,0.18); padding-top:5px; letter-spacing:0.04em }
       .team-review-section { margin:5px 0 2px; padding:4px 8px; background:rgba(247,204,101,0.07); border-left:2px solid rgba(247,204,101,0.45); border-radius:3px; font-size:0.8em; line-height:1.5 }
@@ -956,8 +957,8 @@ export class OllamaChatPanel {
         var node = document.createElement('div'); node.className = 'msg assistant team-orchestrator-node';
         var bub = document.createElement('div'); bub.className = 'bubble';
         var hdr = document.createElement('div'); hdr.className = 'team-orchestrator-header';
-        hdr.textContent = '\uD83D\uDC19 ' + (model || '') + ' \u2014 \u5206\u914D\u5DE5\u4F5C\u4E2D\u2026';
-        var body = document.createElement('div'); body.className = 'response-body'; body.style.whiteSpace = 'pre-wrap'; body.style.fontSize = '0.85em';
+        hdr.textContent = (model || '\uD83D\uDC19 \u5354\u8abf\u54e1') + ' \u2014 \u5206\u914D\u5DE5\u4F5C\u4E2D\u2026';
+        var body = document.createElement('div'); body.className = 'team-orchestrator-body';
         bub.appendChild(hdr); bub.appendChild(body); node.appendChild(bub);
         chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
         _orchestratorNode = { node: node, bubble: bub, body: body, hdr: hdr };
@@ -1352,7 +1353,7 @@ export class OllamaChatPanel {
       } else {
         // 多模型序列模式：思考模型擔任協調員，所有 Ollama 呼叫依序執行
         // Phase 0: 思考模型生成細緻任務清單 (JSON)
-        this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: thinkModel });
+        this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: '\uD83D\uDC19 ' + thinkModel });
         const numOllamaTasks = Math.max(effectiveWorkers.length * 2, 4);
         const tPlanPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numOllamaTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
         // Tasks: pending=not started, running=in progress, done=completed, failed=error
