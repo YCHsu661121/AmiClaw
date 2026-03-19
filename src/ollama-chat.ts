@@ -297,6 +297,12 @@ export class OllamaChatPanel {
       .team-orchestrator-node .bubble { border-left:3px solid #f7cc65; background:rgba(247,204,101,0.05); padding:8px 10px; width:100%; border-radius:6px }
       .team-orchestrator-header { font-size:0.78em; font-weight:700; color:#f7cc65; display:flex; align-items:center; gap:6px; padding:0 0 5px; margin-bottom:5px; border-bottom:1px solid rgba(247,204,101,0.25) }
       .team-task-label { font-size:0.78em; opacity:0.72; margin:3px 0 5px; font-style:italic; line-height:1.4; padding:2px 0 }
+      .team-round-sep { font-size:0.73em; opacity:0.55; text-align:center; margin:7px 0 3px; border-top:1px solid rgba(128,128,128,0.18); padding-top:5px; letter-spacing:0.04em }
+      .team-review-section { margin:5px 0 2px; padding:4px 8px; background:rgba(247,204,101,0.07); border-left:2px solid rgba(247,204,101,0.45); border-radius:3px; font-size:0.8em; line-height:1.5 }
+      .team-review-label { font-weight:700; color:#f7cc65; margin-right:4px }
+      .team-review-body { white-space:pre-wrap; opacity:0.9 }
+      .team-round-approved { color:var(--vscode-terminal-ansiGreen,#4ec94e); font-weight:700; margin-left:4px }
+      .team-round-iterate { color:#f7cc65; margin-left:4px }
       /* 團隊模式 — 成員選擇面板 */
       #teamPicker{display:none;padding:4px 8px 6px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;margin:2px 0;background:rgba(128,128,128,0.05);max-height:130px;overflow-y:auto}
       #teamPicker.visible{display:block}
@@ -404,6 +410,10 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamOrchestratorStart') { createOrchestratorBubble(msg.model); }
           else if (msg.type === 'teamOrchestratorChunk') { appendOrchestratorChunk(msg.chunk); }
           else if (msg.type === 'teamOrchestratorEnd')   { finalizeOrchestratorBubble(); }
+          else if (msg.type === 'teamRoundStart')        { startTeamRound(msg.id, msg.round); }
+          else if (msg.type === 'teamRoundReviewStart')  { startTeamReview(msg.id); }
+          else if (msg.type === 'teamRoundReviewChunk')  { appendTeamReviewChunk(msg.id, msg.chunk); }
+          else if (msg.type === 'teamRoundDone')         { finalizeTeamRound(msg.id, msg.approved); }
           else if (msg.type === 'teamSynthStart')  { createTeamSynthBubble(); }
           else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
           else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
@@ -759,7 +769,7 @@ export class OllamaChatPanel {
         if (task) { var tl = document.createElement('div'); tl.className = 'team-task-label'; tl.textContent = '\uD83D\uDCCC ' + task; bub.appendChild(tl); }
         node.appendChild(bub);
         chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
-        _teamNodes[id] = { node: node, bubble: bub, status: st, thinkNode: null, responseNode: null, charCount: 0, thinkStart: null, thinkTimer: null };
+        _teamNodes[id] = { node: node, bubble: bub, status: st, thinkNode: null, responseNode: null, reviewNode: null, charCount: 0, thinkStart: null, thinkTimer: null };
       }
 
       function appendTeamThinkChunk(id, color, chunk) {
@@ -852,6 +862,46 @@ export class OllamaChatPanel {
       function finalizeOrchestratorBubble() {
         if (!_orchestratorNode) return;
         if (_orchestratorNode.hdr) _orchestratorNode.hdr.textContent = _orchestratorNode.hdr.textContent.replace('\u5206\u914D\u5DE5\u4F5C\u4E2D\u2026', '\u2713 \u5DE5\u4F5C\u5206\u914D\u5B8C\u6210');
+      }
+
+      function startTeamRound(id, round) {
+        var m = _teamNodes[id]; if (!m) return;
+        if (round > 0) {
+          if (m.thinkNode && m.thinkNode.hasAttribute('open')) {
+            m.thinkNode.removeAttribute('open');
+            if (m.thinkTimer) { clearInterval(m.thinkTimer); m.thinkTimer = null; }
+          }
+          m.thinkNode = null; m.responseNode = null; m.reviewNode = null;
+          var sep = document.createElement('div'); sep.className = 'team-round-sep';
+          sep.textContent = '\u2500\u2500 \u7b2c ' + (round + 1) + ' \u8f2a \u2500\u2500';
+          m.bubble.appendChild(sep);
+        }
+        if (m.status) m.status.textContent = (round > 0 ? '\u8fed\u4ee3\u4e2d\u2026' : '\u601d\u8003\u4e2d\u2026');
+      }
+
+      function startTeamReview(id) {
+        var m = _teamNodes[id]; if (!m) return;
+        var rv = document.createElement('div'); rv.className = 'team-review-section';
+        var rvh = document.createElement('span'); rvh.className = 'team-review-label'; rvh.textContent = '\uD83D\uDC19 \u5354\u8abf\u54e1：';
+        var rvb = document.createElement('span'); rvb.className = 'team-review-body';
+        rv.appendChild(rvh); rv.appendChild(rvb); m.bubble.appendChild(rv);
+        m.reviewNode = rvb; chat.scrollTop = chat.scrollHeight;
+      }
+
+      function appendTeamReviewChunk(id, chunk) {
+        var m = _teamNodes[id]; if (!m || !m.reviewNode) return;
+        m.reviewNode.textContent += chunk; chat.scrollTop = chat.scrollHeight;
+      }
+
+      function finalizeTeamRound(id, approved) {
+        var m = _teamNodes[id]; if (!m) return;
+        if (m.reviewNode && m.reviewNode.parentNode) {
+          var badge = document.createElement('span');
+          badge.className = approved ? 'team-round-approved' : 'team-round-iterate';
+          badge.textContent = approved ? ' \u2713' : ' \u21bb \u6539\u9032\u4e2d';
+          m.reviewNode.parentNode.appendChild(badge);
+        }
+        m.reviewNode = null;
       }
 
       // ── 團隊模式 — 成員選擇面板 ──────────────────────────────────────
@@ -1145,6 +1195,83 @@ export class OllamaChatPanel {
       }
     } catch { /* Copilot not available */ }
     this._panel.webview.postMessage({ type: 'teamModelList', models: teamModels });
+  }
+
+  private async runWorkerDiscussion(
+    workerModel: string,
+    orchestratorFamily: string,
+    baseUrl: string,
+    assignedTask: string,
+    id: string,
+    color: string,
+    maxRounds = 3
+  ): Promise<string> {
+    const isCopilot = workerModel.startsWith('copilot/');
+    const workerFamily = isCopilot ? workerModel.slice('copilot/'.length) : workerModel;
+    let currentPrompt = assignedTask;
+    let lastResponse = '';
+
+    for (let round = 0; round < maxRounds && !this._teamCancel; round++) {
+      this._panel.webview.postMessage({ type: 'teamRoundStart', id, round });
+
+      // Worker generates response
+      if (isCopilot) {
+        lastResponse = await this.copilotStream(
+          workerFamily, currentPrompt,
+          (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); }
+        );
+      } else {
+        let thinkBuf = ''; let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushThink = () => { if (thinkBuf) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: thinkBuf }); thinkBuf = ''; } thinkTimer = null; };
+        lastResponse = await ollamaGenerateStream(
+          baseUrl, workerModel, currentPrompt,
+          (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); },
+          (tc) => { if (!this._teamCancel) { thinkBuf += tc; if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80); } }
+        );
+        if (thinkTimer) { clearTimeout(thinkTimer); } flushThink();
+      }
+
+      if (this._teamCancel || round === maxRounds - 1) {
+        this._panel.webview.postMessage({ type: 'teamRoundDone', id, approved: true });
+        break;
+      }
+
+      // Orchestrator reviews and decides: approve or give feedback
+      this._panel.webview.postMessage({ type: 'teamRoundReviewStart', id });
+      const reviewPrompt = `你是 AI 協調員，正在指導一個工作助手.
+
+【分配的任務】
+${assignedTask}
+
+【助手第 ${round + 1} 輪的回覆】
+${lastResponse}
+
+請單就回覆品質做出判斷：
+- 若已達到最優解或內容足夠完整，就只回覆：[APPROVED]
+- 若需改進，給出一句具體的改進指示（不超過 60 字，繁體中文）：`;
+      let reviewText = '';
+      try {
+        reviewText = await this.copilotStream(
+          orchestratorFamily, reviewPrompt,
+          (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamRoundReviewChunk', id, chunk }); }
+        );
+      } catch { /* accept current response on error */ }
+      const approved = reviewText.includes('[APPROVED]') || reviewText.trim() === '';
+      this._panel.webview.postMessage({ type: 'teamRoundDone', id, approved });
+      if (approved) { break; }
+
+      // Feed orchestrator feedback back to worker
+      currentPrompt = `${assignedTask}
+
+【你的上一輪回覆】
+${lastResponse}
+
+【協調員的改進建議】
+${reviewText.replace('[APPROVED]', '').trim()}
+
+請根據忩迴建議，重新回覆（改進版本）：`;
+    }
+    return lastResponse;
   }
 
   private async copilotStream(
