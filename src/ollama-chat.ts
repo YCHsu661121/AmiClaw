@@ -1200,6 +1200,14 @@ export class OllamaChatPanel {
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
     this._teamCancel = false;
     const systemContent = this.buildSystemContent();
+    // Workspace context for all team prompts
+    const wsFolders = vscode.workspace.workspaceFolders ?? [];
+    const wsRoot = wsFolders.map(f => f.uri.fsPath).join(', ') || process.cwd();
+    const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? '';
+    const openFiles = vscode.workspace.textDocuments.filter(d => !d.isUntitled && d.uri.scheme === 'file').map(d => d.uri.fsPath);
+    const wsContext = `【工作區】${wsRoot}${activeFile ? '\n【作用中檔案】' + activeFile : ''}${openFiles.length ? '\n【開啟的檔案】\n' + openFiles.join('\n') : ''}`;
+    // Normalize copilot prefix for handleAgent: copilot/xxx → copilot::xxx
+    const normalizeForAgent = (m: string) => m.startsWith('copilot/') ? 'copilot::' + m.slice('copilot/'.length) : m;
     const getDisplay = (m: string) => m.startsWith('copilot/') ? '\uD83D\uDC19 ' + m.slice('copilot/'.length) : m;
 
     // Detect orchestrator: first Copilot model in the selection
@@ -1221,7 +1229,7 @@ export class OllamaChatPanel {
       // Phase 0: Orchestrator generates granular task list
       this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: orchestratorDisplay });
       const numCopilotTasks = Math.max(effectiveWorkers.length * 2, 4);
-      const planPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numCopilotTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
+      const planPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numCopilotTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
       let assignments: { index: number; task: string }[] = Array.from({ length: numCopilotTasks }, (_, i) => ({ index: i, task: prompt }));
       try {
         const planText = await this.copilotStream(
@@ -1283,13 +1291,13 @@ export class OllamaChatPanel {
       }
 
       // Phase 3: Agent executor
-      const agentModel = effectiveWorkers.find(m => !m.startsWith('copilot/') && !m.startsWith('copilot::')) ?? primaryOllamaModel ?? effectiveWorkers[0] ?? '';
+      const agentModel = normalizeForAgent(effectiveWorkers.find(m => !m.startsWith('copilot/') && !m.startsWith('copilot::')) ?? primaryOllamaModel ?? effectiveWorkers[0] ?? '');
       const willRunAgent = !this._teamCancel && synthResult.trim().length > 0 && !!agentModel;
       this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: willRunAgent });
       if (willRunAgent) {
         this._panel.webview.postMessage({ type: 'teamAgentStart', model: agentModel });
         this._agentMessages = [];
-        await this.handleAgent(`\u6839\u64da\u4ee5\u4e0b\u5718\u968a\u8a0e\u8ad6\u7d50\u8ad6\uff0c\u8acb\u57f7\u884c\u5fc5\u8981\u7684\u7a0b\u5f0f\u78bc\u6216\u6a94\u6848\u64cd\u4f5c\u4f86\u5b8c\u6210\u4f7f\u7528\u8005\u7684\u4efb\u52d9\u3002\n\n\u3010\u539f\u59cb\u4efb\u52d9\u3011\n${prompt}\n\n\u3010\u5718\u968a\u7d9c\u5408\u7d50\u8ad6\u3011\n${synthResult}\n\n\u8acb\u9010\u6b65\u57f7\u884c\u3002`, agentModel);
+        await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${synthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, agentModel);
       }
 
     } else {
@@ -1341,7 +1349,7 @@ export class OllamaChatPanel {
         // Phase 0: 思考模型生成細緻任務清單 (JSON)
         this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: thinkModel });
         const numOllamaTasks = Math.max(effectiveWorkers.length * 2, 4);
-        const tPlanPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numOllamaTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
+        const tPlanPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numOllamaTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
         // Tasks: pending=not started, running=in progress, done=completed, failed=error
         type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
         interface TaskItem { index: number; task: string; status: TaskStatus; assignedTo?: string; response?: string; }
@@ -1443,12 +1451,13 @@ export class OllamaChatPanel {
         }
 
         // Phase 3: Agent executor
+        const tAgentModel = normalizeForAgent(thinkModel);
         const tWillRunAgent = !this._teamCancel && tSynthResult.trim().length > 0;
         this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: tWillRunAgent });
         if (tWillRunAgent) {
-          this._panel.webview.postMessage({ type: 'teamAgentStart', model: thinkModel });
+          this._panel.webview.postMessage({ type: 'teamAgentStart', model: tAgentModel });
           this._agentMessages = [];
-          await this.handleAgent(`根據以下團隊討論結論，請執行必要的程式碼或檔案操作來完成使用者的任務。\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${tSynthResult}\n\n請逐步執行。`, thinkModel);
+          await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${tSynthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, tAgentModel);
         }
       }
     }
