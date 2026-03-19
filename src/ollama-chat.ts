@@ -405,23 +405,27 @@ export class OllamaChatPanel {
       </div>
     </div>
     <script nonce="${nonce}">
+      window.onerror = function(msg, src, line, col) { var ep = document.getElementById('debugPanel'); if (ep) ep.textContent += 'ERR:' + msg + ' L' + line + ':' + col + '\\n'; };
+    </script>
+    <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
 
       // ── Debug Console ──────
-      var _debugLog = [];
-      function dbg(msg) { var t = new Date().toISOString().slice(11,23); _debugLog.push(t + ' ' + msg); }
+      window._debugLog = [];
+      function dbg(msg) { var t = new Date().toISOString().slice(11,23); window._debugLog.push(t + ' ' + msg); var dp = document.getElementById('debugPanel'); if (dp && dp.style.display !== 'none') { dp.textContent = window._debugLog.slice(-10).join('\\n'); } }
       dbg('webview init start');
       var debugPanel = document.createElement('pre');
       debugPanel.id = 'debugPanel';
-      debugPanel.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;bottom:60px;z-index:9999;background:rgba(0,0,0,0.92);color:#0f0;font-size:11px;padding:10px;overflow:auto;white-space:pre-wrap;font-family:Consolas,monospace;';
+      debugPanel.style.cssText = 'display:block;position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.85);color:#0f0;font-size:11px;padding:6px 10px;overflow:hidden;white-space:pre-wrap;font-family:Consolas,monospace;max-height:160px;border-bottom:1px solid #0f0;';
       document.body.appendChild(debugPanel);
+      window.onerror = function(msg, src, line, col) { dbg('ERROR: ' + msg + ' at line ' + line + ':' + col); return false; };
 
       // ── 訊息處理 (最先掛上，避免後續程式碼拋例外導致 listener 遺失) ──────
       window.addEventListener('message', function(event) {
         try {
           const msg = event.data;
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
-          if (debugPanel.style.display === 'block') { debugPanel.textContent = _debugLog.join('\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
+          if (debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
           if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking); }
           else if (msg.type === 'streamStart')   { clearPendingBubble(); _streamNode = null; }
           else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk); }
@@ -462,7 +466,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
           else if (msg.type === 'memorySaved')   { var slb = document.getElementById('saveLtmBtn'); if (slb) { slb.textContent = '\u2713 \u5df2\u5132\u5b58'; setTimeout(function() { slb.textContent = '\uD83D\uDCBE \u5132\u5b58\u9577\u671f\u8a18\u61b6'; }, 1500); } }
           else if (msg.type === 'historyCount')  { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; }
-        } catch(e) { /* swallow */ }
+        } catch(e) { dbg('CATCH: ' + (e && e.message ? e.message : String(e))); }
       });
 
       const chat = document.getElementById('chat');
@@ -854,7 +858,7 @@ export class OllamaChatPanel {
         if (m.thinkTimer) { clearInterval(m.thinkTimer); m.thinkTimer = null; }
         if (m.thinkNode && m.thinkNode.hasAttribute('open')) { m.thinkNode.removeAttribute('open'); }
         if (m.responseNode) {
-          var lineCount = (m.responseNode.textContent || '').split('\n').length;
+          var lineCount = (m.responseNode.textContent || '').split('\\n').length;
           if (lineCount > 10) {
             m.responseNode.classList.add('response-body-collapsed');
             var xBtn = document.createElement('button'); xBtn.className = 'response-expand-btn';
@@ -1077,13 +1081,22 @@ export class OllamaChatPanel {
 
       // JS-side safety net: if connectionStatus never arrives in 5s, ask again
       var debugBtnEl = document.getElementById('debugBtn');
-      if (debugBtnEl) debugBtnEl.addEventListener('click', function() {
-        if (debugPanel.style.display === 'none') {
-          debugPanel.style.display = 'block';
-          debugPanel.textContent = _debugLog.join('\n');
-        } else { debugPanel.style.display = 'none'; }
-      });
+      dbg('debugBtn found: ' + !!debugBtnEl);
+      if (debugBtnEl) {
+        debugBtnEl.addEventListener('click', function() {
+          var dp = document.getElementById('debugPanel');
+          if (!dp) return;
+          if (dp.style.display === 'none') {
+            dp.style.display = 'block';
+            dp.textContent = (window._debugLog || ['(no logs)']).join('\\n');
+            dp.scrollTop = dp.scrollHeight;
+          } else {
+            dp.style.display = 'none';
+          }
+        });
+      }
       dbg('connStatus initial: ' + (document.getElementById('connStatus') || {}).textContent);
+      dbg('script completed OK, all functions defined');
 
       setTimeout(function() {
         dbg('safety-net timer fired, connStatus=' + ((document.getElementById('connStatus') || {}).textContent || '?'));
