@@ -454,7 +454,7 @@ export class OllamaChatPanel {
       dbg('webview init start');
       var debugPanel = document.createElement('pre');
       debugPanel.id = 'debugPanel';
-      debugPanel.style.cssText = 'display:block;position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.85);color:#0f0;font-size:11px;padding:6px 10px;overflow:hidden;white-space:pre-wrap;font-family:Consolas,monospace;max-height:160px;border-bottom:1px solid #0f0;';
+      debugPanel.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.85);color:#0f0;font-size:11px;padding:6px 10px;overflow:hidden;white-space:pre-wrap;font-family:Consolas,monospace;max-height:160px;border-bottom:1px solid #0f0;';
       document.body.appendChild(debugPanel);
       window.onerror = function(msg, src, line, col) { dbg('ERROR: ' + msg + ' at line ' + line + ':' + col); return false; };
 
@@ -522,6 +522,7 @@ export class OllamaChatPanel {
       var _todoChecked = 0;
       let _synthNode = null;
       let _orchestratorNode = null;
+      let _orchestratorModel = '';
       let _teamAvailModels = []; // [{id, label, vendor}]
 
       const sendBtn = document.getElementById('sendBtn');
@@ -614,7 +615,7 @@ export class OllamaChatPanel {
 
       document.getElementById('clear').addEventListener('click', function() {
         chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
-        Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; }); _synthNode = null; _orchestratorNode = null;
+        Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; }); _synthNode = null; _orchestratorNode = null; _orchestratorModel = '';
         vscode.postMessage({ type: 'clearHistory' });
       });
 
@@ -954,10 +955,11 @@ export class OllamaChatPanel {
 
       function createOrchestratorBubble(model) {
         clearPendingBubble();
+        _orchestratorModel = model || '\uD83D\uDC19 \u5354\u8abf\u54e1';
         var node = document.createElement('div'); node.className = 'msg assistant team-orchestrator-node';
         var bub = document.createElement('div'); bub.className = 'bubble';
         var hdr = document.createElement('div'); hdr.className = 'team-orchestrator-header';
-        hdr.textContent = (model || '\uD83D\uDC19 \u5354\u8abf\u54e1') + ' \u2014 \u5206\u914D\u5DE5\u4F5C\u4E2D\u2026';
+        hdr.textContent = _orchestratorModel + ' \u2014 \u5206\u914D\u5DE5\u4F5C\u4E2D\u2026';
         var body = document.createElement('div'); body.className = 'team-orchestrator-body';
         bub.appendChild(hdr); bub.appendChild(body); node.appendChild(bub);
         chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
@@ -1022,7 +1024,7 @@ export class OllamaChatPanel {
       function startTeamReview(id) {
         var m = _teamNodes[id]; if (!m) return;
         var rv = document.createElement('div'); rv.className = 'team-review-section';
-        var rvh = document.createElement('span'); rvh.className = 'team-review-label'; rvh.textContent = '\uD83D\uDC19 \u5354\u8abf\u54e1：';
+        var rvh = document.createElement('span'); rvh.className = 'team-review-label'; rvh.textContent = (_orchestratorModel || '\uD83D\uDC19 \u5354\u8abf\u54e1') + '\uff1a';
         var rvb = document.createElement('span'); rvb.className = 'team-review-body';
         rv.appendChild(rvh); rv.appendChild(rvb); m.bubble.appendChild(rv);
         m.reviewNode = rvb; chat.scrollTop = chat.scrollHeight;
