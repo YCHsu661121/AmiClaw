@@ -383,7 +383,7 @@ export class OllamaChatPanel {
       #debatePicker.visible{display:block}
       #teamPicker{display:none;padding:4px 8px 6px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;margin:2px 0;background:rgba(128,128,128,0.05);max-height:130px;overflow-y:auto}
       #teamPicker.visible{display:block}
-      #teamPickerBar{display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap}
+      #teamPickerBar,#debatePickerBar{display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap}
       .team-pick-row{display:flex;align-items:center;gap:5px;padding:1px 2px}
       .team-pick-row label{font-size:12px;cursor:pointer;user-select:none}
       .tpl-copilot{color:#f7cc65}.tpl-ollama{color:#4fc1ff}
@@ -431,6 +431,7 @@ export class OllamaChatPanel {
         <button class="icon-btn" id="toggleStream" title="切換串流模式">⚡</button>
         <button class="icon-btn" id="agentMode" title="Agent 模式 (AI 可讀寫檔案、執行命令)">🤖</button>
         <button class="icon-btn" id="teamMode" title="團隊討論模式 (多個 AI 並行思考👥)">👥</button>
+        <button class="icon-btn" id="debateMode" title="對話模式：2 個 AI 辯論/對弈，可加第 3 個裁判 ⚔️">⚔️</button>
         <button class="icon-btn" id="stopAgent" title="停止 Agent">⏹</button>
         <button class="icon-btn" id="memBtn" title="記憶管理">🧠</button>
         <button class="icon-btn" id="clear" title="清除對話">🗑</button>
@@ -703,7 +704,7 @@ export class OllamaChatPanel {
         document.getElementById('agentMode').classList.toggle('active', agentMode);
         if (agentMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
         if (agentMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
-        if (statusBar) statusBar.textContent = agentMode ? '🤖 Agent 模式 — AI 可自動讀寫檔案、執行命令' : '';
+        if (statusBar) statusBar.textContent = agentMode ? '🤖 Agent 模式 — AI 可自動讀寫檔案、執行命令' : '💬 Ask 模式 — 直接對話，不使用工具';
         prompt.placeholder = agentMode ? '輸入任務… Agent 會自動使用工具 (Enter 送出)' : '輸入訊息… (Enter 送出 / Ctrl+Enter 換行)';
       });
 
