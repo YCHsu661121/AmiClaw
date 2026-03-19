@@ -236,7 +236,7 @@ export class OllamaChatPanel {
         const lms0 = await vscode.lm.selectChatModels({ vendor: 'copilot' });
         const seen0 = new Set<string>();
         for (const m of lms0) {
-          if (!seen0.has(m.id)) { seen0.add(m.id); const n0 = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi,'').trim(); copilotModels0.push({ id: m.id, name: n0, multiplier: '' }); }
+          if (!seen0.has(m.id)) { seen0.add(m.id); const n0 = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi,'').trim(); copilotModels0.push({ id: m.id, name: n0, multiplier: getCopilotMultiplier(m) }); }
         }
       } catch { /* Copilot not available */ }
       const current = cfg.get<string>('model') ?? liveModels[0]?.id ?? '';
@@ -491,7 +491,7 @@ export class OllamaChatPanel {
         <select id="chatSessionSelect" aria-label="選擇聊天"></select>
         <button class="icon-btn" id="newChat" title="新增聊天">➕</button>
         <button class="icon-btn" id="renameChat" title="設定聊天標題">🏷️</button>
-        <select id="modelSelect" aria-label="選擇模型">${optionsHtml}</select>
+        <select id="modelSelect" aria-label="選擇模型">${optionsHtml}</select><span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
         <button class="icon-btn" id="refreshModels" title="重整模型 / 測試連線">🔄</button>
         <button class="icon-btn" id="pickFile" title="附加檔案">📎</button>
         <button class="icon-btn" id="toggleStream" title="切換串流模式">⚡</button>
@@ -982,6 +982,9 @@ export class OllamaChatPanel {
       if (modelSelect) {
         modelSelect.addEventListener('change', function() {
           if (statusBar) statusBar.textContent = '\u6a21\u578b\uff1a' + modelSelect.value;
+          var selOpt = modelSelect.options[modelSelect.selectedIndex];
+          var multEl = document.getElementById('modelMultiplier');
+          if (multEl) multEl.textContent = selOpt && selOpt.dataset.multiplier ? selOpt.dataset.multiplier : '';
         });
       }
 
@@ -1597,12 +1600,15 @@ export class OllamaChatPanel {
             var opt = document.createElement('option');
             var val = 'copilot::' + cm.id;
             opt.value = val; opt.textContent = cm.name;
+            if (cm.multiplier) opt.dataset.multiplier = cm.multiplier;
             if (val === current) opt.selected = true;
             grpC.appendChild(opt); hasAny = true;
           });
           modelSelect.appendChild(grpC);
         }
         if (!modelSelect.value && hasAny) { var firstOpt = modelSelect.querySelector('option'); if (firstOpt) modelSelect.value = firstOpt.value; }
+        // 更新倍數標籤
+        (function() { var selOpt = modelSelect.options[modelSelect.selectedIndex]; var multEl = document.getElementById('modelMultiplier'); if (multEl) multEl.textContent = selOpt && selOpt.dataset.multiplier ? selOpt.dataset.multiplier : ''; })();
       }
 
       function updateConnStatus(ok, url, message) {
@@ -3592,7 +3598,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       const lms2 = await vscode.lm.selectChatModels({ vendor: 'copilot' });
       const seen2 = new Set<string>();
       for (const m of lms2) {
-        if (!seen2.has(m.id)) { seen2.add(m.id); const n2 = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi, '').trim(); copilotModels.push({ id: m.id, name: n2, multiplier: '' }); }
+        if (!seen2.has(m.id)) { seen2.add(m.id); const n2 = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi, '').trim(); copilotModels.push({ id: m.id, name: n2, multiplier: getCopilotMultiplier(m) }); }
       }
     } catch { /* Copilot not available */ }
     const current2 = cfg.get<string>('model') ?? liveModels[0]?.id ?? '';
