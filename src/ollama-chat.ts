@@ -6,6 +6,7 @@ import * as https from 'https';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import * as os from 'os';
 import { execSync } from 'child_process';
 import { URL } from 'url';
 
@@ -2413,7 +2414,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const atlasAuth = await this.getAtlascodeJiraAuth();
         if (atlasAuth) {
           // atlascode auth：baseApiUrl = https://api.atlassian.com/ex/jira/<id>/rest
-          const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,created,updated';
+          const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,attachment,created,updated';
           issueApiUrl = `${atlasAuth.baseApiUrl}/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
           authHeader = `Bearer ${atlasAuth.accessToken}`;
         } else {
@@ -2424,7 +2425,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           const jiraPat = jiraCfg.get<string>('jiraPat') ?? '';
           if (!jiraBase) return '找不到 atlassian.atlascode 登入資訊，請在 VS Code 設定中填寫 amiClaw.jiraBaseUrl';
           if (!jiraPat)  return '找不到 atlassian.atlascode 登入資訊，請在 VS Code 設定中填寫 amiClaw.jiraPat';
-          const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,created,updated';
+          const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,attachment,created,updated';
           issueApiUrl = `${jiraBase}/rest/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
           authHeader = jiraEmail
             ? 'Basic ' + Buffer.from(`${jiraEmail}:${jiraPat}`).toString('base64')
@@ -2455,6 +2456,10 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
                   const j = JSON.parse(data);
                   const f = j.fields || {};
                   const comments = (f.comment?.comments ?? []).slice(-3).map((c: Record<string, unknown>) => `  [${c.author && (c.author as Record<string,unknown>).displayName}] ${String(c.body ?? '').substring(0, 300)}`).join('\n');
+                  const attachments = (f.attachment ?? []) as Array<{ filename: string; size: number; mimeType: string; content: string }>;
+                  const attachLines = attachments.length > 0
+                    ? `\nAttachments (${attachments.length}):\n` + attachments.map(a => `  [${a.filename}] ${(a.size / 1024).toFixed(1)}KB  ${a.mimeType}  url=${a.content}`).join('\n')
+                    : '';
                   resolve([
                     `Issue: ${fetchKey}  (${f.issuetype?.name ?? ''})`,
                     `Status: ${f.status?.name ?? ''}`,
@@ -2464,7 +2469,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
                     `Labels: ${(f.labels ?? []).join(', ') || '(none)'}`,
                     `Summary: ${f.summary ?? ''}`,
                     `Description:\n${String(f.description ?? '(empty)').substring(0, 2000)}`,
-                    comments ? `\nLatest Comments:\n${comments}` : ''
+                    comments ? `\nLatest Comments:\n${comments}` : '',
+                    attachLines
                   ].filter(Boolean).join('\n'));
                 } catch { resolve(`無法解析 Jira API 回應: ${data.substring(0, 300)}`); }
               });
@@ -2474,6 +2480,107 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             req.end();
           } catch (e) { resolve(`jira_fetch 錯誤: ${e instanceof Error ? e.message : String(e)}`); }
         });
+      }
+      case 'jira_attachment_download': {
+        const attachUrl = (args.url as string || '').trim();
+        if (!attachUrl) return '請提供 url 參數（來自 jira_fetch 附件清單的 url= 欄位）';
+        let rawFilename = (args.filename as string || '').trim();
+        if (!rawFilename) {
+          try { rawFilename = decodeURIComponent(path.basename(new URL(attachUrl).pathname)); } catch { rawFilename = 'attachment'; }
+        }
+        // Sanitize filename to prevent path traversal
+        const safeFilename = rawFilename.replace(/[/\\:*?"<>|]/g, '_').replace(/^\.+/, '_');
+
+        let dlAuthHeader: string;
+        const atlasAuth3 = await this.getAtlascodeJiraAuth();
+        if (atlasAuth3) {
+          dlAuthHeader = `Bearer ${atlasAuth3.accessToken}`;
+        } else {
+          const jiraCfg3 = vscode.workspace.getConfiguration('amiClaw');
+          const jiraEmail3 = jiraCfg3.get<string>('jiraEmail') ?? '';
+          const jiraPat3 = jiraCfg3.get<string>('jiraPat') ?? '';
+          if (!jiraPat3) return '找不到 Jira 認證，請確認 atlassian.atlascode 已登入';
+          dlAuthHeader = jiraEmail3 ? 'Basic ' + Buffer.from(`${jiraEmail3}:${jiraPat3}`).toString('base64') : 'Bearer ' + jiraPat3;
+        }
+
+        const tmpDir = os.tmpdir();
+        const outFile = path.join(tmpDir, safeFilename);
+
+        const dlResult = await new Promise<{ ok: boolean; err?: string }>((resolve) => {
+          try {
+            const u = new URL(attachUrl);
+            const proto = u.protocol === 'https:' ? https : http;
+            const req = proto.request({
+              hostname: u.hostname,
+              port: u.port ? parseInt(u.port) : (u.protocol === 'https:' ? 443 : 80),
+              path: u.pathname + u.search, method: 'GET',
+              headers: { 'Authorization': dlAuthHeader },
+            }, (res) => {
+              if (res.statusCode !== 200) { res.resume(); resolve({ ok: false, err: `HTTP ${res.statusCode}` }); return; }
+              const chunks: Buffer[] = [];
+              res.on('data', (c: Buffer) => chunks.push(c));
+              res.on('end', () => { try { fs.writeFileSync(outFile, Buffer.concat(chunks)); resolve({ ok: true }); } catch(e) { resolve({ ok: false, err: e instanceof Error ? e.message : String(e) }); } });
+              res.on('error', (e: Error) => resolve({ ok: false, err: e.message }));
+            });
+            req.on('error', (e: Error) => resolve({ ok: false, err: e.message }));
+            req.setTimeout(60000, () => { req.destroy(); resolve({ ok: false, err: '下載逾時 (60s)' }); });
+            req.end();
+          } catch (e) { resolve({ ok: false, err: e instanceof Error ? e.message : String(e) }); }
+        });
+
+        if (!dlResult.ok) return `附件下載失敗: ${dlResult.err}`;
+
+        const ext = path.extname(safeFilename).toLowerCase();
+        if (ext === '.zip') {
+          const extractDir = outFile + '_extracted';
+          try {
+            if (fs.existsSync(extractDir)) { execSync(`rmdir /s /q "${extractDir}"`, { shell: 'cmd.exe', timeout: 10000, windowsHide: true }); }
+            execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${outFile}' -DestinationPath '${extractDir}' -Force"`, { timeout: 30000, windowsHide: true });
+            const listFiles = (dir: string, base = ''): string[] => {
+              const entries: string[] = [];
+              try {
+                for (const name of fs.readdirSync(dir)) {
+                  const rel = base ? `${base}/${name}` : name;
+                  const full = path.join(dir, name);
+                  if (fs.statSync(full).isDirectory()) entries.push(...listFiles(full, rel));
+                  else entries.push(rel);
+                }
+              } catch { /* ignore permission errors */ }
+              return entries;
+            };
+            const files = listFiles(extractDir);
+            const lines: string[] = [`📦 ${safeFilename} 解壓縮完成，共 ${files.length} 個檔案:\n`];
+            lines.push(...files.slice(0, 80).map(f => `  ${f}`));
+            if (files.length > 80) lines.push(`  … (共 ${files.length} 個)`);
+            // Show contents of small text files
+            const textExts = new Set(['.txt', '.log', '.md', '.json', '.xml', '.csv', '.ini', '.cfg', '.py', '.ts', '.js', '.sh', '.bat', '.diff', '.patch']);
+            let shown = 0;
+            for (const rel of files) {
+              if (shown >= 5) break;
+              if (!textExts.has(path.extname(rel).toLowerCase())) continue;
+              const full = path.join(extractDir, rel);
+              try {
+                const stat = fs.statSync(full);
+                if (stat.size > 60000) continue;
+                const content = fs.readFileSync(full, 'utf-8');
+                lines.push(`\n--- ${rel} ---\n${content.substring(0, 4000)}${content.length > 4000 ? '\n…（已截斷）' : ''}`);
+                shown++;
+              } catch { /* ignore */ }
+            }
+            lines.push(`\n解壓縮目錄: ${extractDir}`);
+            return lines.join('\n');
+          } catch (e) {
+            return `ZIP 解壓縮失敗: ${e instanceof Error ? e.message : String(e)}\n檔案已存至: ${outFile}`;
+          }
+        } else {
+          // Try reading as UTF-8 text
+          try {
+            const content = fs.readFileSync(outFile, 'utf-8');
+            return `📄 ${safeFilename}\n\n${content.substring(0, 6000)}${content.length > 6000 ? '\n…（已截斷）' : ''}`;
+          } catch {
+            return `✅ ${safeFilename} 已下載至 ${outFile}（二進位檔案）`;
+          }
+        }
       }
       case 'jira_open': {
         const key = (args.issue_key as string || '').trim().toUpperCase();
@@ -2599,7 +2706,8 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'open_browser', description: '在 VS Code 簡易瀏覽器中開啟網址', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'manage_todo', description: 'Agent 內部任務清單。複雜任務請先建立任務清單，逐一完成後標記为done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=新增, done=完成, list=查看, clear=清空' }, text: { type: 'string', description: '任務內容（action=add 時必須）' }, id: { type: 'number', description: '任務 ID（action=done 時必須）' } }, required: ['action'] } } },
   { type: 'function', function: { name: 'vscode_action', description: 'VS Code 操作：開啟檔案到指定行、取得工作區信息、顯示通知、執行 VS Code 內建指令', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=開檔, get_workspace_info=工作區信息, show_notification=通知, run_command=執行内建指令' }, path: { type: 'string', description: 'open_file 用' }, line: { type: 'number', description: '開啟到哪一行' }, message: { type: 'string', description: 'show_notification 用' }, command: { type: 'string', description: 'run_command 用，VS Code 指令 ID' }, args: { type: 'array', items: { type: 'string' }, description: '指令參數' } }, required: ['action'] } } },
-  { type: 'function', function: { name: 'jira_fetch', description: '【立即執行】直接呼叫 Jira REST API 取得 Issue 完整詳情（Summary、Description、Status、Assignee、Priority、最近留言）供分析。看到 Jira Key 就呼叫，禁止先說「我將查詢」等意圖語句而不行動。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 UOEM2-3476' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_fetch', description: '【立即執行】直接呼叫 Jira REST API 取得 Issue 完整詳情（Summary、Description、Status、Assignee、Priority、最近留言、附件清單）供分析。看到 Jira Key 就呼叫，禁止先說「我將查詢」等意圖語句而不行動。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 UOEM2-3476' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_attachment_download', description: '下載 Jira Issue 附件（URL 來自 jira_fetch 結果的 url= 欄位）。ZIP 檔案自動解壓縮並列出內容及文字檔內容；文字/patch/log 檔直接顯示。', parameters: { type: 'object', properties: { url: { type: 'string', description: '附件下載 URL（來自 jira_fetch 附件清單的 url= 後方網址）' }, filename: { type: 'string', description: '指定儲存檔名（可選，預設從 URL 推斷）' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'jira_open', description: '在 VS Code 中開啟 Jira Issue UI 面板（不回傳內容，純介面操作）。需要 Issue 內容供分析時請用 jira_fetch 而非此工具。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123 或 PROJ-456' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'jira_create', description: '開啟 Jira 建立 Issue 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { summary: { type: 'string', description: 'Issue 標題（可選，預填）' }, description: { type: 'string', description: 'Issue 詳細描述（可選，預填）' } } } } },
   { type: 'function', function: { name: 'jira_transition', description: '開啟 Jira Issue 狀態轉換面板（如 TODO → IN PROGRESS → DONE）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key' } }, required: ['issue_key'] } } },
@@ -2608,7 +2716,7 @@ const AGENT_TOOLS = [
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', bb_create_pr: '🔀', rovo_ask: '🤖' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖' };
   return m[name] ?? '🔧';
 }
 
@@ -2629,6 +2737,7 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'manage_todo': return `Todo (${args.action}${args.text ? ': ' + args.text : args.id ? ' #' + args.id : ''})`;
     case 'vscode_action': return `VS Code (${args.action}${args.path ? ': ' + args.path : args.command ? ': ' + args.command : ''})`;
     case 'jira_fetch': return `Jira 從 API 取得: ${args.issue_key}`;
+    case 'jira_attachment_download': return `Jira 附件下載: ${(args.filename as string) || path.basename(String(args.url || '')).split('?')[0]}`;
     case 'jira_open': return `Jira 開啟 Issue: ${args.issue_key}`;
     case 'jira_create': return `Jira 建立 Issue${args.summary ? ': ' + args.summary : ''}`;
     case 'jira_transition': return `Jira 轉換狀態: ${args.issue_key}`;
