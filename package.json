@@ -22,8 +22,25 @@
     "vsce": "^2.12.0"
   },
   "dependencies": {},
-  "activationEvents": ["onCommand:amiClaw.chat", "onCommand:amiClaw.sendToChat"],
+  "activationEvents": ["onCommand:amiClaw.chat", "onCommand:amiClaw.sendToChat", "onView:amiClaw.openChat"],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "amiClaw",
+          "title": "AmiClaw",
+          "icon": "media/ami-claw-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "amiClaw": [
+        {
+          "id": "amiClaw.openChat",
+          "name": "聊天記錄"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "amiClaw.chat",
@@ -32,6 +49,23 @@
       {
         "command": "amiClaw.sendToChat",
         "title": "傳送到 AmiClaw"
+      },
+      {
+        "command": "amiClaw.newChatSession",
+        "title": "新增聊天",
+        "icon": "$(add)"
+      },
+      {
+        "command": "amiClaw.switchChatSession",
+        "title": "切換到此聊天"
+      },
+      {
+        "command": "amiClaw.renameChatSession",
+        "title": "重新命名"
+      },
+      {
+        "command": "amiClaw.deleteChatSession",
+        "title": "刪除聊天"
       }
     ],
     "menus": {
@@ -45,6 +79,25 @@
         {
           "command": "amiClaw.sendToChat",
           "group": "navigation@99"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "amiClaw.newChatSession",
+          "when": "view == amiClaw.openChat",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "amiClaw.renameChatSession",
+          "when": "view == amiClaw.openChat && viewItem == chatSession",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "amiClaw.deleteChatSession",
+          "when": "view == amiClaw.openChat && viewItem == chatSession",
+          "group": "1_modify@2"
         }
       ]
     },

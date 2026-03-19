@@ -15,6 +15,8 @@ export class OllamaChatPanel {
   public static currentPanel: OllamaChatPanel | undefined;
   public static readonly viewType = 'amiClaw.chat';
   private static _log: vscode.OutputChannel;
+  /** Called by extension.ts to keep sidebar in sync */
+  public static onSessionsChanged?: (sessions: { id: string; title: string }[], activeId: string) => void;
 
   private readonly _panel: vscode.WebviewPanel;
   private readonly _disposables: vscode.Disposable[] = [];
@@ -24,7 +26,8 @@ export class OllamaChatPanel {
   private _streamMode = false;
   private _agentRunning = false;
   private _agentCancel = false;
-  private _agentMessages: ChatMessage[] = [];
+  private _agentMessagesBySession: Record<string, ChatMessage[]> = { default: [] };
+  private _agentMessages: ChatMessage[] = this._agentMessagesBySession.default;
   private _agentTodos: { id: number; text: string; done: boolean }[] = [];
   private _teamCancel = false;
   private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
@@ -38,7 +41,9 @@ export class OllamaChatPanel {
   private _lastOllamaModel = '';
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
-  private _chatHistory: ChatMessage[] = [];
+  private _chatHistories: Record<string, ChatMessage[]> = { default: [] };
+  private _activeSessionId = 'default';
+  private _chatHistory: ChatMessage[] = this._chatHistories.default;
 
   private static log(msg: string): void {
     if (!OllamaChatPanel._log) {
@@ -78,7 +83,7 @@ export class OllamaChatPanel {
       try {
         switch (message.type) {
           case 'send':
-            await this.handleSend(message.prompt, message.model);
+            await this.handleSend(message.prompt, message.model, message.sessionId);
             break;
           case 'insert':
             await this.handleInsert(message.code);
@@ -110,6 +115,7 @@ export class OllamaChatPanel {
             await this.fetchModelsFromServer();
             break;
           case 'agentSend':
+            this.switchChatSession(message.sessionId);
             await this.handleAgent(message.prompt, message.model);
             break;
           case 'agentStop':
@@ -128,26 +134,36 @@ export class OllamaChatPanel {
             await this.fetchTeamModels();
             break;
           case 'teamSend':
+            this.switchChatSession(message.sessionId);
             this.handleTeamSend(message.prompt, message.models).catch(() => {});
             break;
           case 'teamStop':
             this._teamCancel = true;
             break;
           case 'debateSend':
+            this.switchChatSession(message.sessionId);
             this.handleDebateSend(message.prompt, message.models).catch(() => {});
             break;
           case 'debateStop':
             this._teamCancel = true;
+            break;
+          case 'switchChatSession':
+            this.switchChatSession(message.sessionId);
+            this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
             break;
           case 'applyToFile':
             await this.handleApplyToFile(message.code);
             break;
           case 'clearHistory':
             this._agentMessages = [];
+            this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+            this.switchChatSession(message.sessionId);
             this._chatHistory = [];
-            this._panel.webview.postMessage({ type: 'historyCount', count: 0 });
+            this._chatHistories[this._activeSessionId] = this._chatHistory;
+            this._panel.webview.postMessage({ type: 'historyCount', count: 0, sessionId: this._activeSessionId });
             break;
           case 'memoryGet': {
+            this.switchChatSession(message.sessionId);
             const cfg2 = vscode.workspace.getConfiguration('amiClaw');
             const persona2 = cfg2.get<string>('systemPrompt') ?? '';
             const previewMsgs = this._chatHistory.slice(-10);
@@ -156,7 +172,7 @@ export class OllamaChatPanel {
               const text = (m.content ?? '').slice(0, 200);
               return `${role}：${text}${(m.content ?? '').length > 200 ? '…' : ''}`;
             }).join('\n\n');
-            this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: this.getLongTermMemory(), persona: persona2, historyCount: this._chatHistory.length, historyPreview });
+            this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: this.getLongTermMemory(), persona: persona2, historyCount: this._chatHistory.length, historyPreview, sessionId: this._activeSessionId });
             break;
           }
           case 'memorySave':
@@ -164,10 +180,18 @@ export class OllamaChatPanel {
             this._panel.webview.postMessage({ type: 'memorySaved' });
             break;
           case 'memoryConsolidate':
-            await this.handleMemoryConsolidate();
+            await this.handleMemoryConsolidate(message.sessionId);
             break;
           case 'openSettings':
             vscode.commands.executeCommand('workbench.action.openSettings', 'amiClaw.systemPrompt');
+            break;
+          case 'notifySessionsChanged':
+            if (OllamaChatPanel.onSessionsChanged && Array.isArray(message.sessions)) {
+              OllamaChatPanel.onSessionsChanged(
+                message.sessions as { id: string; title: string }[],
+                typeof message.activeId === 'string' ? message.activeId : 'default'
+              );
+            }
             break;
           default:
             OllamaChatPanel.log('Unknown message type: ' + message.type);
@@ -223,6 +247,11 @@ export class OllamaChatPanel {
     })().catch((e) => { OllamaChatPanel.log('Async IIFE error: ' + (e instanceof Error ? e.message : String(e))); });
   }
 
+  /** Send any message to the webview from outside the class (e.g. from extension.ts commands) */
+  public postMessageToWebview(msg: object): void {
+    this._panel.webview.postMessage(msg);
+  }
+
   public static createOrShow(context: vscode.ExtensionContext) {
     const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
 
@@ -239,6 +268,24 @@ export class OllamaChatPanel {
     );
 
     OllamaChatPanel.currentPanel = new OllamaChatPanel(panel, context);
+  }
+
+  private resolveSessionId(sessionId?: string): string {
+    const raw = typeof sessionId === 'string' ? sessionId.trim() : '';
+    return raw || 'default';
+  }
+
+  private switchChatSession(sessionId?: string): void {
+    const id = this.resolveSessionId(sessionId);
+    if (!this._chatHistories[id]) {
+      this._chatHistories[id] = [];
+    }
+    if (!this._agentMessagesBySession[id]) {
+      this._agentMessagesBySession[id] = [];
+    }
+    this._activeSessionId = id;
+    this._chatHistory = this._chatHistories[id];
+    this._agentMessages = this._agentMessagesBySession[id];
   }
 
   /**
@@ -316,7 +363,8 @@ export class OllamaChatPanel {
       .bubble button{font-size:11px;padding:2px 7px;margin:3px 3px 0 0;cursor:pointer;border-radius:4px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.25);color:inherit}
       #bottomBar{border-top:1px solid rgba(128,128,128,0.15);background:var(--vscode-editor-background);padding:6px 8px;display:flex;flex-direction:column;gap:4px}
       #topBar{display:flex;align-items:center;gap:6px;padding:0 2px 2px}
-      #modelSelect{flex:1;max-width:240px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
+      #chatSessionSelect{max-width:170px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
+      #modelSelect{flex:1;max-width:220px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
       .icon-btn{background:none;border:none;cursor:pointer;padding:3px 6px;border-radius:4px;font-size:15px;color:var(--vscode-editor-foreground);opacity:0.7;line-height:1}
       .icon-btn:hover{opacity:1;background:rgba(128,128,128,0.15)}
       .icon-btn.active{color:var(--vscode-button-background,#0e639c);opacity:1}
@@ -439,6 +487,9 @@ export class OllamaChatPanel {
     <div id="chat"></div>
     <div id="bottomBar">
       <div id="topBar">
+        <select id="chatSessionSelect" aria-label="選擇聊天"></select>
+        <button class="icon-btn" id="newChat" title="新增聊天">➕</button>
+        <button class="icon-btn" id="renameChat" title="設定聊天標題">🏷️</button>
         <select id="modelSelect" aria-label="選擇模型">${optionsHtml}</select>
         <button class="icon-btn" id="refreshModels" title="重整模型 / 測試連線">🔄</button>
         <button class="icon-btn" id="pickFile" title="附加檔案">📎</button>
@@ -587,7 +638,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
           else if (msg.type === 'memorySaved')   { var slb = document.getElementById('saveLtmBtn'); if (slb) { slb.textContent = '\u2713 \u5df2\u5132\u5b58'; setTimeout(function() { slb.textContent = '\uD83D\uDCBE \u5132\u5b58\u9577\u671f\u8a18\u61b6'; }, 1500); } }
-          else if (msg.type === 'historyCount')  { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; }
+          else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; } }
           else if (msg.type === 'consolidateStart') { var cs = document.getElementById('consolidateStatus'); if (cs) { cs.style.display = ''; cs.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026'; } var clb = document.getElementById('consolidateLtmBtn'); if (clb) clb.disabled = true; }
           else if (msg.type === 'consolidateChunk') { var cs2 = document.getElementById('consolidateStatus'); if (cs2) cs2.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026 ' + (msg.chunk || '').slice(0, 40); }
           else if (msg.type === 'consolidateDone') {
@@ -595,8 +646,17 @@ export class OllamaChatPanel {
             var cs3 = document.getElementById('consolidateStatus');
             if (msg.error) { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u274c \u6574\u7406\u5931\u6557\uff1a' + msg.error; } }
             else if (msg.skipped) { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u26a0\ufe0f \u5c0d\u8a71\u6b77\u53f2\u70ba\u7a7a\uff0c\u7121\u9700\u6574\u7406'; } }
-            else { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u2713 \u5df2\u6574\u7406\u4e26\u5132\u5b58\u5230\u9577\u671f\u8a18\u61b6'; } var a2 = document.getElementById('ltmArea'); if (a2) a2.value = msg.ltm || ''; chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null; var hp2 = document.getElementById('historyPreview'); if (hp2) hp2.value = '（已整理並清除）'; var hii2 = document.getElementById('historyInfo'); if (hii2) hii2.textContent = '對話歷史：0 條訊息'; }
+            else { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u2713 \u5df2\u6574\u7406\u4e26\u5132\u5b58\u5230\u9577\u671f\u8a18\u61b6'; } var a2 = document.getElementById('ltmArea'); if (a2) a2.value = msg.ltm || ''; chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null; saveActiveSessionSnapshot(); var hp2 = document.getElementById('historyPreview'); if (hp2) hp2.value = '（已整理並清除）'; var hii2 = document.getElementById('historyInfo'); if (hii2) hii2.textContent = '對話歷史：0 條訊息'; }
           }
+          // --- Messages FROM extension host (sidebar commands) ---
+          else if (msg.type === 'newChatSession') { createNewSession(); }
+          else if (msg.type === 'switchChatSessionFromHost') { if (msg.sessionId) switchChatSession(msg.sessionId); }
+          else if (msg.type === 'renameChatSessionFromHost') {
+            var rnSess = null;
+            for (var ri2 = 0; ri2 < _chatSessions.length; ri2++) { if (_chatSessions[ri2].id === msg.sessionId) { rnSess = _chatSessions[ri2]; break; } }
+            if (rnSess && msg.title) { rnSess.title = msg.title; rnSess.manualTitle = true; renderChatSessionSelect(); persistSessionState(); }
+          }
+          else if (msg.type === 'deleteChatSessionFromHost') { deleteChatSession(msg.sessionId); }
         } catch(e) { dbg('CATCH: ' + (e && e.message ? e.message : String(e))); }
       });
 
@@ -624,6 +684,143 @@ export class OllamaChatPanel {
 
       const sendBtn = document.getElementById('sendBtn');
       const statusBar = document.getElementById('statusBar');
+      const chatSessionSelect = document.getElementById('chatSessionSelect');
+      const newChatBtn = document.getElementById('newChat');
+      const renameChatBtn = document.getElementById('renameChat');
+
+      function defaultSessionState() {
+        return { sessions: [{ id: 'default', title: '聊天 1', html: '', manualTitle: false }], activeId: 'default', seq: 1 };
+      }
+
+      const savedState = vscode.getState && vscode.getState();
+      let _chatSessions = (savedState && Array.isArray(savedState.sessions) && savedState.sessions.length) ? savedState.sessions : defaultSessionState().sessions;
+      let _activeChatSessionId = (savedState && savedState.activeId) ? savedState.activeId : 'default';
+      let _chatSeq = (savedState && typeof savedState.seq === 'number') ? savedState.seq : 1;
+
+      function getActiveSession() {
+        for (var i = 0; i < _chatSessions.length; i++) {
+          if (_chatSessions[i].id === _activeChatSessionId) return _chatSessions[i];
+        }
+        return null;
+      }
+
+      function persistSessionState() {
+        if (!vscode.setState) return;
+        vscode.setState({ sessions: _chatSessions, activeId: _activeChatSessionId, seq: _chatSeq });
+        // Notify extension host (sidebar) of the current session list
+        vscode.postMessage({
+          type: 'notifySessionsChanged',
+          sessions: _chatSessions.map(function(s) { return { id: s.id, title: s.title }; }),
+          activeId: _activeChatSessionId
+        });
+      }
+
+      function saveActiveSessionSnapshot() {
+        var s = getActiveSession();
+        if (!s) return;
+        s.html = chat.innerHTML;
+        persistSessionState();
+      }
+
+      function resetTransientNodes() {
+        _streamNode = null; _agentStepNode = null; _pendingBubble = null;
+        _synthNode = null; _orchestratorNode = null; _orchestratorModel = '';
+        Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; });
+        Object.keys(_debateNodes).forEach(function(k){ delete _debateNodes[k]; });
+      }
+
+      function renderChatSessionSelect() {
+        if (!chatSessionSelect) return;
+        chatSessionSelect.innerHTML = '';
+        _chatSessions.forEach(function(s) {
+          var opt = document.createElement('option');
+          opt.value = s.id; opt.textContent = s.title || s.id;
+          if (s.id === _activeChatSessionId) opt.selected = true;
+          chatSessionSelect.appendChild(opt);
+        });
+      }
+
+      function switchChatSession(sessionId) {
+        if (!sessionId) return;
+        saveActiveSessionSnapshot();
+        _activeChatSessionId = sessionId;
+        var s = getActiveSession();
+        if (!s) {
+          s = { id: sessionId, title: '聊天', html: '', manualTitle: false };
+          _chatSessions.push(s);
+        }
+        resetTransientNodes();
+        chat.innerHTML = s.html || '';
+        clearFiles();
+        renderChatSessionSelect();
+        vscode.postMessage({ type: 'switchChatSession', sessionId: _activeChatSessionId });
+        persistSessionState();
+      }
+
+      function autoTitleFromPrompt(text) {
+        var s = getActiveSession();
+        if (!s || s.manualTitle) return;
+        if (!s.title || /^聊天\s*\d+$/.test(s.title)) {
+          var t = (text || '').replace(/\s+/g, ' ').trim();
+          if (!t) return;
+          s.title = t.length > 18 ? t.slice(0, 18) + '…' : t;
+          renderChatSessionSelect();
+          persistSessionState();
+        }
+      }
+
+      function createNewSession() {
+        saveActiveSessionSnapshot();
+        _chatSeq += 1;
+        var id = 'chat-' + Date.now() + '-' + _chatSeq;
+        var s = { id: id, title: '聊天 ' + _chatSeq, html: '', manualTitle: false };
+        _chatSessions.push(s);
+        _activeChatSessionId = id;
+        resetTransientNodes();
+        chat.innerHTML = '';
+        clearFiles();
+        renderChatSessionSelect();
+        vscode.postMessage({ type: 'switchChatSession', sessionId: _activeChatSessionId });
+        persistSessionState();
+      }
+
+      function renameActiveSession() {
+        var s = getActiveSession();
+        if (!s) return;
+        var title = window.prompt('請輸入聊天標題：', s.title || '');
+        if (title === null) return;
+        var t = title.trim();
+        if (!t) return;
+        s.title = t;
+        s.manualTitle = true;
+        renderChatSessionSelect();
+        persistSessionState();
+      }
+
+      function deleteChatSession(sessionId) {
+        if (_chatSessions.length <= 1) return; // keep at least one session
+        var idx = -1;
+        for (var i = 0; i < _chatSessions.length; i++) { if (_chatSessions[i].id === sessionId) { idx = i; break; } }
+        if (idx === -1) return;
+        _chatSessions.splice(idx, 1);
+        if (_activeChatSessionId === sessionId) {
+          var newIdx = Math.min(idx, _chatSessions.length - 1);
+          _activeChatSessionId = _chatSessions[newIdx].id;
+          var ns = _chatSessions[newIdx];
+          resetTransientNodes();
+          chat.innerHTML = ns.html || '';
+          clearFiles();
+          vscode.postMessage({ type: 'switchChatSession', sessionId: _activeChatSessionId });
+        }
+        renderChatSessionSelect();
+        persistSessionState();
+      }
+
+      renderChatSessionSelect();
+      switchChatSession(_activeChatSessionId);
+      if (chatSessionSelect) chatSessionSelect.addEventListener('change', function() { switchChatSession(chatSessionSelect.value); });
+      if (newChatBtn) newChatBtn.addEventListener('click', function() { createNewSession(); });
+      if (renameChatBtn) renameChatBtn.addEventListener('click', function() { renameActiveSession(); });
 
       // auto-grow textarea
       function resizePrompt() {
@@ -680,22 +877,23 @@ export class OllamaChatPanel {
         const text = prompt.value.trim(); if (!text) return;
         const m = modelSelect ? modelSelect.value : undefined;
         const label = text.length > 60 ? text.slice(0, 60) + '\u2026' : text;
+        autoTitleFromPrompt(text);
         appendMessage('user', label + (attachedFiles.length ? ' (\uD83D\uDCCE ' + attachedFiles.length + ')' : ''));
         if (teamMode) {
           var selModels = getSelectedTeamModels();
-          vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels });
+          vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, sessionId: _activeChatSessionId });
           prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
           if (statusBar) statusBar.textContent = '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
           return;
         }
         if (debateMode) {
           var debSel = getSelectedDebateModels();
-          vscode.postMessage({ type: 'debateSend', prompt: buildPromptWithFiles(text), models: debSel });
+          vscode.postMessage({ type: 'debateSend', prompt: buildPromptWithFiles(text), models: debSel, sessionId: _activeChatSessionId });
           prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
           if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u4e2d\u2026';
           return;
         }
-        vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m });
+        vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId });
         prompt.value = ''; resizePrompt(); clearFiles();
         setSendEnabled(false);
         appendLoadingBubble();
@@ -725,7 +923,8 @@ export class OllamaChatPanel {
       document.getElementById('clear').addEventListener('click', function() {
         chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
         Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; }); _synthNode = null; _orchestratorNode = null; _orchestratorModel = '';
-        vscode.postMessage({ type: 'clearHistory' });
+        saveActiveSessionSnapshot();
+        vscode.postMessage({ type: 'clearHistory', sessionId: _activeChatSessionId });
       });
 
       document.getElementById('agentMode').addEventListener('click', function() {
@@ -1420,9 +1619,11 @@ export class OllamaChatPanel {
 
       // Tell backend the webview is ready; delay to ensure VS Code message bridge is initialized
       setTimeout(function() { dbg('posting webviewReady'); vscode.postMessage({ type: 'webviewReady' }); dbg('webviewReady posted'); }, 0);
+      window.addEventListener('beforeunload', function() { saveActiveSessionSnapshot(); });
 
       // ── \u8a18\u61b6\u7ba1\u7406 Modal ──────────────────────────────────────────────────────
       function onMemoryLoaded(msg) {
+        if (msg.sessionId && msg.sessionId !== _activeChatSessionId) return;
         var area = document.getElementById('ltmArea');
         if (area) area.value = msg.ltm || '';
         var pp = document.getElementById('personaPreview');
@@ -1438,7 +1639,7 @@ export class OllamaChatPanel {
       if (memBtn) {
         memBtn.addEventListener('click', function() {
           if (memModal) memModal.classList.add('open');
-          vscode.postMessage({ type: 'memoryGet' });
+          vscode.postMessage({ type: 'memoryGet', sessionId: _activeChatSessionId });
         });
       }
       var memClose = document.getElementById('memClose');
@@ -1461,11 +1662,12 @@ export class OllamaChatPanel {
         chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
         var hp = document.getElementById('historyPreview'); if (hp) hp.value = '（已清除）';
         var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '對話歷史：0 條訊息';
-        vscode.postMessage({ type: 'clearHistory' });
+        saveActiveSessionSnapshot();
+        vscode.postMessage({ type: 'clearHistory', sessionId: _activeChatSessionId });
       });
       var consolidateLtmBtn = document.getElementById('consolidateLtmBtn');
       if (consolidateLtmBtn) consolidateLtmBtn.addEventListener('click', function() {
-        vscode.postMessage({ type: 'memoryConsolidate' });
+        vscode.postMessage({ type: 'memoryConsolidate', sessionId: _activeChatSessionId });
       });
       var editPersonaBtn = document.getElementById('editPersonaBtn');
       if (editPersonaBtn) editPersonaBtn.addEventListener('click', function() {
@@ -1662,6 +1864,7 @@ export class OllamaChatPanel {
       if (willRunAgent) {
         this._panel.webview.postMessage({ type: 'teamAgentStart', model: agentModel });
         this._agentMessages = [];
+        this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
         await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${synthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, agentModel);
       }
 
@@ -1829,6 +2032,7 @@ export class OllamaChatPanel {
         if (tWillRunAgent) {
           this._panel.webview.postMessage({ type: 'teamAgentStart', model: tAgentModel });
           this._agentMessages = [];
+          this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
           await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${tSynthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, tAgentModel);
         }
       }
@@ -2220,7 +2424,8 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     }
   }
 
-  private async handleSend(prompt: string, modelOverride?: string): Promise<void> {
+  private async handleSend(prompt: string, modelOverride?: string, sessionId?: string): Promise<void> {
+    this.switchChatSession(sessionId);
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const urls = getOllamaUrls(cfg);
     const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
@@ -2285,7 +2490,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
       // Save assistant response to short-term memory
       this._chatHistory.push({ role: 'assistant', content: fullResponse });
       this._panel.webview.postMessage({ type: 'streamEnd' });
-      this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length });
+      this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
     } catch (e: unknown) {
       // Roll back optimistic user msg
       this._chatHistory.pop();
@@ -2294,7 +2499,8 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     }
   }
 
-  private async handleMemoryConsolidate(): Promise<void> {
+  private async handleMemoryConsolidate(sessionId?: string): Promise<void> {
+    this.switchChatSession(sessionId);
     if (this._chatHistory.length < 2) {
       this._panel.webview.postMessage({ type: 'consolidateDone', ltm: this.getLongTermMemory(), skipped: true });
       return;
@@ -2333,7 +2539,9 @@ ${historyText}
         await this.saveLongTermMemory(newLtm);
       }
       this._chatHistory = [];
+      this._chatHistories[this._activeSessionId] = this._chatHistory;
       this._agentMessages = [];
+      this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
       this._panel.webview.postMessage({ type: 'consolidateDone', ltm: newLtm || currentLtm });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -2617,6 +2825,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     const sys = this._agentMessages[0];
     const rest = this._agentMessages.slice(1);
     this._agentMessages = [sys, ...rest.slice(-8)];
+    this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
   }
 
   /** 從 atlassian.atlascode 擷取 Jira auth (bearer token + baseApiUrl)。
