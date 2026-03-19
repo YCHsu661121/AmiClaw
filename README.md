@@ -7,7 +7,7 @@
 
 ## 安裝
 
-1. 從 [Releases](../../releases) 下載最新的 `ami-claw-x.x.x.vsix`（或自行打包）
+1. 從 [Releases](https://github.com/YCHsu661121/AmiClaw/releases) 下載最新的 `ami-claw-x.x.x.vsix`（或自行打包）
 2. VS Code → Extensions（`Ctrl+Shift+X`）→ 右上角 `…` → **Install from VSIX…**
 3. 選擇下載的 `.vsix` 檔案，重新載入視窗即完成
 
