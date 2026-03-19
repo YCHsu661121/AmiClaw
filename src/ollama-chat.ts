@@ -515,7 +515,7 @@ export class OllamaChatPanel {
       let attachedFiles = [];
       let _streamNode = null;
       let _pendingBubble = null;
-      let agentMode = false;
+      let agentMode = true;
       let teamMode = false;
       let _agentStepNode = null;
       const _teamNodes = {}; // id -> { node, bubble, thinkNode, responseNode, charCount, thinkStart, thinkTimer }
@@ -603,6 +603,11 @@ export class OllamaChatPanel {
       }
       prompt.addEventListener('input', function() { setSendEnabled(prompt.value.trim().length > 0); });
       setSendEnabled(true);
+
+      // Apply default agentMode=true state to UI
+      document.getElementById('agentMode').classList.add('active');
+      prompt.placeholder = '\u8f38\u5165\u4efb\u52d9\u2026 Agent \u6703\u81ea\u52d5\u4f7f\u7528\u5de5\u5177 (Enter \u9001\u51fa)';
+      if (statusBar) statusBar.textContent = '\uD83E\uDD16 Agent \u6a21\u5f0f';
 
       sendBtn.addEventListener('click', doSend);
 
