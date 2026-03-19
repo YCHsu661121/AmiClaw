@@ -133,6 +133,12 @@ export class OllamaChatPanel {
           case 'teamStop':
             this._teamCancel = true;
             break;
+          case 'debateSend':
+            this.handleDebateSend(message.prompt, message.models).catch(() => {});
+            break;
+          case 'debateStop':
+            this._teamCancel = true;
+            break;
           case 'applyToFile':
             await this.handleApplyToFile(message.code);
             break;
@@ -367,7 +373,14 @@ export class OllamaChatPanel {
       .team-todo-item.t-done .team-todo-task { text-decoration:line-through; opacity:0.42 }
       .team-todo-item.t-running .team-todo-task { color:#4fc1ff }
       .team-todo-worker { font-size:0.72em; opacity:0.5; margin-left:3px; font-style:italic; white-space:nowrap }
-      /* 團隊模式 — 成員選擇面板 */
+      /* 對話模式 */
+      .debate-turn { margin:6px 0; border-radius:6px; overflow:hidden }
+      .debate-turn-header { font-size:0.78em; font-weight:700; padding:3px 10px; display:flex; align-items:center; gap:5px }
+      .debate-turn-body { padding:6px 10px; white-space:pre-wrap; font-size:0.87em; line-height:1.55 }
+      .debate-consensus { text-align:center; font-size:0.82em; font-weight:700; color:var(--vscode-terminal-ansiGreen,#4ec94e); margin:8px 0; padding:5px 0; border-top:1px dashed rgba(128,128,128,0.3); border-bottom:1px dashed rgba(128,128,128,0.3) }
+      .debate-ended { text-align:center; font-size:0.82em; opacity:0.6; margin:6px 0 }
+      #debatePicker{display:none;padding:4px 8px 6px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;margin:2px 0;background:rgba(128,128,128,0.05);max-height:130px;overflow-y:auto}
+      #debatePicker.visible{display:block}
       #teamPicker{display:none;padding:4px 8px 6px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;margin:2px 0;background:rgba(128,128,128,0.05);max-height:130px;overflow-y:auto}
       #teamPicker.visible{display:block}
       #teamPickerBar{display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap}
@@ -434,6 +447,15 @@ export class OllamaChatPanel {
           <span id="teamPickerCount">0/5 已選</span>
         </div>
         <div id="teamPickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
+      </div>
+      <div id="debatePicker">
+        <div id="debatePickerBar">
+          <span style="font-size:11px;font-weight:700">&#x2694;&#xFE0F; 對話成員（2 個應戰，可加第 3 個裁判）</span>
+          <button class="team-pick-mini-btn" id="debatePickerRefresh">&#x1F504;</button>
+          <span style="flex:1"></span>
+          <span id="debatePickerCount">0/3 已選</span>
+        </div>
+        <div id="debatePickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
       </div>
       <div id="inputRow">
         <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
@@ -519,10 +541,16 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
           else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
           else if (msg.type === 'teamAgentStart')  { var tah = document.createElement('div'); tah.className = 'team-agent-header'; tah.textContent = '\uD83E\uDD16 Agent \u63A5\u529B\u57F7\u884C\u8A08\u5283\uFF08' + (msg.model||'') + '\uFF09'; chat.appendChild(tah); chat.scrollTop = chat.scrollHeight; }
-          else if (msg.type === 'teamModelList')   { populateTeamPicker(msg.models); }
+          else if (msg.type === 'teamModelList')   { populateTeamPicker(msg.models); populateDebatePicker(msg.models); }
           else if (msg.type === 'teamTodoList')  { createTodoPanel(msg.tasks); }
           else if (msg.type === 'teamTodoStart') { updateTodo(msg.idx, 'running', msg.worker); }
           else if (msg.type === 'teamTodoDone')  { updateTodo(msg.idx, 'done'); }
+          else if (msg.type === 'debateStart')   { createDebateHeader(msg.labelA, msg.labelB, msg.labelJ, msg.colorA, msg.colorB, msg.colorJ); }
+          else if (msg.type === 'debateTurnStart') { startDebateTurn(msg.speaker, msg.round); }
+          else if (msg.type === 'debateChunk')   { appendDebateChunk(msg.speaker, msg.chunk); }
+          else if (msg.type === 'debateThinkChunk') { appendDebateThinkChunk(msg.speaker, msg.chunk); }
+          else if (msg.type === 'debateTurnEnd') { finalizeDebateTurn(msg.speaker); }
+          else if (msg.type === 'debateEnd')     { finalizeDebate(msg.consensus); setSendEnabled(true); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f'; }
           else if (msg.type === 'agentStatus')   {
             if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             setSendEnabled(!msg.running);
@@ -551,6 +579,7 @@ export class OllamaChatPanel {
       let _pendingBubble = null;
       let agentMode = true;
       let teamMode = false;
+      let debateMode = false;
       let _agentStepNode = null;
       const _teamNodes = {}; // id -> { node, bubble, thinkNode, responseNode, charCount, thinkStart, thinkTimer }
       var _todosPanel = null;
@@ -559,6 +588,9 @@ export class OllamaChatPanel {
       let _orchestratorNode = null;
       let _orchestratorModel = '';
       let _teamAvailModels = []; // [{id, label, vendor}]
+      const _debateNodes = {}; // speaker -> { node, body, thinkNode, thinkChars, thinkStart, thinkTimer }
+      let _debateLabelA = '', _debateLabelB = '', _debateLabelJ = '';
+      let _debateColorA = '#4fc1ff', _debateColorB = '#ce9178', _debateColorJ = '#89d185';
 
       const sendBtn = document.getElementById('sendBtn');
       const statusBar = document.getElementById('statusBar');
@@ -626,6 +658,13 @@ export class OllamaChatPanel {
           if (statusBar) statusBar.textContent = '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
           return;
         }
+        if (debateMode) {
+          var debSel = getSelectedDebateModels();
+          vscode.postMessage({ type: 'debateSend', prompt: buildPromptWithFiles(text), models: debSel });
+          prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
+          if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u4e2d\u2026';
+          return;
+        }
         vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m });
         prompt.value = ''; resizePrompt(); clearFiles();
         setSendEnabled(false);
@@ -662,7 +701,8 @@ export class OllamaChatPanel {
       document.getElementById('agentMode').addEventListener('click', function() {
         agentMode = !agentMode;
         document.getElementById('agentMode').classList.toggle('active', agentMode);
-        if (agentMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); }
+        if (agentMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
+        if (agentMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
         if (statusBar) statusBar.textContent = agentMode ? '🤖 Agent 模式 — AI 可自動讀寫檔案、執行命令' : '';
         prompt.placeholder = agentMode ? '輸入任務… Agent 會自動使用工具 (Enter 送出)' : '輸入訊息… (Enter 送出 / Ctrl+Enter 換行)';
       });
@@ -671,6 +711,7 @@ export class OllamaChatPanel {
         teamMode = !teamMode;
         document.getElementById('teamMode').classList.toggle('active', teamMode);
         if (teamMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
+        if (teamMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
         var picker = document.getElementById('teamPicker');
         if (picker) picker.classList.toggle('visible', teamMode);
         if (teamMode) { vscode.postMessage({ type: 'fetchTeamModels' }); if (statusBar) statusBar.textContent = '\u{1F465} \u9078\u64c7\u5718\u968a\u6210\u54e1\u5f8c\u8f38\u5165\u554f\u984c'; }
@@ -679,6 +720,21 @@ export class OllamaChatPanel {
       });
       var tpr = document.getElementById('teamPickerRefresh');
       if (tpr) tpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
+
+      var debateModeBtn = document.getElementById('debateMode');
+      if (debateModeBtn) debateModeBtn.addEventListener('click', function() {
+        debateMode = !debateMode;
+        debateModeBtn.classList.toggle('active', debateMode);
+        if (debateMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
+        if (debateMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
+        var dp = document.getElementById('debatePicker');
+        if (dp) dp.classList.toggle('visible', debateMode);
+        if (debateMode) { vscode.postMessage({ type: 'fetchTeamModels' }); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u6a21\u5f0f\uff1a\u9078 2 \u500b AI \u8f2f\u8ad6\uff0c\u53ef\u52a0\u5730 3 \u500b\u88c1\u5224'; }
+        else { if (statusBar) statusBar.textContent = ''; }
+        prompt.placeholder = debateMode ? '\u8f38\u5165\u8bae\u9898\u6216\u4efb\u52d9\u2026 (Enter \u9001\u51fa)' : '\u8f38\u5165\u8a0a\u606f\u2026 (Enter \u9001\u51fa / Ctrl+Enter \u63db\u884c)';
+      });
+      var dpr = document.getElementById('debatePickerRefresh');
+      if (dpr) dpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
 
       document.getElementById('stopAgent').addEventListener('click', function() { vscode.postMessage({ type: 'agentStop' }); vscode.postMessage({ type: 'teamStop' }); });
 
@@ -1159,6 +1215,116 @@ export class OllamaChatPanel {
         return r;
       }
 
+      function populateDebatePicker(models) {
+        _teamAvailModels = models || [];
+        var list = document.getElementById('debatePickerList'); if (!list) return;
+        list.innerHTML = '';
+        if (!_teamAvailModels.length) {
+          list.innerHTML = '<span style="font-size:11px;opacity:0.6">\u7121\u53ef\u7528\u6a21\u578b</span>';
+          return;
+        }
+        _teamAvailModels.forEach(function(m, i) {
+          var row = document.createElement('div'); row.className = 'team-pick-row';
+          var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'dp' + i; cb.value = m.id;
+          cb.addEventListener('change', updateDebatePickerCount);
+          var lbl = document.createElement('label'); lbl.htmlFor = 'dp' + i;
+          lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
+          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label;
+          row.appendChild(cb); row.appendChild(lbl); list.appendChild(row);
+        });
+        updateDebatePickerCount();
+      }
+      function updateDebatePickerCount() {
+        var cbs = document.querySelectorAll('#debatePickerList input[type=checkbox]');
+        var n = 0; cbs.forEach(function(c) { if (c.checked) n++; });
+        var el = document.getElementById('debatePickerCount'); if (el) el.textContent = n + '/3 \u5df2\u9078';
+        cbs.forEach(function(c) { if (!c.checked) c.disabled = n >= 3; });
+      }
+      function getSelectedDebateModels() {
+        var r = [];
+        document.querySelectorAll('#debatePickerList input[type=checkbox]:checked').forEach(function(c) { r.push(c.value); });
+        return r;
+      }
+
+      // ── Debate bubble functions ──────────────────────────────────────────
+      function createDebateHeader(labelA, labelB, labelJ, colorA, colorB, colorJ) {
+        _debateLabelA = labelA; _debateLabelB = labelB; _debateLabelJ = labelJ || '';
+        _debateColorA = colorA; _debateColorB = colorB; _debateColorJ = colorJ;
+        Object.keys(_debateNodes).forEach(function(k) { delete _debateNodes[k]; });
+        var hdr = document.createElement('div');
+        hdr.style.cssText = 'text-align:center;font-size:0.82em;font-weight:700;margin:10px 0 4px;padding:5px 0;border-top:1px dashed rgba(128,128,128,0.3);border-bottom:1px dashed rgba(128,128,128,0.3)';
+        var tagA = '<span style="color:' + colorA + '">' + labelA + '</span>';
+        var tagB = '<span style="color:' + colorB + '">' + labelB + '</span>';
+        var tagJ = labelJ ? ' &#x00B7; <span style="color:' + colorJ + '">[' + labelJ + ' \u88c1\u5224]</span>' : '';
+        hdr.innerHTML = '\u2694\ufe0f \u5c0d\u8a71\u6a21\u5f0f\uff1a' + tagA + ' vs ' + tagB + tagJ;
+        chat.appendChild(hdr); chat.scrollTop = chat.scrollHeight;
+      }
+      function startDebateTurn(speaker, round) {
+        var label = speaker === 'A' ? _debateLabelA : speaker === 'B' ? _debateLabelB : _debateLabelJ + ' (\u88c1\u5224)';
+        var color = speaker === 'A' ? _debateColorA : speaker === 'B' ? _debateColorB : _debateColorJ;
+        var roleIcon = speaker === 'A' ? '\ud83d\udfe6' : speaker === 'B' ? '\ud83d\udfe7' : '\u2696\ufe0f';
+        var node = document.createElement('div'); node.className = 'msg assistant';
+        var bub = document.createElement('div'); bub.className = 'bubble debate-turn';
+        bub.style.borderLeft = '3px solid ' + color;
+        var h = document.createElement('div'); h.className = 'debate-turn-header';
+        h.style.color = color;
+        h.innerHTML = roleIcon + ' <strong>' + label + '</strong>' + (round >= 0 ? ' <span style="opacity:0.5;font-weight:normal">\u7b2c ' + (round + 1) + ' \u8f2a</span>' : '');
+        var body = document.createElement('div'); body.className = 'debate-turn-body';
+        bub.appendChild(h); bub.appendChild(body); node.appendChild(bub);
+        chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
+        _debateNodes[speaker] = { node: node, bub: bub, body: body, thinkNode: null, thinkChars: 0, thinkStart: 0, thinkTimer: null };
+      }
+      function appendDebateThinkChunk(speaker, chunk) {
+        var d = _debateNodes[speaker]; if (!d) return;
+        if (!d.thinkNode) {
+          var det = document.createElement('details'); det.className = 'think'; det.setAttribute('open', '');
+          var s = document.createElement('summary');
+          var color = speaker === 'A' ? _debateColorA : speaker === 'B' ? _debateColorB : _debateColorJ;
+          var icon = document.createElement('span'); icon.className = 'think-icon pulse'; icon.style.background = color;
+          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '\\u{1F9E0} \\u601d\\u8003\\u4e2d\\u2026';
+          s.appendChild(icon); s.appendChild(lbl);
+          var p = document.createElement('pre'); p.className = 'think-stream';
+          det.appendChild(s); det.appendChild(p);
+          d.bub.insertBefore(det, d.body);
+          d.thinkNode = det; d.thinkStart = Date.now(); d.thinkChars = 0;
+          d.thinkTimer = setInterval(function() {
+            if (!det.hasAttribute('open')) { clearInterval(d.thinkTimer); return; }
+            var secs = Math.round((Date.now() - d.thinkStart) / 1000);
+            var tok = Math.round((d.thinkChars || 0) / 4);
+            var ll = det.querySelector('.think-label'); if (ll) ll.textContent = '\\u{1F9E0} \\u601d\\u8003\\u4e2d\\u2026 (~' + tok + ' tokens, ' + secs + 's)';
+          }, 1000);
+        }
+        d.thinkChars = (d.thinkChars || 0) + chunk.length;
+        var pre = d.thinkNode.querySelector('pre.think-stream'); if (pre) { pre.textContent += chunk; pre.scrollTop = pre.scrollHeight; }
+        chat.scrollTop = chat.scrollHeight;
+      }
+      function appendDebateChunk(speaker, chunk) {
+        var d = _debateNodes[speaker]; if (!d) return;
+        if (d.thinkNode && d.thinkNode.hasAttribute('open')) {
+          d.thinkNode.removeAttribute('open');
+          if (d.thinkTimer) { clearInterval(d.thinkTimer); d.thinkTimer = null; }
+          var icon = d.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
+          var lbl = d.thinkNode.querySelector('.think-label');
+          var tok = Math.round((d.thinkChars || 0) / 4); var secs = Math.round((Date.now() - d.thinkStart) / 1000);
+          if (lbl) lbl.textContent = '\\u{1F9E0} \\u601d\\u8003\\u904e\\u7a0b (~' + tok + ' tokens, \\u8017\\u6642 ' + secs + 's)';
+        }
+        d.body.textContent += chunk; chat.scrollTop = chat.scrollHeight;
+      }
+      function finalizeDebateTurn(speaker) {
+        var d = _debateNodes[speaker]; if (!d) return;
+        if (d.thinkTimer) { clearInterval(d.thinkTimer); d.thinkTimer = null; }
+        if (d.thinkNode && d.thinkNode.hasAttribute('open')) {
+          d.thinkNode.removeAttribute('open');
+          var icon = d.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
+        }
+      }
+      function finalizeDebate(consensus) {
+        var div = document.createElement('div');
+        div.className = consensus ? 'debate-consensus' : 'debate-ended';
+        div.textContent = consensus ? '\u2705 \u96d9\u65b9\u5df2\u9054\u6210\u5171\u8b58' : '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f';
+        chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
+      }
+
       function updateModelSelect(models, current, copilotModels) {
         if (!modelSelect) return;
         modelSelect.innerHTML = '';
@@ -1605,6 +1771,127 @@ export class OllamaChatPanel {
       if (bestScore === -1 || s < bestScore) { bestScore = s; best = m; }
     }
     return best;
+  }
+
+  // ── Debate / Dialogue Mode ───────────────────────────────────────────────
+  /** 對話模式：2 個 AI 互相辯論/對弈；3 個 AI 則第三個當裁判 */
+  private async handleDebateSend(prompt: string, selectedModels?: string[]): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const allModels = (selectedModels && selectedModels.length >= 2) ? selectedModels.slice(0, 3) : [];
+    if (allModels.length < 2) {
+      this._panel.webview.postMessage({ type: 'error', text: '對話模式需要選擇至少 2 個 AI 模型' });
+      return;
+    }
+    const COLORS = ['#4fc1ff', '#ce9178', '#89d185'];
+    this._teamCancel = false;
+
+    const isOllama = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
+    const getLabel = (m: string) => m.startsWith('copilot/') ? m.slice('copilot/'.length) : m;
+
+    // Role assignment
+    const modelA = allModels[0];
+    const modelB = allModels[1];
+    const judgeModel = allModels[2] ?? null;
+
+    const labelA = getLabel(modelA);
+    const labelB = getLabel(modelB);
+    const labelJ = judgeModel ? getLabel(judgeModel) : null;
+
+    // Determine context type from prompt keywords
+    const isGame = /圍棋|象棋|西洋棋|chess|go\b|tic.tac|game|遊戲|下棋/i.test(prompt);
+    const roleADesc = isGame ? '你是玩家 A，正在進行: ' + prompt + '\n請直接回應你的走法或行動，並解釋思路。' : '你是「提案者」，針對以下問題提出解決方案或觀點:\n' + prompt + '\n請提出具體、有理據的立場。';
+    const roleBDesc = isGame ? '你是玩家 B，正在與玩家 A 對弈: ' + prompt + '\n根據玩家 A 的走法，回應你的走法，並解釋思路。' : '你是「質疑者」，針對提案者的觀點提出尖銳質疑或反駁:\n' + prompt + '\n找出邏輯漏洞、盲點或替代方案。若對方論述已嚴謹且你同意，請明確說「我同意」。';
+    const roleJDesc = labelJ ? '你是「裁判/仲裁者」。聽完雙方的辯論後，評估論點優劣，做出公正裁決並說明理由。' : '';
+
+    const wsFolders = vscode.workspace.workspaceFolders ?? [];
+    const wsRoot = wsFolders.map(f => f.uri.fsPath).join(', ') || '';
+    const wsCtx = wsRoot ? `\n【工作區】${wsRoot}` : '';
+
+    const callModel = async (
+      model: string,
+      systemPrompt: string,
+      history: { role: 'user' | 'assistant'; content: string }[],
+      onChunk: (c: string) => void,
+      onThink?: (c: string) => void
+    ): Promise<string> => {
+      const fullContext = systemPrompt + wsCtx + '\n\n' + history.map(m => (m.role === 'user' ? '[對方]: ' : '[我]: ') + m.content).join('\n\n');
+      if (model.startsWith('copilot/') || model.startsWith('copilot::')) {
+        const family = model.startsWith('copilot/') ? model.slice('copilot/'.length) : model.slice('copilot::'.length);
+        return await this.copilotStream(family, fullContext, onChunk);
+      } else {
+        return await ollamaGenerateStream(baseUrl, model, fullContext, onChunk, onThink);
+      }
+    };
+
+    // Announce start
+    this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
+
+    const historyA: { role: 'user' | 'assistant'; content: string }[] = [];
+    const historyB: { role: 'user' | 'assistant'; content: string }[] = [];
+    const MAX_ROUNDS = 8;
+    let consensus = false;
+
+    for (let round = 0; round < MAX_ROUNDS && !this._teamCancel; round++) {
+      // A speaks
+      this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'A', round });
+      let responseA = '';
+      try {
+        let thinkBuf = '';
+        responseA = await callModel(
+          modelA, roleADesc,
+          round === 0 ? [{ role: 'user', content: prompt }] : historyA,
+          (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: c }); },
+          (t) => { thinkBuf += t; if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); }
+        );
+      } catch (e) { responseA = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']'; }
+      this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A' });
+      if (this._teamCancel) break;
+      historyA.push({ role: 'assistant', content: responseA });
+      historyB.push({ role: 'user', content: responseA });
+
+      // B responds
+      this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'B', round });
+      let responseB = '';
+      try {
+        responseB = await callModel(
+          modelB, roleBDesc, historyB,
+          (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: c }); },
+          (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'B', chunk: t }); }
+        );
+      } catch (e) { responseB = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']'; }
+      this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B' });
+      if (this._teamCancel) break;
+      historyA.push({ role: 'user', content: responseB });
+      historyB.push({ role: 'assistant', content: responseB });
+
+      // Check consensus (non-game only)
+      if (!isGame && /我同意|達成共識|基本同意|agree|consensus/i.test(responseB)) {
+        consensus = true;
+        break;
+      }
+    }
+
+    // Judge speaks if present
+    if (judgeModel && !this._teamCancel) {
+      const judgeSummary = historyA.map((m, i) => {
+        const role = m.role === 'assistant' ? `[${labelA}]: ` : `[${labelB}]: `;
+        return role + m.content;
+      }).join('\n\n');
+      this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'J', round: -1 });
+      try {
+        await callModel(
+          judgeModel,
+          roleJDesc + '\n\n以下是雙方的完整對話:\n' + judgeSummary,
+          [{ role: 'user', content: '請做出最終裁決。' }],
+          (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); }
+        );
+      } catch { /* ignore */ }
+      this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J' });
+    }
+
+    this._panel.webview.postMessage({ type: 'debateEnd', consensus });
+    this._panel.webview.postMessage({ type: 'agentStatus', running: false });
   }
 
   private async fetchTeamModels(): Promise<void> {
