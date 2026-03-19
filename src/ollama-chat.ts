@@ -562,7 +562,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
-          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); }
+          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); var _pickerModels = []; (msg.models||[]).forEach(function(m) { _pickerModels.push({ id: m, label: m, vendor: 'ollama' }); }); (msg.copilotModels||[]).forEach(function(cm) { _pickerModels.push({ id: 'copilot::' + cm.id, label: cm.name, vendor: 'copilot' }); }); if (_pickerModels.length) { populateTeamPicker(_pickerModels); populateDebatePicker(_pickerModels); } }
           else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
@@ -2003,7 +2003,7 @@ export class OllamaChatPanel {
       const copilotModels = await vscode.lm.selectChatModels({ vendor: 'copilot' });
       const seen = new Set<string>();
       for (const m of copilotModels) {
-        const id = `copilot/${m.family}`;
+        const id = `copilot::${m.id}`;
         const rawName = m.name || m.family;
         const cleanName = rawName.replace(/\s+\d+x\b|\s+x\d+\b/gi, '').trim();
         if (!seen.has(id)) { seen.add(id); teamModels.push({ id, label: cleanName, vendor: 'copilot' }); }
@@ -2022,8 +2022,8 @@ export class OllamaChatPanel {
     maxRounds = 100,
     ollamaCall?: (model: string, prompt: string, onResp: (c: string) => void, onThink?: (c: string) => void) => Promise<string>
   ): Promise<string> {
-    const isCopilot = workerModel.startsWith('copilot/');
-    const workerFamily = isCopilot ? workerModel.slice('copilot/'.length) : workerModel;
+    const isCopilot = workerModel.startsWith('copilot/') || workerModel.startsWith('copilot::');
+    const workerFamily = workerModel.startsWith('copilot::') ? workerModel.slice('copilot::'.length) : workerModel.startsWith('copilot/') ? workerModel.slice('copilot/'.length) : workerModel;
     const callOllama = ollamaCall ?? ollamaGenerateStream.bind(null, baseUrl);
     let currentPrompt = assignedTask;
     let lastResponse = '';
