@@ -4,6 +4,9 @@ import * as vscode from 'vscode';
 import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as crypto from 'crypto';
+import { execSync } from 'child_process';
 import { URL } from 'url';
 
 // (Copied implementation from top-level file)
@@ -23,6 +26,7 @@ export class OllamaChatPanel {
   private _agentMessages: ChatMessage[] = [];
   private _agentTodos: { id: number; text: string; done: boolean }[] = [];
   private _teamCancel = false;
+  private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
   private _chatHistory: ChatMessage[] = [];
@@ -1902,6 +1906,83 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     }
   }
 
+  /** 從 atlassian.atlascode 擷取 Jira auth (bearer token + baseApiUrl)。
+   *  只支援 Windows，使用 Python (內建模組) + Node.js crypto 解密。
+   *  cache：到期前 5 分鐘更新。
+   */
+  private async getAtlascodeJiraAuth(): Promise<{ baseApiUrl: string; accessToken: string } | null> {
+    if (this._atlasJiraCred && this._atlasJiraCred.expiry > Date.now() + 300_000) {
+      return this._atlasJiraCred;
+    }
+    try {
+      const appData = process.env['APPDATA'];
+      if (!appData) { return null; }
+      const localStatePath = path.join(appData, 'Code', 'Local State');
+      if (!fs.existsSync(localStatePath)) { return null; }
+
+      // Python 腳本：使用內建模組讀 SQLite + DPAPI 解密 master key，輸出 JSON
+      const pyScript = [
+        'import sqlite3,json,ctypes,base64,os,sys',
+        `app=r'${appData.replace(/\\/g, '\\\\')}'`,
+        `db=os.path.join(app,'Code','User','globalStorage','state.vscdb')`,
+        `ls_path=os.path.join(app,'Code','Local State')`,
+        'with open(ls_path,encoding="utf-8") as f: ls=json.load(f)',
+        'enc=base64.b64decode(ls["os_crypt"]["encrypted_key"])[5:]',
+        'class B(ctypes.Structure): _fields_=[("n",ctypes.c_ulong),("p",ctypes.POINTER(ctypes.c_char))]',
+        'i=(ctypes.c_char*len(enc))(*enc); ib=B(len(enc),i); ob=B()',
+        'ok=ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(ib),None,None,None,None,0,ctypes.byref(ob))',
+        'if not ok: print(json.dumps({"error":"dpapi"})); sys.exit(1)',
+        'mk=list(ctypes.string_at(ob.p,ob.n)); ctypes.windll.kernel32.LocalFree(ob.p)',
+        'c=sqlite3.connect(db)',
+        'r=c.execute("SELECT value FROM ItemTable WHERE key=?",["atlassian.atlascode"]).fetchone()',
+        'if not r: print(json.dumps({"error":"no_state"})); sys.exit(1)',
+        'st=json.loads(r[0]); sites=st.get("jiraSites",[])',
+        'if not sites: print(json.dumps({"error":"no_sites"})); sys.exit(1)',
+        's=sites[0]',
+        'ck=\'secret://{"extensionId":"atlassian.atlascode","key":"jira-\'+s["credentialId"]+\'"}\'',
+        'er=c.execute("SELECT value FROM ItemTable WHERE key=?",[ck]).fetchone(); c.close()',
+        'if not er: print(json.dumps({"error":"no_cred"})); sys.exit(1)',
+        'ed=json.loads(er[0])',
+        'print(json.dumps({"mk":mk,"buf":ed["data"],"baseApiUrl":s["baseApiUrl"],"host":s.get("host","")}))',
+      ].join('\n');
+
+      const raw = execSync('python -', { input: pyScript, encoding: 'utf-8', timeout: 10_000 }).trim();
+      const parsed = JSON.parse(raw) as {
+        error?: string; mk?: number[]; buf?: number[];
+        baseApiUrl?: string; host?: string;
+      };
+      if (parsed.error || !parsed.mk || !parsed.buf || !parsed.baseApiUrl) {
+        OllamaChatPanel.log(`atlascode auth: ${parsed.error ?? 'missing fields'}`);
+        return null;
+      }
+
+      // AES-256-GCM 解密：v10(3) + nonce(12) + ciphertext + tag(16)
+      const masterKey = Buffer.from(parsed.mk);
+      const buf = Buffer.from(parsed.buf);
+      const nonce = buf.slice(3, 15);
+      const ciphertext = buf.slice(15, buf.length - 16);
+      const tag = buf.slice(buf.length - 16);
+      const decipher = crypto.createDecipheriv('aes-256-gcm', masterKey, nonce);
+      decipher.setAuthTag(tag);
+      const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      const cred = JSON.parse(plain.toString('utf-8')) as { access?: string; refresh?: string };
+      if (!cred.access) { return null; }
+
+      // 解析 JWT expiry
+      let expiry = Date.now() + 3_600_000; // 預設 1h
+      try {
+        const payload = JSON.parse(Buffer.from(cred.access.split('.')[1], 'base64').toString('utf-8'));
+        if (payload.exp) { expiry = payload.exp * 1000; }
+      } catch { /* ignore */ }
+
+      this._atlasJiraCred = { baseApiUrl: parsed.baseApiUrl, accessToken: cred.access, expiry };
+      return this._atlasJiraCred;
+    } catch (e) {
+      OllamaChatPanel.log(`getAtlascodeJiraAuth error: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  }
+
   private async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     const wsRoot = folders[0]?.uri.fsPath ?? '';
@@ -2106,17 +2187,31 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       case 'jira_fetch': {
         const fetchKey = (args.issue_key as string || '').trim().toUpperCase();
         if (!fetchKey) return '請提供 issue_key，例如 BIOS-123';
-        const jiraCfg = vscode.workspace.getConfiguration('amiClaw');
-        const jiraBase = (jiraCfg.get<string>('jiraBaseUrl') ?? '').replace(/\/$/, '');
-        const jiraEmail = jiraCfg.get<string>('jiraEmail') ?? '';
-        const jiraPat = jiraCfg.get<string>('jiraPat') ?? '';
-        if (!jiraBase) return '請先在 VS Code 設定中填寫 amiClaw.jiraBaseUrl（例如 https://yourcompany.atlassian.net）';
-        if (!jiraPat)  return '請先在 VS Code 設定中填寫 amiClaw.jiraPat（Jira API Token 或 PAT）';
-        const authHeader = jiraEmail
-          ? 'Basic ' + Buffer.from(`${jiraEmail}:${jiraPat}`).toString('base64')
-          : 'Bearer ' + jiraPat;
-        const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,created,updated';
-        const issueApiUrl = `${jiraBase}/rest/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
+
+        // 決定 auth：優先嘗試 atlascode 已登入憑證，fallback 到手動設定
+        let issueApiUrl: string;
+        let authHeader: string;
+        const atlasAuth = await this.getAtlascodeJiraAuth();
+        if (atlasAuth) {
+          // atlascode auth：baseApiUrl = https://api.atlassian.com/ex/jira/<id>/rest
+          const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,created,updated';
+          issueApiUrl = `${atlasAuth.baseApiUrl}/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
+          authHeader = `Bearer ${atlasAuth.accessToken}`;
+        } else {
+          // fallback：手動設定
+          const jiraCfg = vscode.workspace.getConfiguration('amiClaw');
+          const jiraBase = (jiraCfg.get<string>('jiraBaseUrl') ?? '').replace(/\/$/, '');
+          const jiraEmail = jiraCfg.get<string>('jiraEmail') ?? '';
+          const jiraPat = jiraCfg.get<string>('jiraPat') ?? '';
+          if (!jiraBase) return '找不到 atlassian.atlascode 登入資訊，請在 VS Code 設定中填寫 amiClaw.jiraBaseUrl';
+          if (!jiraPat)  return '找不到 atlassian.atlascode 登入資訊，請在 VS Code 設定中填寫 amiClaw.jiraPat';
+          const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,created,updated';
+          issueApiUrl = `${jiraBase}/rest/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
+          authHeader = jiraEmail
+            ? 'Basic ' + Buffer.from(`${jiraEmail}:${jiraPat}`).toString('base64')
+            : 'Bearer ' + jiraPat;
+        }
+
         return new Promise<string>((resolve) => {
           try {
             const u = new URL(issueApiUrl);
@@ -2129,7 +2224,12 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
               let data = '';
               res.on('data', (c: Buffer) => { data += c; });
               res.on('end', () => {
-                if (res.statusCode === 401 || res.statusCode === 403) { resolve(`Jira 認證失敗 (HTTP ${res.statusCode})，請確認 amiClaw.jiraEmail 與 amiClaw.jiraPat 設定正確。`); return; }
+                if (res.statusCode === 401 || res.statusCode === 403) {
+                  // token 可能過期，清除 cache 下次重新取得
+                  this._atlasJiraCred = null;
+                  resolve(`Jira 認證失敗 (HTTP ${res.statusCode})，請確認 atlassian.atlascode 已登入，或在設定中填寫 amiClaw.jiraPat。`);
+                  return;
+                }
                 if (res.statusCode === 404) { resolve(`找不到 Issue ${fetchKey}，請確認 Key 正確或使用者有權限。`); return; }
                 if (res.statusCode !== 200) { resolve(`Jira API 回傳 HTTP ${res.statusCode}: ${data.substring(0, 200)}`); return; }
                 try {

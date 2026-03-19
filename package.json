@@ -78,17 +78,17 @@
           "amiClaw.jiraBaseUrl": {
             "type": "string",
             "default": "",
-            "description": "Jira server base URL，例如 https://yourcompany.atlassian.net 或 https://jira.yourcompany.com。供 jira_fetch 工具直接呼叫 Jira REST API。"
+            "description": "（選填）Jira server base URL，例如 https://yourcompany.atlassian.net。若已安裝 atlassian.atlascode 並登入，系統會自動取得，無需手動設定。僅在無 atlascode 時作為 fallback。"
           },
           "amiClaw.jiraEmail": {
             "type": "string",
             "default": "",
-            "description": "Jira 登入 Email（Jira Cloud Basic Auth 用）。非空時使用 Basic base64(email:token)；空則使用 Bearer token。"
+            "description": "（選填）Jira 登入 Email（Jira Cloud Basic Auth fallback 用）。已安裝 atlascode 時不需要設定。"
           },
           "amiClaw.jiraPat": {
             "type": "string",
             "default": "",
-            "description": "Jira API Token（Cloud）或 Personal Access Token（Server/DC）。供 jira_fetch 工具使用。"
+            "description": "（選填）Jira API Token（Cloud）或 Personal Access Token（Server/DC）。已安裝 atlascode 時不需要設定。"
           }
         }
       }
