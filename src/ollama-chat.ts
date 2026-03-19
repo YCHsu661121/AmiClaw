@@ -136,14 +136,14 @@ export class OllamaChatPanel {
             break;
           case 'teamSend':
             this.switchChatSession(message.sessionId);
-            this.handleTeamSend(message.prompt, message.models).catch(() => {});
+            this.handleTeamSend(message.prompt, message.models, message.rounds).catch(() => {});
             break;
           case 'teamStop':
             this._teamCancel = true;
             break;
           case 'debateSend':
             this.switchChatSession(message.sessionId);
-            this.handleDebateSend(message.prompt, message.models).catch(() => {});
+            this.handleDebateSend(message.prompt, message.models, message.rounds).catch(() => {});
             break;
           case 'debateStop':
             this._teamCancel = true;
@@ -509,18 +509,34 @@ export class OllamaChatPanel {
       <div id="teamPicker">
         <div id="teamPickerBar">
           <span style="font-size:11px;font-weight:700">&#x1F465; 選擇團隊成員（最多 5 個）</span>
-          <button class="team-pick-mini-btn" id="teamPickerRefresh">&#x1F504;</button>
-          <span style="flex:1"></span>
-          <span id="teamPickerCount">0/5 已選</span>
+            <button class="team-pick-mini-btn" id="teamPickerRefresh">&#x1F504;</button>
+            <label style="font-size:11px;margin-left:8px">回合：</label>
+            <select id="teamRoundsSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="30">30</option>
+              <option value="150">150</option>
+              <option value="infinite">無限</option>
+            </select>
+            <span style="flex:1"></span>
+            <span id="teamPickerCount">0/5 已選</span>
         </div>
         <div id="teamPickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
       </div>
       <div id="debatePicker">
         <div id="debatePickerBar">
           <span style="font-size:11px;font-weight:700">&#x2694;&#xFE0F; 對話成員（2 個應戰，可加第 3 個裁判）</span>
-          <button class="team-pick-mini-btn" id="debatePickerRefresh">&#x1F504;</button>
-          <span style="flex:1"></span>
-          <span id="debatePickerCount">0/3 已選</span>
+            <button class="team-pick-mini-btn" id="debatePickerRefresh">&#x1F504;</button>
+            <label style="font-size:11px;margin-left:8px">回合：</label>
+            <select id="debateRoundsSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="30">30</option>
+              <option value="150">150</option>
+              <option value="infinite">無限</option>
+            </select>
+            <span style="flex:1"></span>
+            <span id="debatePickerCount">0/3 已選</span>
         </div>
         <div id="debatePickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
       </div>
@@ -881,18 +897,22 @@ export class OllamaChatPanel {
         autoTitleFromPrompt(text);
         appendMessage('user', label + (attachedFiles.length ? ' (\uD83D\uDCCE ' + attachedFiles.length + ')' : ''));
         if (teamMode) {
-          var selModels = getSelectedTeamModels();
-          vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, sessionId: _activeChatSessionId });
-          prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
-          if (statusBar) statusBar.textContent = '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
-          return;
+            var selModels = getSelectedTeamModels();
+            var roundsEl = document.getElementById('teamRoundsSelect');
+            var roundsVal = roundsEl ? roundsEl.value : '20';
+            vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, rounds: roundsVal, sessionId: _activeChatSessionId });
+            prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
+            if (statusBar) statusBar.textContent = '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
+            return;
         }
         if (debateMode) {
-          var debSel = getSelectedDebateModels();
-          vscode.postMessage({ type: 'debateSend', prompt: buildPromptWithFiles(text), models: debSel, sessionId: _activeChatSessionId });
-          prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
-          if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u4e2d\u2026';
-          return;
+            var debSel = getSelectedDebateModels();
+            var roundsElD = document.getElementById('debateRoundsSelect');
+            var roundsValD = roundsElD ? roundsElD.value : '20';
+            vscode.postMessage({ type: 'debateSend', prompt: buildPromptWithFiles(text), models: debSel, rounds: roundsValD, sessionId: _activeChatSessionId });
+            prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
+            if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u4e2d\u2026';
+            return;
         }
         vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId });
         prompt.value = ''; resizePrompt(); clearFiles();
@@ -1747,7 +1767,7 @@ export class OllamaChatPanel {
 </html>`;
   }
 
-  private async handleTeamSend(prompt: string, selectedModels?: string[]): Promise<void> {
+  private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const urls = getOllamaUrls(cfg);
     const defaultBaseUrl = urls[0];
@@ -1764,6 +1784,14 @@ export class OllamaChatPanel {
 
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
     this._teamCancel = false;
+    // Parse rounds parameter: 'infinite' or numeric; default 20
+    const roundsSelected = rounds ?? '20';
+    const roundsNum = String(roundsSelected) === 'infinite' ? Infinity : Number(roundsSelected) || 20;
+    // 記錄使用者輸入到短期記憶
+    this._chatHistory.push({ role: 'user', content: prompt });
+    this._chatHistories[this._activeSessionId] = this._chatHistory;
+    this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+    let finalDebateSummary = '';
     const systemContent = this.buildSystemContent();
     // Workspace context for all team prompts
     const wsFolders = vscode.workspace.workspaceFolders ?? [];
@@ -1837,7 +1865,7 @@ export class OllamaChatPanel {
           this._panel.webview.postMessage({ type: 'teamTodoStart', idx: taskItem.index, worker: displayName });
           this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: displayName, color, task: taskItem.task });
           try {
-            const response = await this.runWorkerDiscussion(getWorkerModel(model), copilotReviewFn, getWorkerUrl(model), taskItem.task, id, color);
+              const response = await this.runWorkerDiscussion(getWorkerModel(model), copilotReviewFn, getWorkerUrl(model), taskItem.task, id, color, roundsNum);
             results.push({ model: displayName, response });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -1862,6 +1890,12 @@ export class OllamaChatPanel {
             (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); }
           );
         } catch { /* ignore */ }
+        // 將協調員的綜合結果記入短期記憶
+        if (synthResult && synthResult.trim()) {
+          this._chatHistory.push({ role: 'assistant', content: synthResult });
+          this._chatHistories[this._activeSessionId] = this._chatHistory;
+          this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+        }
       }
 
       // Phase 3: Agent executor
@@ -1872,7 +1906,7 @@ export class OllamaChatPanel {
         this._panel.webview.postMessage({ type: 'teamAgentStart', model: agentModel });
         this._agentMessages = [];
         this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
-        await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${synthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, agentModel);
+        await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${synthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, agentModel, false);
       }
 
     } else {
@@ -1914,6 +1948,12 @@ export class OllamaChatPanel {
           );
           if (soloThinkTimer) { clearTimeout(soloThinkTimer); } soloFlushThink();
           results.push({ model: soloModel, response: soloResponse });
+          // 記錄單一模型回覆到短期記憶
+          if (soloResponse && soloResponse.trim()) {
+            this._chatHistory.push({ role: 'assistant', content: soloResponse });
+            this._chatHistories[this._activeSessionId] = this._chatHistory;
+            this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+          }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           this._panel.webview.postMessage({ type: 'teamResponseChunk', id: soloId, chunk: `[錯誤] ${msg}` });
@@ -1987,7 +2027,7 @@ export class OllamaChatPanel {
 
           try {
             const response = await this.runWorkerDiscussion(
-              getWorkerModel(model), ollamaReviewFn, getWorkerUrl(model), activeItem.task, id, color, 100,
+              getWorkerModel(model), ollamaReviewFn, getWorkerUrl(model), activeItem.task, id, color, roundsNum,
               ollamaCall
             );
             activeItem.status = 'done';
@@ -2040,7 +2080,7 @@ export class OllamaChatPanel {
           this._panel.webview.postMessage({ type: 'teamAgentStart', model: tAgentModel });
           this._agentMessages = [];
           this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
-          await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${tSynthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, tAgentModel);
+          await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${tSynthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, tAgentModel, false);
         }
       }
     }
@@ -2060,7 +2100,7 @@ export class OllamaChatPanel {
 
   // ── Debate / Dialogue Mode ───────────────────────────────────────────────
   /** 對話模式：2 個 AI 互相辯論/對弈；3 個 AI 則第三個當裁判 */
-  private async handleDebateSend(prompt: string, selectedModels?: string[]): Promise<void> {
+  private async handleDebateSend(prompt: string, selectedModels?: string[], rounds?: string | number): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const urls = getOllamaUrls(cfg);
     const allModels = (selectedModels && selectedModels.length >= 2) ? selectedModels.slice(0, 3) : [];
@@ -2070,6 +2110,9 @@ export class OllamaChatPanel {
     }
     const COLORS = ['#4fc1ff', '#ce9178', '#89d185'];
     this._teamCancel = false;
+    // Parse rounds parameter (default 20)
+    const roundsSelected = rounds ?? '20';
+    const maxRounds = String(roundsSelected) === 'infinite' ? Infinity : Number(roundsSelected) || 20;
 
     const isOllama = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
     const getLabel = (m: string) => {
@@ -2146,7 +2189,8 @@ export class OllamaChatPanel {
       // historyA = A's own turns; gameMoves = shared move log passed to B each turn
       const historyA: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: initPrompt + '\n\n請下第一手。' }];
       const gameMoves: string[] = [];
-      const MAX_GAME_ROUNDS = 6;
+      const MAX_GAME_ROUNDS = maxRounds;
+      let finalDebateSummary = '';
 
       for (let round = 0; round < MAX_GAME_ROUNDS && !this._teamCancel; round++) {
         // A moves
@@ -2197,12 +2241,22 @@ export class OllamaChatPanel {
           const rJ = await callModel(judgeModel, '你是棋局分析師，請客觀分析以下對局。', [{ role: 'user', content: gameSummary }],
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); });
           statsJ = { tokens: rJ.tokens, tps: rJ.tps };
+          finalDebateSummary = rJ.text || '';
         } catch (e) {
           const errJ = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
           if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: errJ });
         }
         this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J', tokens: statsJ.tokens, tps: statsJ.tps });
       }
+
+      // 儲存遊戲/裁判總結到短期記憶
+      if (finalDebateSummary && finalDebateSummary.trim()) {
+        this._chatHistory.push({ role: 'assistant', content: finalDebateSummary });
+      } else if (gameMoves.length) {
+        this._chatHistory.push({ role: 'assistant', content: gameMoves.join('\n') });
+      }
+      this._chatHistories[this._activeSessionId] = this._chatHistory;
+      this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
 
       this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
       this._panel.webview.postMessage({ type: 'agentStatus', running: false });
@@ -2223,7 +2277,7 @@ export class OllamaChatPanel {
     const historyB: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: prompt }];
     // Collected responses for judge summary
     const summaryLines: string[] = [];
-    const MAX_ROUNDS = 4;
+    const MAX_ROUNDS = maxRounds;
 
     for (let round = 0; round < MAX_ROUNDS && !this._teamCancel; round++) {
       // A speaks — only sees its own prior turns
@@ -2278,17 +2332,30 @@ export class OllamaChatPanel {
       ];
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'J', round: -1 });
       let statsDJ: { tokens?: number; tps?: number } = {};
+      let judgeSummary = '';
       try {
         const rJ = await callModel(
           judgeModel, roleJDesc, judgeMsgs,
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); }
         );
         statsDJ = { tokens: rJ.tokens, tps: rJ.tps };
+        judgeSummary = rJ.text || '';
       } catch (e) {
         const errJ = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
         if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: errJ });
       }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J', tokens: statsDJ.tokens, tps: statsDJ.tps });
+
+      // 儲存裁判綜合或摘要到短期記憶
+      if (!this._teamCancel) {
+        if (judgeSummary && judgeSummary.trim()) {
+          this._chatHistory.push({ role: 'assistant', content: judgeSummary });
+        } else if (summaryLines.length) {
+          this._chatHistory.push({ role: 'assistant', content: summaryLines.join('\n\n---\n\n') });
+        }
+        this._chatHistories[this._activeSessionId] = this._chatHistory;
+        this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+      }
     }
 
     this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
@@ -2717,7 +2784,7 @@ ${historyText}
     });
   }
 
-  private async handleAgent(userPrompt: string, modelOverride?: string): Promise<void> {
+  private async handleAgent(userPrompt: string, modelOverride?: string, recordToShortTerm = true): Promise<void> {
     if (this._agentRunning) { vscode.window.showInformationMessage('Agent 已在執行中'); return; }
     this._agentRunning = true;
     this._agentCancel = false;
@@ -2770,6 +2837,12 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       });
     }
     this._agentMessages.push({ role: 'user', content: userPrompt });
+    // 同步到短期記憶（若呼叫者需要記錄）
+    if (recordToShortTerm) {
+      this._chatHistory.push({ role: 'user', content: userPrompt });
+      this._chatHistories[this._activeSessionId] = this._chatHistory;
+      this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+    }
 
     try {
       for (let step = 0; step < 20 && !this._agentCancel; step++) {
@@ -2809,10 +2882,21 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             const preview = result.length > 400 ? result.slice(0, 400) + '\n…（已截斷）' : result;
             this._panel.webview.postMessage({ type: 'agentStepDone', result: preview, isError });
             this._agentMessages.push({ role: 'tool', content: result, tool_call_id: tc.id ?? fn.name });
+            if (recordToShortTerm) {
+              // Tool 回傳作為短期記憶的一部分（以 preview 儲存）
+              this._chatHistory.push({ role: 'assistant', content: preview });
+              this._chatHistories[this._activeSessionId] = this._chatHistory;
+              this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+            }
           }
         } else {
           const text = resp.content ?? '';
           this._agentMessages.push({ role: 'assistant', content: text });
+          if (recordToShortTerm) {
+            this._chatHistory.push({ role: 'assistant', content: text });
+            this._chatHistories[this._activeSessionId] = this._chatHistory;
+            this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+          }
           this._panel.webview.postMessage({ type: 'assistant', text });
           break;
         }
