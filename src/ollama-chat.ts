@@ -41,21 +41,16 @@ export class OllamaChatPanel {
     vscode.window.showInformationMessage('AmiClaw: Extension activated');
 
     // Seed long-term memory with Atlassian rules (re-seed when version tag changes)
-    const LTM_SEED_VER = 'atlassian-v2';
+    const LTM_SEED_VER = 'atlassian-v3';
     const existingLtm = context.globalState.get<string>('amiClaw.longTermMemory') ?? '';
     const atlassianSeed = `[${LTM_SEED_VER}]
-【Atlassian for VS Code — atlassian.atlascode 4.1.149】
+【Atlassian for VS Code — atlassian.atlascode】
 
-偵測規則：訊息中出現符合 [A-Z][A-Z0-9]*-\\d+ 的字串（例如 UOEM2-3476、BIOS-123、PROJ-456），一律視為 Jira Issue Key，不詢問、直接呼叫 jira_open 工具。多個 key 逐一各呼叫一次。
-
-工具使用時機：
-- jira_open(issue_key)   : 訊息含 Jira Key，或使用者說「查 XXX-123」「看一下 XXX-123」
-- jira_create(summary, description) : 使用者說「開 Jira」「建立 ticket」「新增 Issue」
-- jira_transition(issue_key) : 使用者說「把 XXX-123 標為完成 / In Progress / 關閉」
-- bb_create_pr()         : 使用者說「開 PR」「建立 Pull Request」「發 code review」
-- rovo_ask(question)     : 需查詢 Atlassian 知識庫，或使用者說「問一下 Rovo」
-
-回應格式：開啟 Issue 後簡短回覆「已開啟 XXX-123」；工具回傳錯誤時告知使用者確認格式。`;
+【強制規則，絕對不得違反】
+1. 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
+2. 分析 / RCA / 查看內容：第一步必須立即呼叫 jira_fetch，取得內容後再回答。
+3. 「我將」「我會」「我打算」等宣告意圖而不伴隨工具呼叫，一律禁止。
+4. 工具判斷：jira_fetch=取得內容供分析; jira_open=開 VS Code UI; jira_create=建立; jira_transition=轉狀態; bb_create_pr=開 PR; rovo_ask=問 Rovo Dev（不回傳）。`;
     if (!existingLtm.includes(LTM_SEED_VER)) {
       // Remove any previous atlassian seed block before re-seeding
       const stripped = existingLtm.replace(/\[atlassian-v\d+\][\s\S]*?(?=\n\n\[|$)/g, '').trim();
@@ -1677,12 +1672,21 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     if (ltm.trim()) {
       content += '\n\n## 長期記憶（關於使用者的重要資訊）\n' + ltm.trim();
     }
-    content += `\n\n## Atlassian 整合（atlassian.atlascode）\n\
-訊息中出現形如 UOEM2-3476、BIOS-123 等 [A-Z][A-Z0-9]*-\\d+ 的字串，一律視為 Jira Issue Key。\n\
-**分析 / 查看 Issue 內容** → 呼叫 \`jira_fetch\`（直接回傳 Summary、Description、Status 等供分析）。\n\
-**在 VS Code UI 面板開啟** → 呼叫 \`jira_open\`（不回傳內容，純 UI）。\n\
-**建立 Issue** → jira_create；**轉換狀態** → jira_transition；**開 PR** → bb_create_pr；**詢問 Rovo Dev** → rovo_ask（不回傳答案）。\n\
-若需分析，必須先呼叫 jira_fetch 取得 Issue 後再回答，不得憑空推測。`;
+    content += `\n\n## Atlassian 整合（atlassian.atlascode）
+\
+【強制規則—不得違反】
+\
+1. 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
+\
+2. 種類判斷與動作：
+\
+   - 「幫我分析 / RCA / 查看內容」任何分析許求 → 第一步必須立即呼叫 \`jira_fetch\`，取得內容後才可分析回答。
+\
+   - 「開啟 / 查看 / 顯示」 → 呼叫 \`jira_open\`（純 UI，不回傳內容）。
+\
+   - 建立 Issue → jira_create | 轉換狀態 → jira_transition | 開 PR → bb_create_pr | 問 Rovo Dev → rovo_ask
+\
+3. 【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖的語句而不實際呼叫工具。看到 Jira Key 就直接呼叫工具，立即執行，不詄語。`;
     return content;
   }
 
@@ -1826,18 +1830,24 @@ ${reviewText.replace('[APPROVED]', '').trim()}
         role: 'system',
         content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。${activeFileStr}${openFilesStr}
 
-執行策略（依優先順序）：
+執行必違規則：
+- 不得說「我將」「我會」等宣告意圖而不實際呼叫工具。看到需求就直接呼叫對應工具，立即執行。
+- 不確定時優先查閱本地程式碼，而非假設或憑空生成。
+
+執行策略：
 1. 先用 search_workspace 搜尋工作區中的檔案名稱、函式名稱、類別名稱等
 2. 讀取相關檔案確認實際內容
 3. 根據工作區實際程式碼進行修改或回答
-不確定時優先查閱本地程式碼，而非假設或憑空生成。
 
-## Atlassian 整合（atlassian.atlascode）
-訊息中出現形如 UOEM2-3476、BIOS-123 等 [A-Z][A-Z0-9]*-\d+ 的字串，視為 Jira Issue Key。
-- **分析 / 查看內容** → 呼叫 jira_fetch（回傳 Summary、Description、Status、Comment 等）
-- **在 VS Code UI 開啟** → jira_open（純 UI，不回傳內容）
-- **建立** → jira_create  **轉換狀態** → jira_transition  **開 PR** → bb_create_pr  **Rovo Dev** → rovo_ask
-若需分析，必須先呼叫 jira_fetch 取得 Issue 資料，不得憑空推測。
+## Atlassian 整合（atlassian.atlascode）【強制】
+訊息中出現 [A-Z][A-Z0-9]*-\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
+
+【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖而不實際呼叫工具。
+
+工具選擇規則：
+- 任何分析 / RCA / 查看內容 → 第一步必須立即呼叫 jira_fetch，取得 Issue 內容後再回答
+- 開啟 VS Code 面板 → jira_open（純 UI，不回傳內容）
+- 建立 Issue → jira_create；轉換狀態 → jira_transition；開 PR → bb_create_pr；問 Rovo Dev → rovo_ask
 ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
 
 請使用繁體中文回答，完成後告知使用者結果。`
@@ -2259,8 +2269,8 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'open_browser', description: '在 VS Code 簡易瀏覽器中開啟網址', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'manage_todo', description: 'Agent 內部任務清單。複雜任務請先建立任務清單，逐一完成後標記为done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=新增, done=完成, list=查看, clear=清空' }, text: { type: 'string', description: '任務內容（action=add 時必須）' }, id: { type: 'number', description: '任務 ID（action=done 時必須）' } }, required: ['action'] } } },
   { type: 'function', function: { name: 'vscode_action', description: 'VS Code 操作：開啟檔案到指定行、取得工作區信息、顯示通知、執行 VS Code 內建指令', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=開檔, get_workspace_info=工作區信息, show_notification=通知, run_command=執行内建指令' }, path: { type: 'string', description: 'open_file 用' }, line: { type: 'number', description: '開啟到哪一行' }, message: { type: 'string', description: 'show_notification 用' }, command: { type: 'string', description: 'run_command 用，VS Code 指令 ID' }, args: { type: 'array', description: '指令參數' } }, required: ['action'] } } },
-  { type: 'function', function: { name: 'jira_fetch', description: '直接呼叫 Jira REST API 取得 Issue 完整詳情（Summary、Description、Status、Assignee、Priority、最近留言等），供 AI 分析使用。需先在 amiClaw.jiraBaseUrl/jiraEmail/jiraPat 設定 Jira 憑證。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 UOEM2-3476' } }, required: ['issue_key'] } } },
-  { type: 'function', function: { name: 'jira_open', description: '在 VS Code 中開啟 Jira Issue 面板（僅開啟 UI，不回傳內容）。分析用途請改用 jira_fetch。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123 或 PROJ-456' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_fetch', description: '【立即執行】直接呼叫 Jira REST API 取得 Issue 完整詳情（Summary、Description、Status、Assignee、Priority、最近留言）供分析。看到 Jira Key 就呼叫，禁止先說「我將查詢」等意圖語句而不行動。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 UOEM2-3476' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_open', description: '在 VS Code 中開啟 Jira Issue UI 面板（不回傳內容，純介面操作）。需要 Issue 內容供分析時請用 jira_fetch 而非此工具。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123 或 PROJ-456' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'jira_create', description: '開啟 Jira 建立 Issue 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { summary: { type: 'string', description: 'Issue 標題（可選，預填）' }, description: { type: 'string', description: 'Issue 詳細描述（可選，預填）' } } } } },
   { type: 'function', function: { name: 'jira_transition', description: '開啟 Jira Issue 狀態轉換面板（如 TODO → IN PROGRESS → DONE）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'bb_create_pr', description: '開啟 Bitbucket 建立 Pull Request 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: {} } } },
