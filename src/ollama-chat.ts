@@ -3464,7 +3464,18 @@ function ollamaGenerateStream(
       };
 
       const req = protocol.request(options, (res) => {
+        if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+          let errBody = '';
+          res.setEncoding('utf8');
+          res.on('data', (d: string) => { errBody += d; });
+          res.on('end', () => {
+            try { const j = JSON.parse(errBody); reject(new Error('Ollama 錯誤：' + (j.error ?? 'HTTP ' + res.statusCode))); }
+            catch { reject(new Error('Ollama HTTP ' + res.statusCode)); }
+          });
+          return;
+        }
         res.setEncoding('utf8');
+        let streamError: string | null = null;
         res.on('data', (data: string) => {
           lineBuffer += data;
           const lines = lineBuffer.split('\n');
@@ -3474,13 +3485,17 @@ function ollamaGenerateStream(
             if (!t) continue;
             try {
               const json = JSON.parse(t);
+              if (json.error) { streamError = json.error as string; return; }
               // dedicated thinking field (Ollama >= 0.9 with think models)
               if (json.thinking && onThinkChunk) onThinkChunk(json.thinking as string);
               if (json.response) processToken(json.response as string);
             } catch { /* partial or non-JSON line */ }
           }
         });
-        res.on('end', () => resolve(fullResponse));
+        res.on('end', () => {
+          if (streamError) { reject(new Error('Ollama 錯誤：' + streamError)); return; }
+          resolve(fullResponse);
+        });
       });
       req.on('error', (e) => reject(new Error(`無法連線到 Ollama (${baseUrl})：${e.message}`)));
       req.write(body);
@@ -3531,7 +3546,18 @@ function ollamaChatStream(
       };
 
       const req = protocol.request(options, (res) => {
+        if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+          let errBody = '';
+          res.setEncoding('utf8');
+          res.on('data', (d: string) => { errBody += d; });
+          res.on('end', () => {
+            try { const j = JSON.parse(errBody); reject(new Error('Ollama 錯誤：' + (j.error ?? 'HTTP ' + res.statusCode))); }
+            catch { reject(new Error('Ollama HTTP ' + res.statusCode)); }
+          });
+          return;
+        }
         res.setEncoding('utf8');
+        let streamError: string | null = null;
         res.on('data', (data: string) => {
           lineBuffer += data;
           const lines = lineBuffer.split('\n');
@@ -3540,15 +3566,19 @@ function ollamaChatStream(
             const t = line.trim(); if (!t) continue;
             try {
               const json = JSON.parse(t);
+              if (json.error) { streamError = json.error as string; return; }
               // /api/chat stream format: json.message.thinking + json.message.content
               if (json.message?.thinking && onThinkChunk) onThinkChunk(json.message.thinking as string);
               if (json.message?.content) processToken(json.message.content as string);
             } catch { /* partial */ }
           }
         });
-        res.on('end', () => resolve(fullResponse));
+        res.on('end', () => {
+          if (streamError) { reject(new Error('Ollama 錯誤：' + streamError)); return; }
+          resolve(fullResponse);
+        });
       });
-      req.on('error', (e) => reject(new Error(`\u7121\u6cd5\u9023\u7dda\u5230 Ollama (${baseUrl})\uff1a${e.message}`)));
+      req.on('error', (e) => reject(new Error(`無法連線到 Ollama (${baseUrl})：${e.message}`)));
       req.write(body); req.end();
     } catch (e) { reject(e); }
   });
