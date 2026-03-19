@@ -1816,13 +1816,23 @@ export class OllamaChatPanel {
       onChunk: (c: string) => void,
       onThink?: (c: string) => void
     ): Promise<string> => {
-      const fullContext = systemPrompt + '\n\n' + history.map(m => (m.role === 'user' ? '[對方]: ' : '[我]: ') + m.content).join('\n\n');
       if (model.startsWith('copilot/') || model.startsWith('copilot::')) {
         const family = model.startsWith('copilot/') ? model.slice('copilot/'.length) : model.slice('copilot::'.length);
-        return await this.copilotStream(family, fullContext, onChunk);
+        // Copilot: flatten into single prompt (no tool calls needed)
+        const flatCtx = systemPrompt + '\n\n' + history.map(m => (m.role === 'user' ? '[對方]: ' : '[我]: ') + m.content).join('\n\n');
+        return await this.copilotStream(family, flatCtx, onChunk);
       } else {
+        // Ollama: use /api/chat with proper role separation to avoid safety misclassification
         await this.ensureModelReady(baseUrl, model);
-        return await ollamaGenerateStream(baseUrl, model, fullContext, onChunk, onThink);
+        const messages: ChatMessage[] = [
+          { role: 'system', content: systemPrompt },
+          ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+        ];
+        // Ollama /api/chat requires the last message to be from 'user'
+        if (messages[messages.length - 1].role !== 'user') {
+          messages.push({ role: 'user', content: '請繼續分享你的觀點。' });
+        }
+        return await ollamaChatStream(baseUrl, model, messages, onChunk, onThink);
       }
     };
 
