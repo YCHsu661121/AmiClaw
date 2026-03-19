@@ -1916,6 +1916,42 @@ ${reviewText.replace('[APPROVED]', '').trim()}
         }
         return `未知 vscode_action: ${action}`;
       }
+      case 'jira_open': {
+        const key = (args.issue_key as string || '').trim().toUpperCase();
+        if (!key) return '請提供 issue_key，例如 BIOS-123';
+        try {
+          await vscode.commands.executeCommand('atlascode.jira.showIssueForKey', key);
+          return `已開啟 Jira Issue: ${key}`;
+        } catch (e) { return `無法開啟 Jira Issue: ${e instanceof Error ? e.message : String(e)}`; }
+      }
+      case 'jira_create': {
+        try {
+          await vscode.commands.executeCommand('atlascode.jira.createIssue', args.summary ? { summary: args.summary, description: args.description } : undefined);
+          return '已開啟 Jira 建立 Issue 面板';
+        } catch (e) { return `開啟失敗: ${e instanceof Error ? e.message : String(e)}`; }
+      }
+      case 'jira_transition': {
+        const key = (args.issue_key as string || '').trim().toUpperCase();
+        if (!key) return '請提供 issue_key';
+        try {
+          await vscode.commands.executeCommand('atlascode.jira.transitionIssue', { key });
+          return `已開啟 ${key} 狀態轉換面板`;
+        } catch (e) { return `失敗: ${e instanceof Error ? e.message : String(e)}`; }
+      }
+      case 'bb_create_pr': {
+        try {
+          await vscode.commands.executeCommand('atlascode.bb.createPullRequest');
+          return '已開啟 Bitbucket 建立 Pull Request 面板';
+        } catch (e) { return `失敗: ${e instanceof Error ? e.message : String(e)}`; }
+      }
+      case 'rovo_ask': {
+        const question = (args.question as string || '').trim();
+        if (!question) return '請提供 question 參數';
+        try {
+          await vscode.commands.executeCommand('atlascode.rovodev.askInteractive', question);
+          return `已向 Rovo Dev 提問: ${question}`;
+        } catch (e) { return `失敗: ${e instanceof Error ? e.message : String(e)}`; }
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -1986,10 +2022,15 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'open_browser', description: '在 VS Code 簡易瀏覽器中開啟網址', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'manage_todo', description: 'Agent 內部任務清單。複雜任務請先建立任務清單，逐一完成後標記为done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=新增, done=完成, list=查看, clear=清空' }, text: { type: 'string', description: '任務內容（action=add 時必須）' }, id: { type: 'number', description: '任務 ID（action=done 時必須）' } }, required: ['action'] } } },
   { type: 'function', function: { name: 'vscode_action', description: 'VS Code 操作：開啟檔案到指定行、取得工作區信息、顯示通知、執行 VS Code 內建指令', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=開檔, get_workspace_info=工作區信息, show_notification=通知, run_command=執行内建指令' }, path: { type: 'string', description: 'open_file 用' }, line: { type: 'number', description: '開啟到哪一行' }, message: { type: 'string', description: 'show_notification 用' }, command: { type: 'string', description: 'run_command 用，VS Code 指令 ID' }, args: { type: 'array', description: '指令參數' } }, required: ['action'] } } },
+  { type: 'function', function: { name: 'jira_open', description: '在 VS Code 中開啟指定的 Jira Issue（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123 或 PROJ-456' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_create', description: '開啟 Jira 建立 Issue 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { summary: { type: 'string', description: 'Issue 標題（可選，預填）' }, description: { type: 'string', description: 'Issue 詳細描述（可選，預填）' } } } } },
+  { type: 'function', function: { name: 'jira_transition', description: '開啟 Jira Issue 狀態轉換面板（如 TODO → IN PROGRESS → DONE）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'bb_create_pr', description: '開啟 Bitbucket 建立 Pull Request 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'rovo_ask', description: '向 Atlassian Rovo Dev AI 提問（需要安裝 Atlassian 插件並登入）', parameters: { type: 'object', properties: { question: { type: 'string', description: '要問 Rovo Dev 的問題' } }, required: ['question'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', bb_create_pr: '🔀', rovo_ask: '🤖' };
   return m[name] ?? '🔧';
 }
 
@@ -2009,6 +2050,11 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'open_browser': return `開啟瀏覽器: ${args.url}`;
     case 'manage_todo': return `Todo (${args.action}${args.text ? ': ' + args.text : args.id ? ' #' + args.id : ''})`;
     case 'vscode_action': return `VS Code (${args.action}${args.path ? ': ' + args.path : args.command ? ': ' + args.command : ''})`;
+    case 'jira_open': return `Jira 開啟 Issue: ${args.issue_key}`;
+    case 'jira_create': return `Jira 建立 Issue${args.summary ? ': ' + args.summary : ''}`;
+    case 'jira_transition': return `Jira 轉換狀態: ${args.issue_key}`;
+    case 'bb_create_pr': return 'Bitbucket 建立 PR';
+    case 'rovo_ask': return `Rovo Dev: ${args.question}`;
     default: return name;
   }
 }
