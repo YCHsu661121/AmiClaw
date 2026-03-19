@@ -1214,7 +1214,19 @@ export class OllamaChatPanel {
 
     } else {
       // ── Ollama-only: 最具思考能力的模型擔任協調員 ──────────────────────────
+      // Ollama 同一 URL 同時只能跑一個 LLM，所有呼叫必須序列執行
       const thinkModel = OllamaChatPanel.pickThinkingModel(effectiveWorkers);
+
+      // 序列 Ollama wrapper：使用 retry（ECONNRESET/timeout → 等 60s 再試，最多 10 次）
+      const postStatus = (msg: string) => { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: msg }); };
+      const ollamaCall = (model: string, prompt2: string,
+        onResp: (c: string) => void, onThink?: (c: string) => void) =>
+        ollamaGenerateStreamWithRetry(
+          baseUrl, model, prompt2, onResp, onThink,
+          (attempt, waitSec, err) => {
+            postStatus(`\n⚠️ [${model}] 連線失敗 (${err})，第 ${attempt} 次重試，等待 ${waitSec}s...\n`);
+          }
+        );
 
       if (effectiveWorkers.length === 1) {
         // 單一模型：直接執行，無需討論
@@ -1229,8 +1241,8 @@ export class OllamaChatPanel {
             if (soloThinkBuf) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id: soloId, color: soloColor, chunk: soloThinkBuf }); soloThinkBuf = ''; }
             soloThinkTimer = null;
           };
-          const soloResponse = await ollamaGenerateStream(
-            baseUrl, soloModel, soloPrompt,
+          const soloResponse = await ollamaCall(
+            soloModel, soloPrompt,
             (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id: soloId, chunk }); },
             (tc) => { if (!this._teamCancel) { soloThinkBuf += tc; if (!soloThinkTimer) soloThinkTimer = setTimeout(soloFlushThink, 80); } }
           );
@@ -1245,54 +1257,95 @@ export class OllamaChatPanel {
         this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
 
       } else {
-        // 多模型：思考模型擔任協調員，其餘為工作模型
+        // 多模型序列模式：思考模型擔任協調員，所有 Ollama 呼叫依序執行
         // Phase 0: 思考模型生成細緻任務清單 (JSON)
         this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: thinkModel });
         const numOllamaTasks = Math.max(effectiveWorkers.length * 2, 4);
         const tPlanPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numOllamaTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
-        let tAssignments: { index: number; task: string }[] = Array.from({ length: numOllamaTasks }, (_, i) => ({ index: i, task: prompt }));
+        // Tasks: pending=not started, running=in progress, done=completed, failed=error
+        type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
+        interface TaskItem { index: number; task: string; status: TaskStatus; assignedTo?: string; response?: string; }
+        let tTasks: TaskItem[] = Array.from({ length: numOllamaTasks }, (_, i) => ({ index: i, task: prompt, status: 'pending' as TaskStatus }));
         try {
-          const tPlanText = await ollamaGenerateStream(
-            baseUrl, thinkModel, tPlanPrompt,
+          const tPlanText = await ollamaCall(
+            thinkModel, tPlanPrompt,
             (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk }); }
           );
           const tJsonMatch = tPlanText.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, null];
           const tJsonStr = (tJsonMatch[1] ?? tPlanText).trim();
           const tParsed = JSON.parse(tJsonStr);
           if (Array.isArray(tParsed.assignments)) {
-            tAssignments = tParsed.assignments.map((a: { index: number; task: string }) => ({ index: Number(a.index), task: String(a.task) }));
+            tTasks = tParsed.assignments.map((a: { index: number; task: string }) => ({
+              index: Number(a.index), task: String(a.task), status: 'pending' as TaskStatus
+            }));
           }
         } catch { /* use default assignments */ }
         this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
-        this._panel.webview.postMessage({ type: 'teamTodoList', tasks: tAssignments.map(a => a.task) });
-
+        this._panel.webview.postMessage({ type: 'teamTodoList', tasks: tTasks.map(a => a.task) });
         if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-        // Phase 1: 各工作模型從佇列認領任務，由思考模型審查
-        const ollamaReviewFn = (p: string, onChunk: (c: string) => void) =>
-          ollamaGenerateStream(baseUrl, thinkModel, p, onChunk);
-        let ollamaQueuePos = 0;
-        const nextOllamaTask = () => ollamaQueuePos < tAssignments.length ? tAssignments[ollamaQueuePos++] : null;
+        // Phase 1: 序列執行 — 依序讓每個模型處理一個任務，巡迴直到全部完成
+        // 序列佇列：一次只跑一個 Ollama call（包括 review）
+        const ollamaReviewFn = async (p: string, onChunk: (c: string) => void) =>
+          ollamaCall(thinkModel, p, onChunk);
 
-        await Promise.all(effectiveWorkers.map(async (model) => {
-          let tItem: { index: number; task: string } | null;
-          while ((tItem = nextOllamaTask()) !== null && !this._teamCancel) {
-            const id = `team_t${tItem.index}`;
-            const color = COLORS[tItem.index % COLORS.length];
-            this._panel.webview.postMessage({ type: 'teamTodoStart', idx: tItem.index, worker: model });
-            this._panel.webview.postMessage({ type: 'teamMemberStart', id, model, color, task: tItem.task });
-            try {
-              const response = await this.runWorkerDiscussion(model, ollamaReviewFn, baseUrl, tItem.task, id, color);
-              results.push({ model, response });
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
-              results.push({ model, response: `錯誤: ${msg}` });
-            }
-            this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
-            this._panel.webview.postMessage({ type: 'teamTodoDone', idx: tItem.index });
+        const getNextPending = () => tTasks.find(t => t.status === 'pending') ?? null;
+        const workerCycle = [...effectiveWorkers]; // round-robin workers
+        let workerIdx = 0;
+
+        while (!this._teamCancel) {
+          const tItem = getNextPending();
+          if (!tItem) break; // all tasks done or no more pending
+
+          // Also check for failed tasks that can be reassigned
+          const failedItem = tTasks.find(t => t.status === 'failed');
+          const activeItem = failedItem ?? tItem;
+
+          const model = workerCycle[workerIdx % workerCycle.length];
+          workerIdx++;
+          activeItem.status = 'running';
+          activeItem.assignedTo = model;
+
+          const id = `team_t${activeItem.index}`;
+          const color = COLORS[activeItem.index % COLORS.length];
+          this._panel.webview.postMessage({ type: 'teamTodoStart', idx: activeItem.index, worker: model });
+          this._panel.webview.postMessage({ type: 'teamMemberStart', id, model, color, task: activeItem.task });
+          if (failedItem) {
+            // Show reassignment notice
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `🔄 重新指派任務給 ${model}...\n` });
           }
-        }));
+
+          try {
+            const response = await this.runWorkerDiscussion(
+              model, ollamaReviewFn, baseUrl, activeItem.task, id, color, 100,
+              ollamaCall
+            );
+            activeItem.status = 'done';
+            activeItem.response = response;
+            results.push({ model, response });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
+            activeItem.status = 'failed';
+            // Orchestrator monitors: notify about failure and mark for reassignment
+            this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n⚠️ 協調員偵測到 [任務#${activeItem.index}] 失敗（${model}），標記重新指派...\n` });
+          }
+          this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+          if (activeItem.status === 'done') {
+            this._panel.webview.postMessage({ type: 'teamTodoDone', idx: activeItem.index });
+          }
+
+          // Safety: if all workers have tried and all remaining tasks are failed, give up
+          const allFailed = tTasks.every(t => t.status === 'done' || t.status === 'failed');
+          if (allFailed && tTasks.some(t => t.status === 'failed')) {
+            // Push failed tasks as error results and break
+            for (const ft of tTasks.filter(t => t.status === 'failed')) {
+              results.push({ model: ft.assignedTo ?? thinkModel, response: `[任務#${ft.index} 最終失敗，無法完成]` });
+              this._panel.webview.postMessage({ type: 'teamTodoDone', idx: ft.index });
+            }
+            break;
+          }
+        }
 
         if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
@@ -1302,8 +1355,8 @@ export class OllamaChatPanel {
           const tSynthPrompt = `【原始任務】\n${prompt}\n\n各助手已完成分配的工作，結果如下：\n${results.map(r => `\n--- ${r.model} ---\n${r.response}`).join('')}\n\n請以繁體中文，整合所有結果，給出完整的綜合回覆（條列重點）：`;
           this._panel.webview.postMessage({ type: 'teamSynthStart' });
           try {
-            tSynthResult = await ollamaGenerateStream(
-              baseUrl, thinkModel, tSynthPrompt,
+            tSynthResult = await ollamaCall(
+              thinkModel, tSynthPrompt,
               (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); }
             );
           } catch { /* ignore */ }
@@ -1361,10 +1414,12 @@ export class OllamaChatPanel {
     assignedTask: string,
     id: string,
     color: string,
-    maxRounds = 100
+    maxRounds = 100,
+    ollamaCall?: (model: string, prompt: string, onResp: (c: string) => void, onThink?: (c: string) => void) => Promise<string>
   ): Promise<string> {
     const isCopilot = workerModel.startsWith('copilot/');
     const workerFamily = isCopilot ? workerModel.slice('copilot/'.length) : workerModel;
+    const callOllama = ollamaCall ?? ollamaGenerateStream.bind(null, baseUrl);
     let currentPrompt = assignedTask;
     let lastResponse = '';
 
@@ -1380,8 +1435,8 @@ export class OllamaChatPanel {
       } else {
         let thinkBuf = ''; let thinkTimer: ReturnType<typeof setTimeout> | null = null;
         const flushThink = () => { if (thinkBuf) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: thinkBuf }); thinkBuf = ''; } thinkTimer = null; };
-        lastResponse = await ollamaGenerateStream(
-          baseUrl, workerModel, currentPrompt,
+        lastResponse = await callOllama(
+          workerModel, currentPrompt,
           (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); },
           (tc) => { if (!this._teamCancel) { thinkBuf += tc; if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80); } }
         );
@@ -2149,6 +2204,32 @@ function ollamaGenerate(baseUrl: string, model: string, prompt: string): Promise
       req.end();
     } catch (e) { reject(e); }
   });
+}
+
+const OLLAMA_RETRY_ERRORS = ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'socket hang up', '超時', 'timeout'];
+function isRetryableOllamaError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return OLLAMA_RETRY_ERRORS.some(s => msg.toLowerCase().includes(s.toLowerCase()));
+}
+async function ollamaGenerateStreamWithRetry(
+  baseUrl: string, model: string, prompt: string,
+  onResponseChunk: (chunk: string) => void,
+  onThinkChunk?: (chunk: string) => void,
+  onRetry?: (attempt: number, waitSec: number, err: string) => void,
+  maxRetries = 10,
+  retrySec = 60
+): Promise<string> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await ollamaGenerateStream(baseUrl, model, prompt, onResponseChunk, onThinkChunk);
+    } catch (e) {
+      if (attempt >= maxRetries || !isRetryableOllamaError(e)) throw e;
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (onRetry) onRetry(attempt + 1, retrySec, errMsg);
+      await new Promise(r => setTimeout(r, retrySec * 1000));
+    }
+  }
+  throw new Error('retry exhausted');
 }
 
 function ollamaGenerateStream(
