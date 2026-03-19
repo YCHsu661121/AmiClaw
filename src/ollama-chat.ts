@@ -1802,12 +1802,14 @@ export class OllamaChatPanel {
     // Determine context type from prompt keywords
     const isGame = /圍棋|象棋|西洋棋|chess|go\b|tic.tac|game|遊戲|下棋/i.test(prompt);
     const roleADesc = isGame
-      ? '你是玩家 A，正在進行以下對弈：\n\n' + prompt + '\n\n請直接回應你的走法或行動，並解釋思路。'
-      : '這是一場建設性的學術討論。你扮演「提案者」，針對以下議題提出具體的解決方案或觀點：\n\n' + prompt + '\n\n請以條理分明的方式陳述你的立場與理由。';
+      ? '你正在進行一場對弈。議題：\n\n' + prompt + '\n\n請直接回應你的走法或行動，並解釋思路。'
+      : '請針對以下議題，提出你的觀點與分析：\n\n' + prompt + '\n\n請條理分明地陳述你的立場與理由。';
     const roleBDesc = isGame
-      ? '你是玩家 B，正在進行以下對弈：\n\n' + prompt + '\n\n請閱讀玩家 A 的走法，回應你的走法並解釋思路。'
-      : '這是一場建設性的學術討論。你扮演「回應者」，針對以下議題分享你的觀點或補充不同角度的分析：\n\n' + prompt + '\n\n請提出有建設性的見解。若你認同對方的論述，請說「我同意」。';
-    const roleJDesc = labelJ ? '這是一場學術討論，你擔任「總結者」。請聽完雙方的陳述後，客觀整合各方觀點，做出綜合性的總結並說明你的判斷依據。' : '';
+      ? '你正在進行一場對弈。議題：\n\n' + prompt + '\n\n請直接回應你的走法或行動，並解釋思路。'
+      : '請針對以下議題，提出你的觀點與分析：\n\n' + prompt + '\n\n請從不同角度補充見解，或提出你認為重要的考量。';
+    const roleJDesc = labelJ
+      ? '以下是多位參與者針對同一議題各自的分析：\n\n' + prompt + '\n\n請整合所有觀點，做出客觀的綜合總結。'
+      : '';
 
     const callModel = async (
       model: string,
@@ -1839,22 +1841,23 @@ export class OllamaChatPanel {
     // Announce start
     this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
 
-    const historyA: { role: 'user' | 'assistant'; content: string }[] = [];
-    const historyB: { role: 'user' | 'assistant'; content: string }[] = [];
-    const MAX_ROUNDS = 8;
-    let consensus = false;
+    // Each model has fully independent context — they don't know each other exists
+    // historyA/B only contains that model's own [user, assistant, user, assistant, ...] turns
+    const historyA: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: prompt }];
+    const historyB: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: prompt }];
+    // Collected responses for judge summary
+    const summaryLines: string[] = [];
+    const MAX_ROUNDS = 4;
 
     for (let round = 0; round < MAX_ROUNDS && !this._teamCancel; round++) {
-      // A speaks
+      // A speaks — only sees its own prior turns
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'A', round });
       let responseA = '';
       try {
-        let thinkBuf = '';
         responseA = await callModel(
-          modelA, roleADesc,
-          round === 0 ? [{ role: 'user', content: prompt }] : historyA,
+          modelA, roleADesc, historyA,
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: c }); },
-          (t) => { thinkBuf += t; if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); }
+          (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); }
         );
       } catch (e) {
         responseA = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
@@ -1862,10 +1865,12 @@ export class OllamaChatPanel {
       }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A' });
       if (this._teamCancel) break;
+      // A's own memory: append its answer, then prime next user turn
       historyA.push({ role: 'assistant', content: responseA });
-      historyB.push({ role: 'user', content: responseA });
+      historyA.push({ role: 'user', content: '請繼續深入分析。' });
+      summaryLines.push(`【${labelA}】\n${responseA}`);
 
-      // B responds
+      // B speaks — only sees its own prior turns
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'B', round });
       let responseB = '';
       try {
@@ -1880,28 +1885,21 @@ export class OllamaChatPanel {
       }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B' });
       if (this._teamCancel) break;
-      historyA.push({ role: 'user', content: responseB });
+      // B's own memory: append its answer, then prime next user turn
       historyB.push({ role: 'assistant', content: responseB });
-
-      // Check consensus (non-game only)
-      if (!isGame && /我同意|達成共識|基本同意|agree|consensus/i.test(responseB)) {
-        consensus = true;
-        break;
-      }
+      historyB.push({ role: 'user', content: '請繼續深入分析。' });
+      summaryLines.push(`【${labelB}】\n${responseB}`);
     }
 
-    // Judge speaks if present
+    // Judge sees a plain-text summary of all responses — no cross-model raw content
     if (judgeModel && !this._teamCancel) {
-      const judgeSummary = historyA.map((m, i) => {
-        const role = m.role === 'assistant' ? `[${labelA}]: ` : `[${labelB}]: `;
-        return role + m.content;
-      }).join('\n\n');
+      const judgeMsgs: { role: 'user' | 'assistant'; content: string }[] = [
+        { role: 'user', content: summaryLines.join('\n\n---\n\n') + '\n\n請做出綜合總結。' }
+      ];
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'J', round: -1 });
       try {
         await callModel(
-          judgeModel,
-          roleJDesc + '\n\n以下是雙方的完整對話:\n' + judgeSummary,
-          [{ role: 'user', content: '請做出最終裁決。' }],
+          judgeModel, roleJDesc, judgeMsgs,
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); }
         );
       } catch (e) {
@@ -1911,7 +1909,7 @@ export class OllamaChatPanel {
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J' });
     }
 
-    this._panel.webview.postMessage({ type: 'debateEnd', consensus });
+    this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
     this._panel.webview.postMessage({ type: 'agentStatus', running: false });
   }
 
