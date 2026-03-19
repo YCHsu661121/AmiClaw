@@ -3834,7 +3834,13 @@ function ollamaChatStream(
 /** 讀取所有設定的 Ollama 伺服器 URL。優先使用 amiClaw.urls，fallback 到 amiClaw.url。 */
 function getOllamaUrls(cfg: vscode.WorkspaceConfiguration): string[] {
   const arr = (cfg.get<string[]>('urls') ?? []).filter((u: string) => u.trim());
-  if (arr.length > 0) return arr;
+  if (arr.length > 0) {
+    // 重複出現的 URL 視為停用：只保留恰好出現一次的 URL
+    const count = new Map<string, number>();
+    for (const u of arr) count.set(u, (count.get(u) ?? 0) + 1);
+    const enabled = arr.filter(u => count.get(u) === 1);
+    return enabled.length > 0 ? enabled : [];
+  }
   return [cfg.get<string>('url') ?? 'http://localhost:11434'];
 }
 
