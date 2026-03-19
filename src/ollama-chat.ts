@@ -30,6 +30,10 @@ export class OllamaChatPanel {
   private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
   private _rovoDevCache: { url: string; token: string; expiry: number } | undefined = undefined;
   private _rovoDevNullUntil = 0;
+  /** 寫入/刪除/執行 永遠允許集合（session 內持續）*/
+  private _alwaysAllow = new Set<string>();
+  /** 等待使用者確認的 pending promise resolve */
+  private _pendingPermission: ((allow: boolean) => void) | null = null;
   /** 最後一次送出請求的 Ollama model 名稱（切換時需清 VRAM）*/
   private _lastOllamaModel = '';
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -111,6 +115,15 @@ export class OllamaChatPanel {
           case 'agentStop':
             this._agentCancel = true;
             break;
+          case 'permissionResponse': {
+            if (this._pendingPermission) {
+              if (message.always) { this._alwaysAllow.add(message.category as string); }
+              const resolve = this._pendingPermission;
+              this._pendingPermission = null;
+              resolve(!!message.allow);
+            }
+            break;
+          }
           case 'fetchTeamModels':
             await this.fetchTeamModels();
             break;
@@ -381,6 +394,18 @@ export class OllamaChatPanel {
       .mem-btn:hover{background:rgba(128,128,128,0.25)}
       .mem-btn.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border-color:transparent}
       .mem-btn.primary:hover{opacity:0.88}
+      /* Permission dialog */
+      #permissionBar{display:none;padding:8px 10px;background:rgba(247,150,50,0.12);border:1px solid rgba(247,150,50,0.5);border-radius:6px;margin:4px 0;gap:8px;flex-direction:column}
+      #permissionBar.visible{display:flex}
+      #permissionDesc{font-size:12px;line-height:1.5;word-break:break-all}
+      #permissionBtns{display:flex;gap:6px;flex-wrap:wrap}
+      .perm-btn{font-size:12px;padding:4px 12px;border-radius:4px;border:1px solid;cursor:pointer;font-weight:600}
+      .perm-btn-allow{background:rgba(0,180,0,0.18);border-color:rgba(0,200,0,0.5);color:var(--vscode-terminal-ansiGreen,#4ec94e)}
+      .perm-btn-allow:hover{background:rgba(0,180,0,0.32)}
+      .perm-btn-always{background:rgba(0,122,204,0.2);border-color:rgba(0,140,240,0.5);color:#4fc1ff}
+      .perm-btn-always:hover{background:rgba(0,122,204,0.32)}
+      .perm-btn-deny{background:rgba(220,30,30,0.18);border-color:rgba(220,50,50,0.5);color:var(--vscode-terminal-ansiRed,#f87070)}
+      .perm-btn-deny:hover{background:rgba(220,30,30,0.32)}
     </style>
   </head>
   <body>
@@ -413,6 +438,14 @@ export class OllamaChatPanel {
       <div id="inputRow">
         <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
         <button id="sendBtn" title="送出 (Enter)">&#9658;</button>
+      </div>
+      <div id="permissionBar">
+        <div id="permissionDesc"></div>
+        <div id="permissionBtns">
+          <button class="perm-btn perm-btn-allow" id="permAllow">✅ 允許（此次）</button>
+          <button class="perm-btn perm-btn-always" id="permAlways">♾️ 永遠允許此類</button>
+          <button class="perm-btn perm-btn-deny" id="permDeny">❌ 拒絕</button>
+        </div>
       </div>
       <div id="statusBar"></div>
     </div>
@@ -496,6 +529,7 @@ export class OllamaChatPanel {
           }
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
+          else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description); }
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
@@ -1212,6 +1246,38 @@ export class OllamaChatPanel {
       });
 
       // JS-side safety net: if connectionStatus never arrives in 5s, ask again
+      // ── Permission dialog ───────────────────────────────────────────────
+      var _currentPermCategory = '';
+      function showPermissionBar(category, description) {
+        _currentPermCategory = category || '';
+        var bar = document.getElementById('permissionBar');
+        var desc = document.getElementById('permissionDesc');
+        if (!bar || !desc) return;
+        var catLabel = { write: '\u{1F4BE} \u5beb\u5165\u6a94\u6848', delete: '\u{1F5D1} \u522a\u9664\u6a94\u6848', run: '\u{25B6}\uFE0F \u57f7\u884c\u6307\u4ee4' }[category] || '\u26A0\uFE0F \u654f\u611f\u64cd\u4f5c';
+        desc.textContent = catLabel + '\uff1a' + description;
+        bar.classList.add('visible');
+      }
+      function hidePermissionBar() {
+        var bar = document.getElementById('permissionBar');
+        if (bar) bar.classList.remove('visible');
+        _currentPermCategory = '';
+      }
+      var permAllow = document.getElementById('permAllow');
+      var permAlways = document.getElementById('permAlways');
+      var permDeny = document.getElementById('permDeny');
+      if (permAllow) permAllow.addEventListener('click', function() {
+        hidePermissionBar();
+        vscode.postMessage({ type: 'permissionResponse', allow: true, always: false, category: _currentPermCategory });
+      });
+      if (permAlways) permAlways.addEventListener('click', function() {
+        hidePermissionBar();
+        vscode.postMessage({ type: 'permissionResponse', allow: true, always: true, category: _currentPermCategory });
+      });
+      if (permDeny) permDeny.addEventListener('click', function() {
+        hidePermissionBar();
+        vscode.postMessage({ type: 'permissionResponse', allow: false, always: false, category: _currentPermCategory });
+      });
+
       var debugBtnEl = document.getElementById('debugBtn');
       dbg('debugBtn found: ' + !!debugBtnEl);
       if (debugBtnEl) {
@@ -1885,6 +1951,15 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     if (!this._autoCancel) { vscode.window.showInformationMessage('自動執行已結束。'); } else { vscode.window.showInformationMessage('自動執行已被中止。'); }
   }
 
+  /** 要求使用者確認敏感操作，回傳是否允許。已在 _alwaysAllow 則直接通過。*/
+  private requestPermission(category: string, description: string): Promise<boolean> {
+    if (this._alwaysAllow.has(category)) { return Promise.resolve(true); }
+    return new Promise<boolean>((resolve) => {
+      this._pendingPermission = resolve;
+      this._panel.webview.postMessage({ type: 'permissionRequest', category, description });
+    });
+  }
+
   private async handleAgent(userPrompt: string, modelOverride?: string): Promise<void> {
     if (this._agentRunning) { vscode.window.showInformationMessage('Agent 已在執行中'); return; }
     this._agentRunning = true;
@@ -2286,6 +2361,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       case 'write_file': {
         const fpath = resolvePath(args.path as string);
         const content = (args.content as string) ?? '';
+        const allowed = await this.requestPermission('write', `寫入檔案: ${fpath}（${content.length} 字元）`);
+        if (!allowed) { return '使用者已拒絕寫入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
         return `已寫入 ${fpath}（${content.length} 字元）`;
       }
@@ -2296,6 +2373,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const oldStr = args.old_str as string;
         const newStr = (args.new_str as string) ?? '';
         if (!original.includes(oldStr)) { return `錯誤：在 ${fpath} 中找不到指定的字串`; }
+        const allowed = await this.requestPermission('write', `編輯檔案: ${fpath}`);
+        if (!allowed) { return '使用者已拒絕編輯操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.replace(oldStr, newStr), 'utf8'));
         return `已更新 ${fpath}`;
       }
@@ -2317,6 +2396,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       }
       case 'run_terminal': {
         const cmd = args.command as string;
+        const allowed = await this.requestPermission('run', `終端機執行: ${cmd}`);
+        if (!allowed) { return '使用者已拒絕執行操作'; }
         const terminals = vscode.window.terminals;
         const terminal = terminals.length > 0 ? terminals[terminals.length - 1] : vscode.window.createTerminal('Agent');
         terminal.show(true);
@@ -2351,6 +2432,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       }
       case 'delete_file': {
         const fpath = resolvePath(args.path as string);
+        const allowed = await this.requestPermission('delete', `刪除: ${fpath}`);
+        if (!allowed) { return '使用者已拒絕刪除操作'; }
         await vscode.workspace.fs.delete(vscode.Uri.file(fpath), { recursive: (args.recursive as boolean) ?? false });
         return `已刪除 ${fpath}`;
       }
@@ -2362,6 +2445,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       case 'run_command': {
         const cmd = args.command as string;
         const cwd = (args.cwd as string) ? resolvePath(args.cwd as string) : (folders[0]?.uri.fsPath ?? process.cwd());
+        const allowed = await this.requestPermission('run', `執行指令: ${cmd}`);
+        if (!allowed) { return '使用者已拒絕執行操作'; }
         return new Promise<string>((resolve) => {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
           const { exec } = require('child_process') as typeof import('child_process');
