@@ -264,7 +264,7 @@ export class OllamaChatPanel {
       @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.3;transform:scale(0.6)} }
       details.think summary::before { content:none }
       details.think[open] summary::before { content:none }
-      details.think pre { margin:0; padding:6px 10px; white-space:pre-wrap; color:var(--vscode-editor-foreground); opacity:0.85; font-size:0.82em; max-height:260px; overflow-y:auto; background:transparent }
+      details.think pre { margin:0; padding:6px 10px; white-space:pre-wrap; color:var(--vscode-editor-foreground); opacity:0.85; font-size:0.82em; max-height:96px; overflow-y:auto; background:transparent }
       .file-chip { display:inline-flex; align-items:center; gap:3px; background:rgba(0,120,215,0.14); border:1px solid rgba(0,120,215,0.3); border-radius:3px; padding:1px 6px; font-size:11px; margin:2px }
       .file-chip .rm { padding:0 2px; font-size:11px; background:none; border:none; cursor:pointer; opacity:0.6; color:inherit; line-height:1 }
       #attachedFiles { padding:2px 8px; display:flex; flex-wrap:wrap; min-height:0 }
@@ -303,6 +303,14 @@ export class OllamaChatPanel {
       .team-review-body { white-space:pre-wrap; opacity:0.9 }
       .team-round-approved { color:var(--vscode-terminal-ansiGreen,#4ec94e); font-weight:700; margin-left:4px }
       .team-round-iterate { color:#f7cc65; margin-left:4px }
+      .team-todos-panel { background:rgba(128,128,128,0.06); border:1px solid rgba(128,128,128,0.2); border-radius:6px; padding:6px 10px; margin:8px 0; width:100%; box-sizing:border-box }
+      .team-todos-header { font-size:0.78em; font-weight:700; color:#f7cc65; margin-bottom:5px; display:flex; align-items:center; gap:5px }
+      .team-todo-item { display:flex; align-items:flex-start; gap:5px; padding:2px 0; font-size:0.78em; line-height:1.5 }
+      .team-todo-status { width:14px; text-align:center; flex-shrink:0; padding-top:1px }
+      .team-todo-task { opacity:0.85; line-height:1.4; word-break:break-word }
+      .team-todo-item.t-done .team-todo-task { text-decoration:line-through; opacity:0.42 }
+      .team-todo-item.t-running .team-todo-task { color:#4fc1ff }
+      .team-todo-worker { font-size:0.72em; opacity:0.5; margin-left:3px; font-style:italic; white-space:nowrap }
       /* 團隊模式 — 成員選擇面板 */
       #teamPicker{display:none;padding:4px 8px 6px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;margin:2px 0;background:rgba(128,128,128,0.05);max-height:130px;overflow-y:auto}
       #teamPicker.visible{display:block}
@@ -419,6 +427,9 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
           else if (msg.type === 'teamAgentStart')  { var tah = document.createElement('div'); tah.className = 'team-agent-header'; tah.textContent = '\uD83E\uDD16 Agent \u63A5\u529B\u57F7\u884C\u8A08\u5283\uFF08' + (msg.model||'') + '\uFF09'; chat.appendChild(tah); chat.scrollTop = chat.scrollHeight; }
           else if (msg.type === 'teamModelList')   { populateTeamPicker(msg.models); }
+          else if (msg.type === 'teamTodoList')  { createTodoPanel(msg.tasks); }
+          else if (msg.type === 'teamTodoStart') { updateTodo(msg.idx, 'running', msg.worker); }
+          else if (msg.type === 'teamTodoDone')  { updateTodo(msg.idx, 'done'); }
           else if (msg.type === 'agentStatus')   {
             if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             setSendEnabled(!msg.running);
@@ -448,6 +459,8 @@ export class OllamaChatPanel {
       let teamMode = false;
       let _agentStepNode = null;
       const _teamNodes = {}; // id -> { node, bubble, thinkNode, responseNode, charCount, thinkStart, thinkTimer }
+      var _todosPanel = null;
+      var _todoChecked = 0;
       let _synthNode = null;
       let _orchestratorNode = null;
       let _teamAvailModels = []; // [{id, label, vendor}]
@@ -864,6 +877,35 @@ export class OllamaChatPanel {
         if (_orchestratorNode.hdr) _orchestratorNode.hdr.textContent = _orchestratorNode.hdr.textContent.replace('\u5206\u914D\u5DE5\u4F5C\u4E2D\u2026', '\u2713 \u5DE5\u4F5C\u5206\u914D\u5B8C\u6210');
       }
 
+      function createTodoPanel(tasks) {
+        var wrap = document.createElement('div'); wrap.className = 'msg';
+        var bub = document.createElement('div'); bub.className = 'team-todos-panel';
+        var hdr = document.createElement('div'); hdr.className = 'team-todos-header';
+        var ttl = document.createElement('span'); ttl.id = 'todosTitle'; ttl.textContent = '\u4efb\u52d9\u6e05\u55ae (0/' + tasks.length + ')';
+        hdr.appendChild(document.createTextNode('\uD83D\uDCCB ')); hdr.appendChild(ttl);
+        bub.appendChild(hdr);
+        for (var i = 0; i < tasks.length; i++) {
+          var row = document.createElement('div'); row.className = 'team-todo-item'; row.id = 'todo_item_' + i;
+          var st = document.createElement('span'); st.className = 'team-todo-status'; st.textContent = '\u23f3';
+          var tk = document.createElement('span'); tk.className = 'team-todo-task'; tk.textContent = tasks[i];
+          var wk = document.createElement('span'); wk.className = 'team-todo-worker'; wk.id = 'todo_worker_' + i;
+          row.appendChild(st); row.appendChild(tk); row.appendChild(wk); bub.appendChild(row);
+        }
+        wrap.appendChild(bub); chat.appendChild(wrap); chat.scrollTop = chat.scrollHeight;
+        _todosPanel = bub; _todoChecked = 0;
+      }
+      function updateTodo(idx, status, worker) {
+        var row = document.getElementById('todo_item_' + idx); if (!row) return;
+        row.className = 'team-todo-item' + (status === 'done' ? ' t-done' : status === 'running' ? ' t-running' : '');
+        var st = row.querySelector('.team-todo-status'); if (st) st.textContent = status === 'done' ? '\u2705' : status === 'running' ? '\uD83D\uDD04' : '\u23f3';
+        var wk = document.getElementById('todo_worker_' + idx); if (wk && worker) wk.textContent = '\u2190 ' + worker;
+        if (status === 'done') {
+          _todoChecked++;
+          var total = _todosPanel ? _todosPanel.querySelectorAll('.team-todo-item').length : 0;
+          var ttl2 = document.getElementById('todosTitle'); if (ttl2) ttl2.textContent = '\u4efb\u52d9\u6e05\u55ae (' + _todoChecked + '/' + total + ')';
+        }
+      }
+
       function startTeamRound(id, round) {
         var m = _teamNodes[id]; if (!m) return;
         if (round > 0) {
@@ -1045,11 +1087,11 @@ export class OllamaChatPanel {
       // ── Orchestration mode ────────────────────────────────────────────────
       const orchestratorDisplay = '\uD83D\uDC19 ' + orchestratorFamily;
 
-      // Phase 0: Orchestrator generates work plan (task per worker)
+      // Phase 0: Orchestrator generates granular task list
       this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: orchestratorDisplay });
-      const workerList = effectiveWorkers.map((m, i) => `${i + 1}. ${getDisplay(m)}`).join('\n');
-      const planPrompt = `你是 AI 工作協調員。請分析下面的任務，將工作細分並分派給 ${effectiveWorkers.length} 個 AI 助手平行執行。\n\n【任務】\n${prompt}\n\n【可用助手】\n${workerList}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"具體子任務"},{"index":1,"task":"具體子任務"}]}`;
-      let assignments: { index: number; task: string }[] = effectiveWorkers.map((_, i) => ({ index: i, task: prompt }));
+      const numCopilotTasks = Math.max(effectiveWorkers.length * 2, 4);
+      const planPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numCopilotTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
+      let assignments: { index: number; task: string }[] = Array.from({ length: numCopilotTasks }, (_, i) => ({ index: i, task: prompt }));
       try {
         const planText = await this.copilotStream(
           orchestratorFamily, planPrompt,
@@ -1063,28 +1105,35 @@ export class OllamaChatPanel {
         }
       } catch { /* use default assignments */ }
       this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+      this._panel.webview.postMessage({ type: 'teamTodoList', tasks: assignments.map(a => a.task) });
 
       if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-      // Phase 1: Workers run iterative discussion loops, reviewed by Copilot orchestrator
+      // Phase 1: Workers pick tasks from queue, each reviewed by Copilot orchestrator
       const copilotReviewFn = (p: string, onChunk: (c: string) => void) =>
         this.copilotStream(orchestratorFamily, p, onChunk);
+      let copilotQueuePos = 0;
+      const nextCopilotTask = () => copilotQueuePos < assignments.length ? assignments[copilotQueuePos++] : null;
 
-      await Promise.all(effectiveWorkers.map(async (model, idx) => {
-        const id = `team_${idx}`;
-        const color = COLORS[idx % COLORS.length];
+      await Promise.all(effectiveWorkers.map(async (model) => {
         const displayName = getDisplay(model);
-        const assignedTask = assignments.find(a => a.index === idx)?.task ?? prompt;
-        this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: displayName, color, task: assignedTask });
-        try {
-          const response = await this.runWorkerDiscussion(model, copilotReviewFn, baseUrl, assignedTask, id, color, 3);
-          results.push({ model: displayName, response });
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
-          results.push({ model: displayName, response: `錯誤: ${msg}` });
+        let taskItem: { index: number; task: string } | null;
+        while ((taskItem = nextCopilotTask()) !== null && !this._teamCancel) {
+          const id = `team_t${taskItem.index}`;
+          const color = COLORS[taskItem.index % COLORS.length];
+          this._panel.webview.postMessage({ type: 'teamTodoStart', idx: taskItem.index, worker: displayName });
+          this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: displayName, color, task: taskItem.task });
+          try {
+            const response = await this.runWorkerDiscussion(model, copilotReviewFn, baseUrl, taskItem.task, id, color);
+            results.push({ model: displayName, response });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
+            results.push({ model: displayName, response: `錯誤: ${msg}` });
+          }
+          this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+          this._panel.webview.postMessage({ type: 'teamTodoDone', idx: taskItem.index });
         }
-        this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
       }));
 
       if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
@@ -1145,11 +1194,11 @@ export class OllamaChatPanel {
 
       } else {
         // 多模型：思考模型擔任協調員，其餘為工作模型
-        // Phase 0: 思考模型生成工作計畫 (JSON)
+        // Phase 0: 思考模型生成細緻任務清單 (JSON)
         this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: thinkModel });
-        const tWorkerList = effectiveWorkers.map((m, i) => `${i + 1}. ${m}`).join('\n');
-        const tPlanPrompt = `你是 AI 工作協調員。請分析下面的任務，將工作細分並分派給 ${effectiveWorkers.length} 個 AI 助手平行執行。\n\n【任務】\n${prompt}\n\n【可用助手】\n${tWorkerList}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"具體子任務"},{"index":1,"task":"具體子任務"}]}`;
-        let tAssignments: { index: number; task: string }[] = effectiveWorkers.map((_, i) => ({ index: i, task: prompt }));
+        const numOllamaTasks = Math.max(effectiveWorkers.length * 2, 4);
+        const tPlanPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numOllamaTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
+        let tAssignments: { index: number; task: string }[] = Array.from({ length: numOllamaTasks }, (_, i) => ({ index: i, task: prompt }));
         try {
           const tPlanText = await ollamaGenerateStream(
             baseUrl, thinkModel, tPlanPrompt,
@@ -1163,27 +1212,34 @@ export class OllamaChatPanel {
           }
         } catch { /* use default assignments */ }
         this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+        this._panel.webview.postMessage({ type: 'teamTodoList', tasks: tAssignments.map(a => a.task) });
 
         if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-        // Phase 1: 各工作模型進行迭代討論，由思考模型審查
+        // Phase 1: 各工作模型從佇列認領任務，由思考模型審查
         const ollamaReviewFn = (p: string, onChunk: (c: string) => void) =>
           ollamaGenerateStream(baseUrl, thinkModel, p, onChunk);
+        let ollamaQueuePos = 0;
+        const nextOllamaTask = () => ollamaQueuePos < tAssignments.length ? tAssignments[ollamaQueuePos++] : null;
 
-        await Promise.all(effectiveWorkers.map(async (model, idx) => {
-          const id = `team_${idx}`;
-          const color = COLORS[idx % COLORS.length];
-          const tTask = tAssignments.find(a => a.index === idx)?.task ?? prompt;
-          this._panel.webview.postMessage({ type: 'teamMemberStart', id, model, color, task: tTask });
-          try {
-            const response = await this.runWorkerDiscussion(model, ollamaReviewFn, baseUrl, tTask, id, color, 3);
-            results.push({ model, response });
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
-            results.push({ model, response: `錯誤: ${msg}` });
+        await Promise.all(effectiveWorkers.map(async (model) => {
+          let tItem: { index: number; task: string } | null;
+          while ((tItem = nextOllamaTask()) !== null && !this._teamCancel) {
+            const id = `team_t${tItem.index}`;
+            const color = COLORS[tItem.index % COLORS.length];
+            this._panel.webview.postMessage({ type: 'teamTodoStart', idx: tItem.index, worker: model });
+            this._panel.webview.postMessage({ type: 'teamMemberStart', id, model, color, task: tItem.task });
+            try {
+              const response = await this.runWorkerDiscussion(model, ollamaReviewFn, baseUrl, tItem.task, id, color);
+              results.push({ model, response });
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
+              results.push({ model, response: `錯誤: ${msg}` });
+            }
+            this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+            this._panel.webview.postMessage({ type: 'teamTodoDone', idx: tItem.index });
           }
-          this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
         }));
 
         if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
@@ -1253,7 +1309,7 @@ export class OllamaChatPanel {
     assignedTask: string,
     id: string,
     color: string,
-    maxRounds = 3
+    maxRounds = 100
   ): Promise<string> {
     const isCopilot = workerModel.startsWith('copilot/');
     const workerFamily = isCopilot ? workerModel.slice('copilot/'.length) : workerModel;
@@ -1307,7 +1363,7 @@ ${lastResponse}
       } catch { /* accept current response on error */ }
       const approved = reviewText.includes('[APPROVED]') || reviewText.trim() === '';
       this._panel.webview.postMessage({ type: 'teamRoundDone', id, approved });
-      if (approved) { break; }
+      if (approved && round >= 2) { break; }
 
       // Feed orchestrator feedback back to worker
       currentPrompt = `${assignedTask}

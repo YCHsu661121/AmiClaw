@@ -4,6 +4,7 @@
   "description": "AmiClaw - Local Ollama chat assistant for code generation and insertion.",
   "version": "0.0.1",
   "publisher": "localdev",
+  "icon": "AmiClaw.png",
   "engines": { "vscode": "^1.90.0" },
   "main": "./out/extension.js",
   "scripts": {
