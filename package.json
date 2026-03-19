@@ -74,6 +74,21 @@
             "editPresentation": "multilineText",
             "default": "你是一位資深頂尖全端軟體工程師，精通 TypeScript/JavaScript、Python、C/C++、Rust、Go、Shell/PowerShell、UEFI/BIOS 韌體工程。你邏輯嚴密、思路清晰，能直接找出問題根因並提供完整可執行的解法，不說廢話。請用繁體中文回答，技術術語附上英文原文。",
             "description": "AI 角色設定（System Prompt），每次對話都會自動套用。可在此自訂角色、背景知識與回答風格。"
+          },
+          "amiClaw.jiraBaseUrl": {
+            "type": "string",
+            "default": "",
+            "description": "Jira server base URL，例如 https://yourcompany.atlassian.net 或 https://jira.yourcompany.com。供 jira_fetch 工具直接呼叫 Jira REST API。"
+          },
+          "amiClaw.jiraEmail": {
+            "type": "string",
+            "default": "",
+            "description": "Jira 登入 Email（Jira Cloud Basic Auth 用）。非空時使用 Basic base64(email:token)；空則使用 Bearer token。"
+          },
+          "amiClaw.jiraPat": {
+            "type": "string",
+            "default": "",
+            "description": "Jira API Token（Cloud）或 Personal Access Token（Server/DC）。供 jira_fetch 工具使用。"
           }
         }
       }

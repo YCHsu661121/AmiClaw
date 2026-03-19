@@ -1677,25 +1677,12 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     if (ltm.trim()) {
       content += '\n\n## 長期記憶（關於使用者的重要資訊）\n' + ltm.trim();
     }
-    content += `\n\n## Atlassian 整合（識別碼: atlassian.atlascode 4.1.149）\n\
-VS Code 已安裝 Atlassian for VS Code，可直接操作 Jira、Rovo Dev、Bitbucket。\n\
-\n\
-### 偵測規則\n\
-訊息中出現符合 \`[A-Z][A-Z0-9]*-\\d+\` 的組合（例如 UOEM2-3476、BIOS-123、PROJ-456），**一律視為 Jira Issue Key**，不需詢問直接呼叫 \`jira_open\`。\n\
-\n\
-### 可用工具與使用時機\n\
-| 工具 | 使用時機 |\n\
-|------|----------|\n\
-| \`jira_open(issue_key)\` | 訊息含 Jira Key → **立即開啟**；或使用者說「看一下 XXX-123」「查 XXX-123」 |\n\
-| \`jira_create(summary, description)\` | 使用者說「開一個 Jira」「建立 Issue」「新增 ticket」 |\n\
-| \`jira_transition(issue_key)\` | 使用者說「把 XXX-123 標為完成 / In Progress / 關閉」 |\n\
-| \`bb_create_pr()\` | 使用者說「開 PR」「建立 Pull Request」「發 code review」 |\n\
-| \`rovo_ask(question)\` | 需要查詢 Atlassian 知識庫、詢問專案資訊、或使用者說「問一下 Rovo」 |\n\
-\n\
-### 回應格式\n\
-- 開啟 Jira Issue 後，簡短告知使用者「已在 VS Code 開啟 XXX-123」。\n\
-- 若 Issue key 無效（工具回傳錯誤），告知使用者並建議確認格式。\n\
-- 多個 Issue key 時逐一呼叫 \`jira_open\`。`;
+    content += `\n\n## Atlassian 整合（atlassian.atlascode）\n\
+訊息中出現形如 UOEM2-3476、BIOS-123 等 [A-Z][A-Z0-9]*-\\d+ 的字串，一律視為 Jira Issue Key。\n\
+**分析 / 查看 Issue 內容** → 呼叫 \`jira_fetch\`（直接回傳 Summary、Description、Status 等供分析）。\n\
+**在 VS Code UI 面板開啟** → 呼叫 \`jira_open\`（不回傳內容，純 UI）。\n\
+**建立 Issue** → jira_create；**轉換狀態** → jira_transition；**開 PR** → bb_create_pr；**詢問 Rovo Dev** → rovo_ask（不回傳答案）。\n\
+若需分析，必須先呼叫 jira_fetch 取得 Issue 後再回答，不得憑空推測。`;
     return content;
   }
 
@@ -1846,8 +1833,11 @@ VS Code 已安裝 Atlassian for VS Code，可直接操作 Jira、Rovo Dev、Bitb
 不確定時優先查閱本地程式碼，而非假設或憑空生成。
 
 ## Atlassian 整合（atlassian.atlascode）
-訊息中出現形如 UOEM2-3476、BIOS-123 等 [A-Z][A-Z0-9]*-\d+ 的字串，一律視為 Jira Issue Key，不詢問直接呼叫 jira_open。多個 key 逐一呼叫。
-工具：jira_open / jira_create / jira_transition / bb_create_pr / rovo_ask —— 詳見長期記憶。
+訊息中出現形如 UOEM2-3476、BIOS-123 等 [A-Z][A-Z0-9]*-\d+ 的字串，視為 Jira Issue Key。
+- **分析 / 查看內容** → 呼叫 jira_fetch（回傳 Summary、Description、Status、Comment 等）
+- **在 VS Code UI 開啟** → jira_open（純 UI，不回傳內容）
+- **建立** → jira_create  **轉換狀態** → jira_transition  **開 PR** → bb_create_pr  **Rovo Dev** → rovo_ask
+若需分析，必須先呼叫 jira_fetch 取得 Issue 資料，不得憑空推測。
 ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
 
 請使用繁體中文回答，完成後告知使用者結果。`
@@ -2098,6 +2088,59 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         }
         return `未知 vscode_action: ${action}`;
       }
+      case 'jira_fetch': {
+        const fetchKey = (args.issue_key as string || '').trim().toUpperCase();
+        if (!fetchKey) return '請提供 issue_key，例如 BIOS-123';
+        const jiraCfg = vscode.workspace.getConfiguration('amiClaw');
+        const jiraBase = (jiraCfg.get<string>('jiraBaseUrl') ?? '').replace(/\/$/, '');
+        const jiraEmail = jiraCfg.get<string>('jiraEmail') ?? '';
+        const jiraPat = jiraCfg.get<string>('jiraPat') ?? '';
+        if (!jiraBase) return '請先在 VS Code 設定中填寫 amiClaw.jiraBaseUrl（例如 https://yourcompany.atlassian.net）';
+        if (!jiraPat)  return '請先在 VS Code 設定中填寫 amiClaw.jiraPat（Jira API Token 或 PAT）';
+        const authHeader = jiraEmail
+          ? 'Basic ' + Buffer.from(`${jiraEmail}:${jiraPat}`).toString('base64')
+          : 'Bearer ' + jiraPat;
+        const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,created,updated';
+        const issueApiUrl = `${jiraBase}/rest/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
+        return new Promise<string>((resolve) => {
+          try {
+            const u = new URL(issueApiUrl);
+            const proto = u.protocol === 'https:' ? https : http;
+            const req = proto.request({
+              hostname: u.hostname, port: u.port ? parseInt(u.port) : (u.protocol === 'https:' ? 443 : 80),
+              path: u.pathname + u.search, method: 'GET',
+              headers: { 'Authorization': authHeader, 'Accept': 'application/json', 'Content-Type': 'application/json' }
+            }, (res) => {
+              let data = '';
+              res.on('data', (c: Buffer) => { data += c; });
+              res.on('end', () => {
+                if (res.statusCode === 401 || res.statusCode === 403) { resolve(`Jira 認證失敗 (HTTP ${res.statusCode})，請確認 amiClaw.jiraEmail 與 amiClaw.jiraPat 設定正確。`); return; }
+                if (res.statusCode === 404) { resolve(`找不到 Issue ${fetchKey}，請確認 Key 正確或使用者有權限。`); return; }
+                if (res.statusCode !== 200) { resolve(`Jira API 回傳 HTTP ${res.statusCode}: ${data.substring(0, 200)}`); return; }
+                try {
+                  const j = JSON.parse(data);
+                  const f = j.fields || {};
+                  const comments = (f.comment?.comments ?? []).slice(-3).map((c: Record<string, unknown>) => `  [${c.author && (c.author as Record<string,unknown>).displayName}] ${String(c.body ?? '').substring(0, 300)}`).join('\n');
+                  resolve([
+                    `Issue: ${fetchKey}  (${f.issuetype?.name ?? ''})`,
+                    `Status: ${f.status?.name ?? ''}`,
+                    `Priority: ${f.priority?.name ?? ''}`,
+                    `Reporter: ${f.reporter?.displayName ?? ''}`,
+                    `Assignee: ${f.assignee?.displayName ?? '未指派'}`,
+                    `Labels: ${(f.labels ?? []).join(', ') || '(none)'}`,
+                    `Summary: ${f.summary ?? ''}`,
+                    `Description:\n${String(f.description ?? '(empty)').substring(0, 2000)}`,
+                    comments ? `\nLatest Comments:\n${comments}` : ''
+                  ].filter(Boolean).join('\n'));
+                } catch { resolve(`無法解析 Jira API 回應: ${data.substring(0, 300)}`); }
+              });
+            });
+            req.on('error', (e: Error) => resolve(`Jira fetch 錯誤: ${e.message}`));
+            req.setTimeout(15000, () => { req.destroy(); resolve('Jira fetch 逾時 (15s)'); });
+            req.end();
+          } catch (e) { resolve(`jira_fetch 錯誤: ${e instanceof Error ? e.message : String(e)}`); }
+        });
+      }
       case 'jira_open': {
         const key = (args.issue_key as string || '').trim().toUpperCase();
         if (!key) return '請提供 issue_key，例如 BIOS-123';
@@ -2216,15 +2259,16 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'open_browser', description: '在 VS Code 簡易瀏覽器中開啟網址', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'manage_todo', description: 'Agent 內部任務清單。複雜任務請先建立任務清單，逐一完成後標記为done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=新增, done=完成, list=查看, clear=清空' }, text: { type: 'string', description: '任務內容（action=add 時必須）' }, id: { type: 'number', description: '任務 ID（action=done 時必須）' } }, required: ['action'] } } },
   { type: 'function', function: { name: 'vscode_action', description: 'VS Code 操作：開啟檔案到指定行、取得工作區信息、顯示通知、執行 VS Code 內建指令', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=開檔, get_workspace_info=工作區信息, show_notification=通知, run_command=執行内建指令' }, path: { type: 'string', description: 'open_file 用' }, line: { type: 'number', description: '開啟到哪一行' }, message: { type: 'string', description: 'show_notification 用' }, command: { type: 'string', description: 'run_command 用，VS Code 指令 ID' }, args: { type: 'array', description: '指令參數' } }, required: ['action'] } } },
-  { type: 'function', function: { name: 'jira_open', description: '在 VS Code 中開啟指定的 Jira Issue（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123 或 PROJ-456' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_fetch', description: '直接呼叫 Jira REST API 取得 Issue 完整詳情（Summary、Description、Status、Assignee、Priority、最近留言等），供 AI 分析使用。需先在 amiClaw.jiraBaseUrl/jiraEmail/jiraPat 設定 Jira 憑證。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 UOEM2-3476' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_open', description: '在 VS Code 中開啟 Jira Issue 面板（僅開啟 UI，不回傳內容）。分析用途請改用 jira_fetch。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123 或 PROJ-456' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'jira_create', description: '開啟 Jira 建立 Issue 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { summary: { type: 'string', description: 'Issue 標題（可選，預填）' }, description: { type: 'string', description: 'Issue 詳細描述（可選，預填）' } } } } },
   { type: 'function', function: { name: 'jira_transition', description: '開啟 Jira Issue 狀態轉換面板（如 TODO → IN PROGRESS → DONE）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'bb_create_pr', description: '開啟 Bitbucket 建立 Pull Request 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'rovo_ask', description: '向 Atlassian Rovo Dev AI 提問（需要安裝 Atlassian 插件並登入）', parameters: { type: 'object', properties: { question: { type: 'string', description: '要問 Rovo Dev 的問題' } }, required: ['question'] } } },
+  { type: 'function', function: { name: 'rovo_ask', description: '向 Atlassian Rovo Dev AI 提問（在 VS Code 中開啟 Rovo Dev 面板並填入問題，不回傳答案給 Agent）。若需取得 Jira Issue 資料請用 jira_fetch。', parameters: { type: 'object', properties: { question: { type: 'string', description: '要問 Rovo Dev 的問題' } }, required: ['question'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', bb_create_pr: '🔀', rovo_ask: '🤖' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', bb_create_pr: '🔀', rovo_ask: '🤖' };
   return m[name] ?? '🔧';
 }
 
@@ -2244,6 +2288,7 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'open_browser': return `開啟瀏覽器: ${args.url}`;
     case 'manage_todo': return `Todo (${args.action}${args.text ? ': ' + args.text : args.id ? ' #' + args.id : ''})`;
     case 'vscode_action': return `VS Code (${args.action}${args.path ? ': ' + args.path : args.command ? ': ' + args.command : ''})`;
+    case 'jira_fetch': return `Jira 從 API 取得: ${args.issue_key}`;
     case 'jira_open': return `Jira 開啟 Issue: ${args.issue_key}`;
     case 'jira_create': return `Jira 建立 Issue${args.summary ? ': ' + args.summary : ''}`;
     case 'jira_transition': return `Jira 轉換狀態: ${args.issue_key}`;
