@@ -2113,6 +2113,10 @@ export class OllamaChatPanel {
     // Parse rounds parameter (default 20)
     const roundsSelected = rounds ?? '20';
     const maxRounds = String(roundsSelected) === 'infinite' ? Infinity : Number(roundsSelected) || 20;
+    // 記錄使用者輸入到短期記憶
+    this._chatHistory.push({ role: 'user', content: prompt });
+    this._chatHistories[this._activeSessionId] = this._chatHistory;
+    this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
 
     const isOllama = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
     const getLabel = (m: string) => {
@@ -2358,6 +2362,13 @@ export class OllamaChatPanel {
       }
     }
 
+    // 無裁判時：直接將討論摘要存入短期記憶
+    if (!judgeModel && !this._teamCancel && summaryLines.length > 0) {
+      this._chatHistory.push({ role: 'assistant', content: summaryLines.join('\n\n---\n\n') });
+      this._chatHistories[this._activeSessionId] = this._chatHistory;
+      this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+    }
+
     this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
     this._panel.webview.postMessage({ type: 'agentStatus', running: false });
   }
@@ -2525,6 +2536,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 
     // Optimistically add user msg to history
     this._chatHistory.push({ role: 'user', content: prompt });
+    this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
 
     this._panel.webview.postMessage({ type: 'streamStart' });
     let fullResponse = '';
