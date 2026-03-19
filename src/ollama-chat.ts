@@ -40,11 +40,26 @@ export class OllamaChatPanel {
     OllamaChatPanel.log('Constructor: start');
     vscode.window.showInformationMessage('AmiClaw: Extension activated');
 
-    // Seed long-term memory with Jira key recognition rule if not already present
+    // Seed long-term memory with Atlassian rules (re-seed when version tag changes)
+    const LTM_SEED_VER = 'atlassian-v2';
     const existingLtm = context.globalState.get<string>('amiClaw.longTermMemory') ?? '';
-    const jiraRule = '【Atlassian 規則】訊息中出現 PROJ-123、UOEM2-3476 等形如 [A-Z][A-Z0-9]*-\\d+ 的組合（Jira Issue Key），一律直接呼叫 jira_open 工具開啟，不需詢問使用者確認。多個 key 逐一呼叫。需要 Rovo Dev AI 回答時用 rovo_ask；建立 PR 用 bb_create_pr；新增/更新 Jira Issue 用 jira_create/jira_transition。';
-    if (!existingLtm.includes('Jira Issue Key')) {
-      const seeded = existingLtm.trim() ? existingLtm.trim() + '\n\n' + jiraRule : jiraRule;
+    const atlassianSeed = `[${LTM_SEED_VER}]
+【Atlassian for VS Code — atlassian.atlascode 4.1.149】
+
+偵測規則：訊息中出現符合 [A-Z][A-Z0-9]*-\\d+ 的字串（例如 UOEM2-3476、BIOS-123、PROJ-456），一律視為 Jira Issue Key，不詢問、直接呼叫 jira_open 工具。多個 key 逐一各呼叫一次。
+
+工具使用時機：
+- jira_open(issue_key)   : 訊息含 Jira Key，或使用者說「查 XXX-123」「看一下 XXX-123」
+- jira_create(summary, description) : 使用者說「開 Jira」「建立 ticket」「新增 Issue」
+- jira_transition(issue_key) : 使用者說「把 XXX-123 標為完成 / In Progress / 關閉」
+- bb_create_pr()         : 使用者說「開 PR」「建立 Pull Request」「發 code review」
+- rovo_ask(question)     : 需查詢 Atlassian 知識庫，或使用者說「問一下 Rovo」
+
+回應格式：開啟 Issue 後簡短回覆「已開啟 XXX-123」；工具回傳錯誤時告知使用者確認格式。`;
+    if (!existingLtm.includes(LTM_SEED_VER)) {
+      // Remove any previous atlassian seed block before re-seeding
+      const stripped = existingLtm.replace(/\[atlassian-v\d+\][\s\S]*?(?=\n\n\[|$)/g, '').trim();
+      const seeded = stripped ? stripped + '\n\n' + atlassianSeed : atlassianSeed;
       context.globalState.update('amiClaw.longTermMemory', seeded);
     }
 
@@ -1819,9 +1834,23 @@ VS Code 已安裝 Atlassian for VS Code，可直接操作 Jira、Rovo Dev、Bitb
       const openFilesStr = openFiles.length > 0 ? `\n目前編輯器中開啟的檔案:\n${openFiles.join('\n')}` : '';
       const activeFileStr = activeFile ? `\n目前作用中的檔案: ${activeFile}` : '';
       this._agentTodos = [];
+      const ltmForAgent = this.getLongTermMemory();
       this._agentMessages.push({
         role: 'system',
-        content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。${activeFileStr}${openFilesStr}\n\n執行策略（依優先順序）：\n1. 先用 search_workspace 搜尋工作區中的檔案名稱、函式名稱、類別名稱等\n2. 讀取相關檔案確認實際內容\n3. 根據工作區實際程式碼進行修改或回答\n不確定時優先查閱本地程式碼，而非假設或憑空生成。\n\n請使用繁體中文回答，完成後告知使用者結果。`
+        content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。${activeFileStr}${openFilesStr}
+
+執行策略（依優先順序）：
+1. 先用 search_workspace 搜尋工作區中的檔案名稱、函式名稱、類別名稱等
+2. 讀取相關檔案確認實際內容
+3. 根據工作區實際程式碼進行修改或回答
+不確定時優先查閱本地程式碼，而非假設或憑空生成。
+
+## Atlassian 整合（atlassian.atlascode）
+訊息中出現形如 UOEM2-3476、BIOS-123 等 [A-Z][A-Z0-9]*-\d+ 的字串，一律視為 Jira Issue Key，不詢問直接呼叫 jira_open。多個 key 逐一呼叫。
+工具：jira_open / jira_create / jira_transition / bb_create_pr / rovo_ask —— 詳見長期記憶。
+${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
+
+請使用繁體中文回答，完成後告知使用者結果。`
       });
     }
     this._agentMessages.push({ role: 'user', content: userPrompt });
