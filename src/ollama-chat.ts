@@ -294,6 +294,9 @@ export class OllamaChatPanel {
       .team-synth-node .bubble { border-left:3px solid #f0c040; background:rgba(240,192,64,0.06); padding:8px 10px; width:100%; border-radius:6px }
       .team-synth-header { font-size:0.8em; font-weight:700; color:#f0c040; padding:0 0 5px; margin-bottom:6px; border-bottom:1px solid rgba(240,192,64,0.25) }
       .team-agent-header { text-align:center; color:#f7cc65; font-size:0.82em; font-weight:700; margin:14px 0 6px; padding:5px 0; border-top:1px dashed rgba(247,204,101,0.4); border-bottom:1px dashed rgba(247,204,101,0.4); letter-spacing:0.03em }
+      .team-orchestrator-node .bubble { border-left:3px solid #f7cc65; background:rgba(247,204,101,0.05); padding:8px 10px; width:100%; border-radius:6px }
+      .team-orchestrator-header { font-size:0.78em; font-weight:700; color:#f7cc65; display:flex; align-items:center; gap:6px; padding:0 0 5px; margin-bottom:5px; border-bottom:1px solid rgba(247,204,101,0.25) }
+      .team-task-label { font-size:0.78em; opacity:0.72; margin:3px 0 5px; font-style:italic; line-height:1.4; padding:2px 0 }
       /* 團隊模式 — 成員選擇面板 */
       #teamPicker{display:none;padding:4px 8px 6px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;margin:2px 0;background:rgba(128,128,128,0.05);max-height:130px;overflow-y:auto}
       #teamPicker.visible{display:block}
@@ -394,10 +397,13 @@ export class OllamaChatPanel {
           else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
           else if (msg.type === 'streamEnd')     { _agentStepNode = null; _streamNode = null; setSendEnabled(true); }
           else if (msg.type === 'error')         { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', '\u932f\u8aa4\uff1a' + msg.text); }
-          else if (msg.type === 'teamMemberStart') { createTeamMember(msg.id, msg.model, msg.color); }
+          else if (msg.type === 'teamMemberStart') { createTeamMember(msg.id, msg.model, msg.color, msg.task); }
           else if (msg.type === 'teamThinkChunk')  { appendTeamThinkChunk(msg.id, msg.color, msg.chunk); }
           else if (msg.type === 'teamResponseChunk'){ appendTeamResponseChunk(msg.id, msg.chunk); }
           else if (msg.type === 'teamMemberEnd')   { finalizeTeamMember(msg.id); }
+          else if (msg.type === 'teamOrchestratorStart') { createOrchestratorBubble(msg.model); }
+          else if (msg.type === 'teamOrchestratorChunk') { appendOrchestratorChunk(msg.chunk); }
+          else if (msg.type === 'teamOrchestratorEnd')   { finalizeOrchestratorBubble(); }
           else if (msg.type === 'teamSynthStart')  { createTeamSynthBubble(); }
           else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
           else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
@@ -433,6 +439,7 @@ export class OllamaChatPanel {
       let _agentStepNode = null;
       const _teamNodes = {}; // id -> { node, bubble, thinkNode, responseNode, charCount, thinkStart, thinkTimer }
       let _synthNode = null;
+      let _orchestratorNode = null;
       let _teamAvailModels = []; // [{id, label, vendor}]
 
       const sendBtn = document.getElementById('sendBtn');
@@ -496,7 +503,7 @@ export class OllamaChatPanel {
 
       document.getElementById('clear').addEventListener('click', function() {
         chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
-        Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; }); _synthNode = null;
+        Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; }); _synthNode = null; _orchestratorNode = null;
         vscode.postMessage({ type: 'clearHistory' });
       });
 
@@ -740,7 +747,7 @@ export class OllamaChatPanel {
       // ── 團隊模式 ──────────────────────────────────────────────────────────
       var TEAM_COLORS = ['#4fc1ff','#89d185','#ce9178','#c586c0','#dcdcaa','#f7cc65'];
 
-      function createTeamMember(id, model, color) {
+      function createTeamMember(id, model, color, task) {
         clearPendingBubble();
         var node = document.createElement('div'); node.className = 'msg assistant team-member-node';
         var bub = document.createElement('div'); bub.className = 'bubble'; bub.style.borderLeftColor = color;
@@ -748,7 +755,9 @@ export class OllamaChatPanel {
         var badge = document.createElement('span'); badge.className = 'team-badge';
         badge.textContent = model; badge.style.color = color; badge.style.borderColor = color; badge.style.background = color + '22';
         var st = document.createElement('span'); st.className = 'team-status-text'; st.textContent = '\u601d\u8003\u4e2d\u2026';
-        hdr.appendChild(badge); hdr.appendChild(st); bub.appendChild(hdr); node.appendChild(bub);
+        hdr.appendChild(badge); hdr.appendChild(st); bub.appendChild(hdr);
+        if (task) { var tl = document.createElement('div'); tl.className = 'team-task-label'; tl.textContent = '\uD83D\uDCCC ' + task; bub.appendChild(tl); }
+        node.appendChild(bub);
         chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
         _teamNodes[id] = { node: node, bubble: bub, status: st, thinkNode: null, responseNode: null, charCount: 0, thinkStart: null, thinkTimer: null };
       }
@@ -820,6 +829,29 @@ export class OllamaChatPanel {
         if (!_synthNode) return;
         _synthNode.body.textContent += chunk;
         chat.scrollTop = chat.scrollHeight;
+      }
+
+      function createOrchestratorBubble(model) {
+        clearPendingBubble();
+        var node = document.createElement('div'); node.className = 'msg assistant team-orchestrator-node';
+        var bub = document.createElement('div'); bub.className = 'bubble';
+        var hdr = document.createElement('div'); hdr.className = 'team-orchestrator-header';
+        hdr.textContent = '\uD83D\uDC19 ' + (model || '') + ' \u2014 \u5206\u914D\u5DE5\u4F5C\u4E2D\u2026';
+        var body = document.createElement('div'); body.className = 'response-body'; body.style.whiteSpace = 'pre-wrap'; body.style.fontSize = '0.85em';
+        bub.appendChild(hdr); bub.appendChild(body); node.appendChild(bub);
+        chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
+        _orchestratorNode = { node: node, bubble: bub, body: body, hdr: hdr };
+      }
+
+      function appendOrchestratorChunk(chunk) {
+        if (!_orchestratorNode) return;
+        _orchestratorNode.body.textContent += chunk;
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      function finalizeOrchestratorBubble() {
+        if (!_orchestratorNode) return;
+        if (_orchestratorNode.hdr) _orchestratorNode.hdr.textContent = _orchestratorNode.hdr.textContent.replace('\u5206\u914D\u5DE5\u4F5C\u4E2D\u2026', '\u2713 \u5DE5\u4F5C\u5206\u914D\u5B8C\u6210');
       }
 
       // ── 團隊模式 — 成員選擇面板 ──────────────────────────────────────
@@ -940,91 +972,157 @@ export class OllamaChatPanel {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
     const primaryOllamaModel = cfg.get<string>('model') ?? 'llama3';
-    // Use selected team members; fall back to primary model only
-    const models = (selectedModels && selectedModels.length > 0) ? selectedModels.slice(0, 5) : [primaryOllamaModel];
+    const allModels = (selectedModels && selectedModels.length > 0) ? selectedModels.slice(0, 5) : [primaryOllamaModel];
 
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
     this._teamCancel = false;
     const systemContent = this.buildSystemContent();
-    const fullPrompt = systemContent.trim() ? `System: ${systemContent}\n\nUser: ${prompt}` : prompt;
+    const getDisplay = (m: string) => m.startsWith('copilot/') ? '\uD83D\uDC19 ' + m.slice('copilot/'.length) : m;
+
+    // Detect orchestrator: first Copilot model in the selection
+    const copilotIdx = allModels.findIndex(m => m.startsWith('copilot/'));
+    const hasOrchestrator = copilotIdx >= 0;
+    const orchestratorFamily = hasOrchestrator ? allModels[copilotIdx].slice('copilot/'.length) : '';
+    const workerModels = hasOrchestrator
+      ? [...allModels.slice(0, copilotIdx), ...allModels.slice(copilotIdx + 1)]
+      : allModels;
+    // Ensure at least one worker in orchestration mode
+    const effectiveWorkers = (hasOrchestrator && workerModels.length === 0) ? [primaryOllamaModel] : workerModels;
 
     const results: { model: string; response: string }[] = [];
 
-    // Phase 1: All models think and respond in parallel
-    await Promise.all(models.map(async (model, idx) => {
-      const id = `team_${idx}`;
-      const color = COLORS[idx % COLORS.length];
-      const isCopilot = model.startsWith('copilot/');
-      const displayName = isCopilot ? '🐙 ' + model.slice('copilot/'.length) : model;
-      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: displayName, color });
+    if (hasOrchestrator) {
+      // ── Orchestration mode ────────────────────────────────────────────────
+      const orchestratorDisplay = '\uD83D\uDC19 ' + orchestratorFamily;
+
+      // Phase 0: Orchestrator generates work plan (task per worker)
+      this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: orchestratorDisplay });
+      const workerList = effectiveWorkers.map((m, i) => `${i + 1}. ${getDisplay(m)}`).join('\n');
+      const planPrompt = `你是 AI 工作協調員。請分析下面的任務，將工作細分並分派給 ${effectiveWorkers.length} 個 AI 助手平行執行。\n\n【任務】\n${prompt}\n\n【可用助手】\n${workerList}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"具體子任務"},{"index":1,"task":"具體子任務"}]}`;
+      let assignments: { index: number; task: string }[] = effectiveWorkers.map((_, i) => ({ index: i, task: prompt }));
       try {
-        let response: string;
-        if (isCopilot) {
-          response = await this.copilotStream(
-            model.slice('copilot/'.length), fullPrompt,
-            (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); }
+        const planText = await this.copilotStream(
+          orchestratorFamily, planPrompt,
+          (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk }); }
+        );
+        const jsonMatch = planText.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, null];
+        const jsonStr = (jsonMatch[1] ?? planText).trim();
+        const parsed = JSON.parse(jsonStr);
+        if (Array.isArray(parsed.assignments)) {
+          assignments = parsed.assignments.map((a: { index: number; task: string }) => ({ index: Number(a.index), task: String(a.task) }));
+        }
+      } catch { /* use default assignments */ }
+      this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+
+      if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+      // Phase 1: Workers execute assigned tasks in parallel
+      await Promise.all(effectiveWorkers.map(async (model, idx) => {
+        const id = `team_${idx}`;
+        const color = COLORS[idx % COLORS.length];
+        const isCopilot = model.startsWith('copilot/');
+        const displayName = getDisplay(model);
+        const assignedTask = assignments.find(a => a.index === idx)?.task ?? prompt;
+        this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: displayName, color, task: assignedTask });
+        const workerPrompt = systemContent.trim() ? `System: ${systemContent}\n\nUser: ${assignedTask}` : assignedTask;
+        try {
+          let response: string;
+          if (isCopilot) {
+            response = await this.copilotStream(
+              model.slice('copilot/'.length), workerPrompt,
+              (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); }
+            );
+          } else {
+            let thinkBuf = ''; let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+            const flushThink = () => { if (thinkBuf) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: thinkBuf }); thinkBuf = ''; } thinkTimer = null; };
+            response = await ollamaGenerateStream(
+              baseUrl, model, workerPrompt,
+              (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); },
+              (tc) => { if (!this._teamCancel) { thinkBuf += tc; if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80); } }
+            );
+            if (thinkTimer) { clearTimeout(thinkTimer); } flushThink();
+          }
+          results.push({ model: displayName, response });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[\u932f\u8aa4] ${msg}` });
+          results.push({ model: displayName, response: `\u932f\u8aa4: ${msg}` });
+        }
+        this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+      }));
+
+      if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+      // Phase 2: Orchestrator (Copilot) synthesizes all worker results
+      let synthResult = '';
+      if (results.length > 0) {
+        const synthPrompt = `【原始任務】\n${prompt}\n\n各助手已完成分配的工作，結果如下：\n${results.map(r => `\n--- ${r.model} ---\n${r.response}`).join('')}\n\n請以繁體中文，整合所有結果，給出完整的綜合回覆（條列重點）：`;
+        this._panel.webview.postMessage({ type: 'teamSynthStart' });
+        try {
+          synthResult = await this.copilotStream(
+            orchestratorFamily, synthPrompt,
+            (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); }
           );
-        } else {
-          let thinkBuf = '';
-          let thinkTimer: ReturnType<typeof setTimeout> | null = null;
-          const flushThink = () => {
-            if (thinkBuf) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: thinkBuf }); thinkBuf = ''; }
-            thinkTimer = null;
-          };
-          response = await ollamaGenerateStream(
+        } catch { /* ignore */ }
+      }
+
+      // Phase 3: Agent executor
+      const willRunAgent = !this._teamCancel && synthResult.trim().length > 0;
+      this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: willRunAgent });
+      if (willRunAgent) {
+        this._panel.webview.postMessage({ type: 'teamAgentStart', model: primaryOllamaModel });
+        this._agentMessages = [];
+        await this.handleAgent(`\u6839\u64da\u4ee5\u4e0b\u5718\u968a\u8a0e\u8ad6\u7d50\u8ad6\uff0c\u8acb\u57f7\u884c\u5fc5\u8981\u7684\u7a0b\u5f0f\u78bc\u6216\u6a94\u6848\u64cd\u4f5c\u4f86\u5b8c\u6210\u4f7f\u7528\u8005\u7684\u4efb\u52d9\u3002\n\n\u3010\u539f\u59cb\u4efb\u52d9\u3011\n${prompt}\n\n\u3010\u5718\u968a\u7d9c\u5408\u7d50\u8ad6\u3011\n${synthResult}\n\n\u8acb\u9010\u6b65\u57f7\u884c\u3002`, primaryOllamaModel);
+      }
+
+    } else {
+      // ── Standard parallel mode (no Copilot orchestrator) ───────────────────
+      const fullPrompt = systemContent.trim() ? `System: ${systemContent}\n\nUser: ${prompt}` : prompt;
+      await Promise.all(effectiveWorkers.map(async (model, idx) => {
+        const id = `team_${idx}`;
+        const color = COLORS[idx % COLORS.length];
+        const displayName = getDisplay(model);
+        this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: displayName, color });
+        let thinkBuf = ''; let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushThink = () => { if (thinkBuf) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: thinkBuf }); thinkBuf = ''; } thinkTimer = null; };
+        try {
+          const response = await ollamaGenerateStream(
             baseUrl, model, fullPrompt,
             (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); },
-            (thinkChunk) => {
-              if (!this._teamCancel) { thinkBuf += thinkChunk; if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80); }
-            }
+            (tc) => { if (!this._teamCancel) { thinkBuf += tc; if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80); } }
           );
+          if (thinkTimer) { clearTimeout(thinkTimer); } flushThink();
+          results.push({ model: displayName, response });
+        } catch (e) {
           if (thinkTimer) { clearTimeout(thinkTimer); }
-          flushThink();
+          const msg = e instanceof Error ? e.message : String(e);
+          this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[\u932f\u8aa4] ${msg}` });
+          results.push({ model: displayName, response: `\u932f\u8aa4: ${msg}` });
         }
-        results.push({ model: displayName, response });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
-        results.push({ model: displayName, response: `錯誤: ${msg}` });
+        this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+      }));
+
+      if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+      // Synthesis by primary Ollama model
+      let synthResult = '';
+      if (results.length > 1) {
+        const synthPrompt = [`\u539f\u59cb\u554f\u984c\uff1a${prompt}`, '', `\u4ee5\u4e0b\u662f ${results.length} \u4f4d AI \u5c08\u5bb6\u7684\u5206\u6790\u610f\u898b\uff1a`, ...results.map((r, i) => `\n--- \u5c08\u5bb6 ${i + 1}\uff08${r.model}\uff09---\n${r.response}`), '', '\u8acb\u4ee5\u7e41\u9ad4\u4e2d\u6587\uff0c\u7d9c\u5408\u6240\u6709\u610f\u898b\uff0c\u7d66\u51fa\u6700\u7d42\u6700\u4f73\u5efa\u8b70\uff08\u689d\u5217\u91cd\u9ede\uff0c100-200\u5b57\uff09\uff1a'].join('\n');
+        this._panel.webview.postMessage({ type: 'teamSynthStart' });
+        try {
+          synthResult = await ollamaGenerateStream(baseUrl, primaryOllamaModel, synthPrompt, (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); });
+        } catch { /* ignore */ }
+      } else if (results.length === 1) {
+        synthResult = results[0].response;
       }
-      this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
-    }));
 
-    if (this._teamCancel) {
-      this._panel.webview.postMessage({ type: 'teamEnd' });
-      return;
-    }
-
-    // Phase 2: Synthesis — use primary Ollama model to synthesize all opinions
-    let synthResult = '';
-    if (results.length > 1) {
-      const synthPrompt = [
-        `原始問題：${prompt}`, '',
-        `以下是 ${results.length} 位 AI 專家的分析意見：`,
-        ...results.map((r, i) => `\n--- 專家 ${i + 1}（${r.model}）---\n${r.response}`),
-        '',
-        '請以繁體中文，綜合所有意見，給出最終最佳建議（條列重點，100-200字）：'
-      ].join('\n');
-      this._panel.webview.postMessage({ type: 'teamSynthStart' });
-      try {
-        synthResult = await ollamaGenerateStream(
-          baseUrl, primaryOllamaModel, synthPrompt,
-          (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); }
-        );
-      } catch { /* ignore */ }
-    } else if (results.length === 1) {
-      synthResult = results[0].response;
-    }
-
-    // Phase 3: Agent executor — designated model runs Agent loop to carry out the plan
-    const willRunAgent = !this._teamCancel && synthResult.trim().length > 0;
-    this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: willRunAgent });
-
-    if (willRunAgent) {
-      this._panel.webview.postMessage({ type: 'teamAgentStart', model: primaryOllamaModel });
-      this._agentMessages = [];
-      const agentTaskPrompt = `根據以下團隊討論結論，請執行必要的程式碼或檔案操作來完成使用者的任務。\n\n【原始任務】\n${prompt}\n\n【團隊綜合建議】\n${synthResult}\n\n請逐步執行，必要時可讀寫檔案、執行命令。`;
-      await this.handleAgent(agentTaskPrompt, primaryOllamaModel);
+      const willRunAgent = !this._teamCancel && synthResult.trim().length > 0;
+      this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: willRunAgent });
+      if (willRunAgent) {
+        this._panel.webview.postMessage({ type: 'teamAgentStart', model: primaryOllamaModel });
+        this._agentMessages = [];
+        await this.handleAgent(`\u6839\u64da\u4ee5\u4e0b\u5718\u968a\u8a0e\u8ad6\u7d50\u8ad6\uff0c\u8acb\u57f7\u884c\u5fc5\u8981\u7684\u7a0b\u5f0f\u78bc\u6216\u6a94\u6848\u64cd\u4f5c\u4f86\u5b8c\u6210\u4f7f\u7528\u8005\u7684\u4efb\u52d9\u3002\n\n\u3010\u539f\u59cb\u4efb\u52d9\u3011\n${prompt}\n\n\u3010\u5718\u968a\u7d9c\u5408\u5efa\u8b70\u3011\n${synthResult}\n\n\u8acb\u9010\u6b65\u57f7\u884c\uff0c\u5fc5\u8981\u6642\u53ef\u8b80\u5beb\u6a94\u6848\u3001\u57f7\u884c\u547d\u4ee4\u3002`, primaryOllamaModel);
+      }
     }
   }
 
