@@ -303,6 +303,9 @@ export class OllamaChatPanel {
       .team-review-body { white-space:pre-wrap; opacity:0.9 }
       .team-round-approved { color:var(--vscode-terminal-ansiGreen,#4ec94e); font-weight:700; margin-left:4px }
       .team-round-iterate { color:#f7cc65; margin-left:4px }
+      .response-body-collapsed { max-height:14em; overflow:hidden; position:relative }
+      .response-body-collapsed::after { content:''; position:absolute; bottom:0; left:0; right:0; height:2.5em; background:linear-gradient(transparent, var(--vscode-editorWidget-background,rgba(30,30,30,0.95))) }
+      .response-expand-btn { display:block; font-size:11px; padding:2px 10px; margin:4px 0 0; cursor:pointer; border-radius:4px; background:rgba(128,128,128,0.15); border:1px solid rgba(128,128,128,0.3); color:inherit; width:100%; text-align:center }
       .team-todos-panel { background:rgba(128,128,128,0.06); border:1px solid rgba(128,128,128,0.2); border-radius:6px; padding:6px 10px; margin:8px 0; width:100%; box-sizing:border-box }
       .team-todos-header { font-size:0.78em; font-weight:700; color:#f7cc65; margin-bottom:5px; display:flex; align-items:center; gap:5px }
       .team-todo-item { display:flex; align-items:flex-start; gap:5px; padding:2px 0; font-size:0.78em; line-height:1.5 }
@@ -836,6 +839,16 @@ export class OllamaChatPanel {
         if (m.status) m.status.textContent = '\u2713 \u5b8c\u6210';
         if (m.thinkTimer) { clearInterval(m.thinkTimer); m.thinkTimer = null; }
         if (m.thinkNode && m.thinkNode.hasAttribute('open')) { m.thinkNode.removeAttribute('open'); }
+        if (m.responseNode) {
+          var lineCount = (m.responseNode.textContent || '').split('\n').length;
+          if (lineCount > 10) {
+            m.responseNode.classList.add('response-body-collapsed');
+            var xBtn = document.createElement('button'); xBtn.className = 'response-expand-btn';
+            xBtn.textContent = '\u25bc \u5c55\u958b\u5168\u6587 (' + lineCount + ' \u884c)';
+            xBtn.onclick = function() { m.responseNode.classList.remove('response-body-collapsed'); xBtn.remove(); };
+            m.bubble.appendChild(xBtn);
+          }
+        }
       }
 
       function createTeamSynthBubble() {
@@ -1611,9 +1624,15 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     if (this._agentMessages.length === 0) {
       const folders = vscode.workspace.workspaceFolders ?? [];
       const folderList = folders.map(f => f.uri.fsPath).join(', ') || process.cwd();
+      const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? '';
+      const openFiles = vscode.workspace.textDocuments
+        .filter(d => !d.isUntitled && d.uri.scheme === 'file')
+        .map(d => d.uri.fsPath);
+      const openFilesStr = openFiles.length > 0 ? `\n目前編輯器中開啟的檔案:\n${openFiles.join('\n')}` : '';
+      const activeFileStr = activeFile ? `\n目前作用中的檔案: ${activeFile}` : '';
       this._agentMessages.push({
         role: 'system',
-        content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。你可以使用工具自動讀寫檔案、執行命令來完成任務。請使用繁體中文回答，并在完成後告知使用者結果。`
+        content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。${activeFileStr}${openFilesStr}\n\n執行策略（依優先順序）：\n1. 先用 search_workspace 搜尋工作區中的檔案名稱、函式名稱、類別名稱等\n2. 讀取相關檔案確認實際內容\n3. 根據工作區實際程式碼進行修改或回答\n不確定時優先查閱本地程式碼，而非假設或憑空生成。\n\n請使用繁體中文回答，完成後告知使用者結果。`
       });
     }
     this._agentMessages.push({ role: 'user', content: userPrompt });
@@ -1727,6 +1746,32 @@ ${reviewText.replace('[APPROVED]', '').trim()}
         terminal.sendText(cmd);
         return `已在終端機執行: ${cmd}`;
       }
+      case 'search_workspace': {
+        const query = ((args.query as string) ?? '').toLowerCase();
+        if (!query) { return '請提供搜尋關鍵字'; }
+        const allUris = await vscode.workspace.findFiles('**/*', '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**}', 200);
+        const fileMatches = allUris.map(u => u.fsPath).filter(p => path.basename(p).toLowerCase().includes(query));
+        const contentMatches: string[] = [];
+        for (const uri of allUris) {
+          if (contentMatches.length >= 40) { break; }
+          try {
+            const ext = path.extname(uri.fsPath).toLowerCase();
+            if (['.png','.jpg','.ico','.vsix','.zip','.exe','.dll','.pdf'].includes(ext)) { continue; }
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const text = Buffer.from(bytes).toString('utf8');
+            const lines = text.split('\n');
+            for (let li = 0; li < lines.length && contentMatches.length < 40; li++) {
+              if (lines[li].toLowerCase().includes(query)) {
+                contentMatches.push(`${uri.fsPath}:${li + 1}: ${lines[li].trim().slice(0, 120)}`);
+              }
+            }
+          } catch { /* skip binary */ }
+        }
+        const parts: string[] = [];
+        if (fileMatches.length > 0) { parts.push(`=== 檔案名稱匹配 (${fileMatches.length}) ===\n${fileMatches.slice(0, 30).join('\n')}`); }
+        if (contentMatches.length > 0) { parts.push(`=== 程式碼內容匹配 (${contentMatches.length}) ===\n${contentMatches.join('\n')}`); }
+        return parts.length > 0 ? parts.join('\n\n') : `找不到符合 "${args.query}" 的結果`;
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -1789,10 +1834,11 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'replace_in_file', description: '在檔案中替換特定字串', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '要替換的原始字串' }, new_str: { type: 'string', description: '替換後的字串' } }, required: ['path', 'old_str', 'new_str'] } } },
   { type: 'function', function: { name: 'list_dir', description: '列出目錄內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '目錄路徑，空白表示工作區根目錄' } }, required: [] } } },
   { type: 'function', function: { name: 'run_terminal', description: '在 VS Code 終端機執行命令', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'search_workspace', description: '在工作區中搜尋檔案名稱、函式名稱、類別名稱或程式碼關鍵字。處理任何問題前請優先呼叫此工具確認工作區現有程式碼', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜尋關鍵字（如檔案名稱、函式名稱、類別名稱、變數名稱）' } }, required: ['query'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍' };
   return m[name] ?? '🔧';
 }
 
@@ -1804,6 +1850,7 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'replace_in_file': return `編輯檔案: ${args.path}`;
     case 'list_dir': return `列出目錄: ${args.path || '(根目錄)'}`;
     case 'run_terminal': return `執行命令: ${args.command}`;
+    case 'search_workspace': return `搜尋工作區: ${args.query}`;
     default: return name;
   }
 }
