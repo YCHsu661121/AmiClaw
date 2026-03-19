@@ -5,6 +5,11 @@
 
 ---
 
+## 最近更新
+
+- 新增：在模型選擇旁顯示 Copilot 模型的「倍數」標籤（例如 `1x`、`3x`、`0x`、`10% off`），該標籤也會顯示於 Team / 對話的模型清單，方便快速辨識模型的相對成本或效能。
+- 修正：切換模型時僅在「相同 Ollama server」上會執行舊模型的 VRAM 卸載並等待釋放；若新模型位於不同 server，將跳過 VRAM 卸載與等待，避免不必要的延遲。
+
 ## 安裝
 
 1. 從 [Releases](https://github.com/YCHsu661121/AmiClaw/releases) 下載最新的 `ami-claw-x.x.x.vsix`（或自行打包）
