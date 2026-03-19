@@ -475,6 +475,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamResponseChunk'){ appendTeamResponseChunk(msg.id, msg.chunk); }
           else if (msg.type === 'teamMemberEnd')   { finalizeTeamMember(msg.id); }
           else if (msg.type === 'teamOrchestratorStart') { createOrchestratorBubble(msg.model); }
+          else if (msg.type === 'teamOrchestratorThinkChunk') { appendOrchestratorThinkChunk(msg.chunk); }
           else if (msg.type === 'teamOrchestratorChunk') { appendOrchestratorChunk(msg.chunk); }
           else if (msg.type === 'teamOrchestratorEnd')   { finalizeOrchestratorBubble(); }
           else if (msg.type === 'teamRoundStart')        { startTeamRound(msg.id, msg.round); }
@@ -966,14 +967,55 @@ export class OllamaChatPanel {
         _orchestratorNode = { node: node, bubble: bub, body: body, hdr: hdr };
       }
 
+      function appendOrchestratorThinkChunk(chunk) {
+        if (!_orchestratorNode) return;
+        if (!_orchestratorNode.thinkNode) {
+          var d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
+          var s = document.createElement('summary');
+          var icon = document.createElement('span'); icon.className = 'think-icon pulse'; icon.style.background = '#f7cc65';
+          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+          s.appendChild(icon); s.appendChild(lbl);
+          var p = document.createElement('pre'); p.className = 'think-stream';
+          d.appendChild(s); d.appendChild(p);
+          _orchestratorNode.bubble.insertBefore(d, _orchestratorNode.body);
+          _orchestratorNode.thinkNode = d; _orchestratorNode.thinkStart = Date.now(); _orchestratorNode.thinkChars = 0;
+          _orchestratorNode.thinkTimer = setInterval(function() {
+            if (!d.hasAttribute('open')) { clearInterval(_orchestratorNode.thinkTimer); return; }
+            var secs = Math.round((Date.now() - _orchestratorNode.thinkStart) / 1000);
+            var tok = Math.round((_orchestratorNode.thinkChars || 0) / 4);
+            var l2 = d.querySelector('.think-label'); if (l2) l2.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + tok + ' tokens, ' + secs + 's)';
+          }, 1000);
+        }
+        _orchestratorNode.thinkChars = (_orchestratorNode.thinkChars || 0) + chunk.length;
+        var pre = _orchestratorNode.thinkNode.querySelector('pre.think-stream'); if (pre) { pre.textContent += chunk; pre.scrollTop = pre.scrollHeight; }
+        chat.scrollTop = chat.scrollHeight;
+      }
+
       function appendOrchestratorChunk(chunk) {
         if (!_orchestratorNode) return;
+        if (_orchestratorNode.thinkNode && _orchestratorNode.thinkNode.hasAttribute('open')) {
+          _orchestratorNode.thinkNode.removeAttribute('open');
+          if (_orchestratorNode.thinkTimer) { clearInterval(_orchestratorNode.thinkTimer); _orchestratorNode.thinkTimer = null; }
+          var icon = _orchestratorNode.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
+          var lbl = _orchestratorNode.thinkNode.querySelector('.think-label');
+          var tok = Math.round((_orchestratorNode.thinkChars || 0) / 4);
+          var secs = Math.round((Date.now() - (_orchestratorNode.thinkStart || Date.now())) / 1000);
+          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (~' + tok + ' tokens, \u8017\u6642 ' + secs + 's)';
+        }
         _orchestratorNode.body.textContent += chunk;
         chat.scrollTop = chat.scrollHeight;
       }
 
       function finalizeOrchestratorBubble() {
         if (!_orchestratorNode) return;
+        if (_orchestratorNode.thinkTimer) { clearInterval(_orchestratorNode.thinkTimer); _orchestratorNode.thinkTimer = null; }
+        if (_orchestratorNode.thinkNode && _orchestratorNode.thinkNode.hasAttribute('open')) {
+          _orchestratorNode.thinkNode.removeAttribute('open');
+          var lbl = _orchestratorNode.thinkNode.querySelector('.think-label');
+          var tok = Math.round((_orchestratorNode.thinkChars || 0) / 4);
+          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u5b8c\u6210 (~' + tok + ' tokens)';
+          var icon = _orchestratorNode.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
+        }
         if (_orchestratorNode.hdr) _orchestratorNode.hdr.textContent = _orchestratorNode.hdr.textContent.replace('\u5206\u914D\u5DE5\u4F5C\u4E2D\u2026', '\u2713 \u5DE5\u4F5C\u5206\u914D\u5B8C\u6210');
       }
 
@@ -1365,7 +1407,8 @@ export class OllamaChatPanel {
         try {
           const tPlanText = await ollamaCall(
             thinkModel, tPlanPrompt,
-            (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk }); }
+            (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk }); },
+            (tc) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: tc }); }
           );
           const tJsonMatch = tPlanText.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, null];
           const tJsonStr = (tJsonMatch[1] ?? tPlanText).trim();
