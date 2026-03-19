@@ -2409,9 +2409,23 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
 
     try {
       for (let step = 0; step < 20 && !this._agentCancel; step++) {
-        const resp = model.startsWith('copilot::')
-          ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
-          : await ollamaChatCall(baseUrl, model, this._agentMessages, AGENT_TOOLS);
+        let resp: ChatMessage | undefined;
+        try {
+          resp = model.startsWith('copilot::')
+            ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
+            : await ollamaChatCall(baseUrl, model, this._agentMessages, AGENT_TOOLS);
+        } catch (e) {
+          const emsg = e instanceof Error ? e.message : String(e);
+          if (/token|limit|context|exceed/i.test(emsg) && this._agentMessages.length > 4) {
+            this._trimAgentHistory();
+            this._panel.webview.postMessage({ type: 'agentStep', icon: '✂️', title: '歷史記錄過長，已自動裁剪後重試', fullPath: '' });
+            resp = model.startsWith('copilot::')
+              ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
+              : await ollamaChatCall(baseUrl, model, this._agentMessages, AGENT_TOOLS);
+          } else {
+            throw e;
+          }
+        }
         if (!resp) { break; }
 
         if (resp.tool_calls && resp.tool_calls.length > 0) {
@@ -2447,6 +2461,13 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       this._agentCancel = false;
       this._panel.webview.postMessage({ type: 'agentStatus', running: false });
     }
+  }
+
+  /** 裁剪 _agentMessages：保留 system prompt + 最新 8 則訊息，避免超過 token 上限。 */
+  private _trimAgentHistory(): void {
+    const sys = this._agentMessages[0];
+    const rest = this._agentMessages.slice(1);
+    this._agentMessages = [sys, ...rest.slice(-8)];
   }
 
   /** 從 atlassian.atlascode 擷取 Jira auth (bearer token + baseApiUrl)。
