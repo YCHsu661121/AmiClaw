@@ -56,7 +56,13 @@
           "amiClaw.url": {
             "type": "string",
             "default": "http://localhost:11434",
-            "description": "Ollama server URL"
+            "description": "Ollama server URL（單一伺服器時使用；多伺服器請改用 amiClaw.urls）"
+          },
+          "amiClaw.urls": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "多台 Ollama 伺服器 URL 列表，例如 [\"http://localhost:11434\", \"http://192.168.1.100:11434\"]。設定後將優先取代 amiClaw.url。"
           },
           "amiClaw.model": {
             "type": "string",

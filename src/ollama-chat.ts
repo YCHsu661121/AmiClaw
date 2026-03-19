@@ -187,19 +187,24 @@ export class OllamaChatPanel {
     const _self = this;
     (async () => {
       const cfg = vscode.workspace.getConfiguration('amiClaw');
-      const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-      let liveModels: string[] = [];
+      const ollamaUrls = getOllamaUrls(cfg);
+      const liveModels: { id: string; label: string }[] = [];
       let connOk = false;
       let connMsg = '';
-      try {
-        OllamaChatPanel.log('Fetching models from ' + baseUrl);
-        liveModels = await ollamaListModels(baseUrl);
-        connOk = true;
-        connMsg = 'OK';
-        OllamaChatPanel.log('Models fetched OK: ' + liveModels.join(', '));
-      } catch (e) {
-        connMsg = e instanceof Error ? e.message : String(e);
-        OllamaChatPanel.log('Model fetch error: ' + connMsg);
+      let connUrl = ollamaUrls[0];
+      for (const url of ollamaUrls) {
+        try {
+          const models = await ollamaListModels(url);
+          for (const m of models) {
+            liveModels.push({ id: encodeOllamaModelId(url, m, ollamaUrls), label: ollamaDisplayLabel(url, m, ollamaUrls) });
+          }
+          if (!connOk) { connOk = true; connMsg = ollamaUrls.length > 1 ? `${ollamaUrls.length} 台伺服器已連線` : 'OK'; connUrl = url; }
+          OllamaChatPanel.log('Models from ' + url + ': ' + models.join(', '));
+        } catch (e) {
+          const emsg = e instanceof Error ? e.message : String(e);
+          if (!connOk) { connMsg = emsg; connUrl = url; }
+          OllamaChatPanel.log('Model fetch error from ' + url + ': ' + emsg);
+        }
       }
       let copilotModels0: { id: string; name: string; multiplier: string }[] = [];
       try {
@@ -209,11 +214,11 @@ export class OllamaChatPanel {
           if (!seen0.has(m.id)) { seen0.add(m.id); const n0 = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi,'').trim(); copilotModels0.push({ id: m.id, name: n0, multiplier: '' }); }
         }
       } catch { /* Copilot not available */ }
-      const current = cfg.get<string>('model') ?? liveModels[0] ?? '';
+      const current = cfg.get<string>('model') ?? liveModels[0]?.id ?? '';
       // Push result to webview via postMessage (safe: listener is already registered)
       const r1 = await _webview.postMessage({ type: 'modelList', models: liveModels, copilotModels: copilotModels0, current });
       OllamaChatPanel.log('postMessage modelList delivered=' + r1);
-      const r2 = await _webview.postMessage({ type: 'connectionStatus', ok: connOk, url: baseUrl, message: connMsg });
+      const r2 = await _webview.postMessage({ type: 'connectionStatus', ok: connOk, url: connUrl, message: connMsg });
       OllamaChatPanel.log('postMessage connectionStatus delivered=' + r2);
     })().catch((e) => { OllamaChatPanel.log('Async IIFE error: ' + (e instanceof Error ? e.message : String(e))); });
   }
@@ -576,7 +581,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
-          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); var _pickerModels = []; (msg.models||[]).forEach(function(m) { _pickerModels.push({ id: m, label: m, vendor: 'ollama' }); }); (msg.copilotModels||[]).forEach(function(cm) { _pickerModels.push({ id: 'copilot::' + cm.id, label: cm.name, vendor: 'copilot' }); }); if (_pickerModels.length) { populateTeamPicker(_pickerModels); populateDebatePicker(_pickerModels); } }
+          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); var _pickerModels = []; (msg.models||[]).forEach(function(m) { var id = (typeof m === 'string') ? m : m.id; var label = (typeof m === 'string') ? m : m.label; _pickerModels.push({ id: id, label: label, vendor: 'ollama' }); }); (msg.copilotModels||[]).forEach(function(cm) { _pickerModels.push({ id: 'copilot::' + cm.id, label: cm.name, vendor: 'copilot' }); }); if (_pickerModels.length) { populateTeamPicker(_pickerModels); populateDebatePicker(_pickerModels); } }
           else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
@@ -1354,13 +1359,28 @@ export class OllamaChatPanel {
         modelSelect.innerHTML = '';
         var hasAny = false;
         if (models && models.length) {
-          var grpO = document.createElement('optgroup'); grpO.label = '\u2B2C Ollama';
+          // 支援 {id,label}[] 格式（多 URL 模式）和舊版 string[] 格式
+          var serverGroups = {}; var serverOrder = [];
           models.forEach(function(m) {
-            var opt = document.createElement('option'); opt.value = m; opt.textContent = m;
-            if (m === current) opt.selected = true;
-            grpO.appendChild(opt); hasAny = true;
+            var id = (typeof m === 'string') ? m : m.id;
+            var label = (typeof m === 'string') ? m : m.label;
+            var grpKey = 'Ollama';
+            if (id.indexOf('||') !== -1) {
+              var urlPart = id.slice(0, id.indexOf('||'));
+              try { var u = new URL(urlPart); grpKey = u.hostname + ':' + (u.port || '11434'); } catch { grpKey = urlPart; }
+            }
+            if (!serverGroups[grpKey]) { serverGroups[grpKey] = []; serverOrder.push(grpKey); }
+            serverGroups[grpKey].push({ id: id, label: label });
           });
-          modelSelect.appendChild(grpO);
+          serverOrder.forEach(function(grpKey) {
+            var grpO = document.createElement('optgroup'); grpO.label = '\u2B2C ' + grpKey;
+            serverGroups[grpKey].forEach(function(m) {
+              var opt = document.createElement('option'); opt.value = m.id; opt.textContent = m.label;
+              if (m.id === current || m.label === current) opt.selected = true;
+              grpO.appendChild(opt); hasAny = true;
+            });
+            modelSelect.appendChild(grpO);
+          });
         }
         if (copilotModels && copilotModels.length) {
           var grpC = document.createElement('optgroup'); grpC.label = '\u2728 Copilot';
@@ -1511,11 +1531,16 @@ export class OllamaChatPanel {
 
   private async handleTeamSend(prompt: string, selectedModels?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const urls = getOllamaUrls(cfg);
+    const defaultBaseUrl = urls[0];
+    const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
+    // Decode URL from model ID (multi-server: "http://host:port||model")
+    const getWorkerUrl = (m: string) => isOllamaModel(m) ? decodeOllamaModel(m, urls).url : defaultBaseUrl;
+    const getWorkerModel = (m: string) => isOllamaModel(m) ? decodeOllamaModel(m, urls).model : m;
     // Use first selected model as primary; fallback to config or first live model (never hardcode llama3)
     const configuredModel = cfg.get<string>('model') ?? '';
     const primaryOllamaModel = (selectedModels && selectedModels.length > 0)
-      ? selectedModels.find(m => !m.startsWith('copilot/') && !m.startsWith('copilot::')) ?? selectedModels[0]
+      ? selectedModels.find(m => isOllamaModel(m)) ?? selectedModels[0]
       : configuredModel;
     const allModels = (selectedModels && selectedModels.length > 0) ? selectedModels.slice(0, 5) : (primaryOllamaModel ? [primaryOllamaModel] : []);
 
@@ -1529,13 +1554,18 @@ export class OllamaChatPanel {
     const openFiles = vscode.workspace.textDocuments.filter(d => !d.isUntitled && d.uri.scheme === 'file').map(d => d.uri.fsPath);
     const wsContext = `【工作區】${wsRoot}${activeFile ? '\n【作用中檔案】' + activeFile : ''}${openFiles.length ? '\n【開啟的檔案】\n' + openFiles.join('\n') : ''}`;
     // Normalize copilot prefix for handleAgent: copilot/xxx → copilot::xxx
-    const normalizeForAgent = (m: string) => m.startsWith('copilot/') ? 'copilot::' + m.slice('copilot/'.length) : m;
-    const getDisplay = (m: string) => m.startsWith('copilot/') ? '\uD83D\uDC19 ' + m.slice('copilot/'.length) : m;
+    const normalizeForAgent = (m: string) => m.startsWith('copilot/') ? 'copilot::' + m.slice('copilot/'.length) : (m.includes('||') ? 'copilot::' + getWorkerModel(m) : m);
+    const getDisplay = (m: string) => {
+      if (m.startsWith('copilot/')) return '\uD83D\uDC19 ' + m.slice('copilot/'.length);
+      if (m.startsWith('copilot::')) return '\uD83D\uDC19 ' + m.slice('copilot::'.length);
+      if (m.includes('||')) { const { url, model } = decodeOllamaModel(m, urls); try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; } }
+      return m;
+    };
 
     // Detect orchestrator: first Copilot model in the selection
-    const copilotIdx = allModels.findIndex(m => m.startsWith('copilot/'));
+    const copilotIdx = allModels.findIndex(m => m.startsWith('copilot/') || m.startsWith('copilot::'));
     const hasOrchestrator = copilotIdx >= 0;
-    const orchestratorFamily = hasOrchestrator ? allModels[copilotIdx].slice('copilot/'.length) : '';
+    const orchestratorFamily = hasOrchestrator ? (allModels[copilotIdx].startsWith('copilot::') ? allModels[copilotIdx].slice('copilot::'.length) : allModels[copilotIdx].slice('copilot/'.length)) : '';
     const workerModels = hasOrchestrator
       ? [...allModels.slice(0, copilotIdx), ...allModels.slice(copilotIdx + 1)]
       : allModels;
@@ -1589,7 +1619,7 @@ export class OllamaChatPanel {
           this._panel.webview.postMessage({ type: 'teamTodoStart', idx: taskItem.index, worker: displayName });
           this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: displayName, color, task: taskItem.task });
           try {
-            const response = await this.runWorkerDiscussion(model, copilotReviewFn, baseUrl, taskItem.task, id, color);
+            const response = await this.runWorkerDiscussion(getWorkerModel(model), copilotReviewFn, getWorkerUrl(model), taskItem.task, id, color);
             results.push({ model: displayName, response });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -1632,15 +1662,18 @@ export class OllamaChatPanel {
       const thinkModel = OllamaChatPanel.pickThinkingModel(effectiveWorkers);
 
       // 序列 Ollama wrapper：使用 retry（ECONNRESET/timeout → 等 60s 再試，最多 10 次）
+      // model 可能為 "url||model" 格式，自動 decode
       const postStatus = (msg: string) => { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: msg }); };
       const ollamaCall = (model: string, prompt2: string,
-        onResp: (c: string) => void, onThink?: (c: string) => void) =>
-        ollamaGenerateStreamWithRetry(
-          baseUrl, model, prompt2, onResp, onThink,
+        onResp: (c: string) => void, onThink?: (c: string) => void) => {
+        const { url: mUrl, model: mName } = decodeOllamaModel(model, urls);
+        return ollamaGenerateStreamWithRetry(
+          mUrl, mName, prompt2, onResp, onThink,
           (attempt, waitSec, err) => {
-            postStatus(`\n⚠️ [${model}] 連線失敗 (${err})，第 ${attempt} 次重試，等待 ${waitSec}s...\n`);
+            postStatus(`\n⚠️ [${mName}] 連線失敗 (${err})，第 ${attempt} 次重試，等待 ${waitSec}s...\n`);
           }
         );
+      };
 
       if (effectiveWorkers.length === 1) {
         // 單一模型：直接執行，無需討論
@@ -1735,7 +1768,7 @@ export class OllamaChatPanel {
 
           try {
             const response = await this.runWorkerDiscussion(
-              model, ollamaReviewFn, baseUrl, activeItem.task, id, color, 100,
+              getWorkerModel(model), ollamaReviewFn, getWorkerUrl(model), activeItem.task, id, color, 100,
               ollamaCall
             );
             activeItem.status = 'done';
@@ -1809,7 +1842,7 @@ export class OllamaChatPanel {
   /** 對話模式：2 個 AI 互相辯論/對弈；3 個 AI 則第三個當裁判 */
   private async handleDebateSend(prompt: string, selectedModels?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const urls = getOllamaUrls(cfg);
     const allModels = (selectedModels && selectedModels.length >= 2) ? selectedModels.slice(0, 3) : [];
     if (allModels.length < 2) {
       this._panel.webview.postMessage({ type: 'error', text: '對話模式需要選擇至少 2 個 AI 模型' });
@@ -1819,7 +1852,12 @@ export class OllamaChatPanel {
     this._teamCancel = false;
 
     const isOllama = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
-    const getLabel = (m: string) => m.startsWith('copilot/') ? m.slice('copilot/'.length) : m;
+    const getLabel = (m: string) => {
+      if (m.startsWith('copilot/')) return m.slice('copilot/'.length);
+      if (m.startsWith('copilot::')) return m.slice('copilot::'.length);
+      if (m.includes('||')) { const { url, model } = decodeOllamaModel(m, urls); try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; } }
+      return m;
+    };
 
     // Role assignment
     const modelA = allModels[0];
@@ -1859,7 +1897,8 @@ export class OllamaChatPanel {
           return full;
         } finally { clearInterval(cancelInterval); cts.dispose(); }
       } else {
-        await this.ensureModelReady(baseUrl, model);
+        await this.ensureModelReady(...((): [string, string] => { const d = decodeOllamaModel(model, urls); return [d.url, d.model]; })());
+        const { url: ollamaUrl, model: ollamaModel } = decodeOllamaModel(model, urls);
         const messages: ChatMessage[] = [
           { role: 'system', content: systemPrompt },
           ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
@@ -1867,7 +1906,7 @@ export class OllamaChatPanel {
         if (messages[messages.length - 1].role !== 'user') {
           messages.push({ role: 'user', content: '請繼續。' });
         }
-        return await ollamaChatStream(baseUrl, model, messages, onChunk, onThink);
+        return await ollamaChatStream(ollamaUrl, ollamaModel, messages, onChunk, onThink);
       }
     };
 
@@ -2022,13 +2061,17 @@ export class OllamaChatPanel {
 
   private async fetchTeamModels(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const ollamaUrls = getOllamaUrls(cfg);
     const teamModels: { id: string; label: string; vendor: string }[] = [];
-    // Ollama models
-    try {
-      const ollamaModels = await ollamaListModels(baseUrl);
-      for (const m of ollamaModels) { teamModels.push({ id: m, label: m, vendor: 'ollama' }); }
-    } catch { /* Ollama not reachable */ }
+    // Ollama models — all servers
+    for (const url of ollamaUrls) {
+      try {
+        const models = await ollamaListModels(url);
+        for (const m of models) {
+          teamModels.push({ id: encodeOllamaModelId(url, m, ollamaUrls), label: ollamaDisplayLabel(url, m, ollamaUrls), vendor: 'ollama' });
+        }
+      } catch { /* server not reachable */ }
+    }
     // GitHub Copilot models
     try {
       const copilotModels = await vscode.lm.selectChatModels({ vendor: 'copilot' });
@@ -2154,8 +2197,9 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 
   private async handleSend(prompt: string, modelOverride?: string): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const model = modelOverride ?? cfg.get<string>('model') ?? '';
+    const urls = getOllamaUrls(cfg);
+    const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
+    const { url: baseUrl, model } = rawModel.startsWith('copilot') ? { url: urls[0], model: rawModel } : decodeOllamaModel(rawModel, urls);
 
     // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
     await this.ensureModelReady(baseUrl, model);
@@ -2230,8 +2274,9 @@ ${reviewText.replace('[APPROVED]', '').trim()}
       return;
     }
     const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const model = cfg.get<string>('model') ?? '';
+    const urls = getOllamaUrls(cfg);
+    const rawModel = cfg.get<string>('model') ?? '';
+    const { url: baseUrl, model } = rawModel.startsWith('copilot') ? { url: urls[0], model: rawModel } : decodeOllamaModel(rawModel, urls);
     const currentLtm = this.getLongTermMemory();
     const historyText = this._chatHistory.map(m => {
       const role = m.role === 'user' ? '使用者' : 'AI';
@@ -2438,8 +2483,9 @@ ${historyText}
     this._panel.webview.postMessage({ type: 'agentStatus', running: true });
 
     const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const model = modelOverride ?? cfg.get<string>('model') ?? '';
+    const urls = getOllamaUrls(cfg);
+    const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
+    const { url: baseUrl, model } = rawModel.startsWith('copilot') ? { url: urls[0], model: rawModel } : decodeOllamaModel(rawModel, urls);
 
     // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
     await this.ensureModelReady(baseUrl, model);
@@ -3276,20 +3322,26 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
 
   private async fetchModelsFromServer(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    OllamaChatPanel.log('fetchModelsFromServer: ' + baseUrl);
-    let ollamaModels: string[] = [];
+    const ollamaUrls = getOllamaUrls(cfg);
+    OllamaChatPanel.log('fetchModelsFromServer: ' + ollamaUrls.join(', '));
+    const liveModels: { id: string; label: string }[] = [];
     let copilotModels: { id: string; name: string; multiplier: string }[] = [];
     let connOk2 = false;
     let connMsg2 = '連線失敗';
-    try {
-      ollamaModels = await ollamaListModels(baseUrl);
-      connOk2 = true; connMsg2 = 'OK';
-      OllamaChatPanel.log('fetchModelsFromServer OK: models=' + ollamaModels.join(', '));
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      connMsg2 = msg;
-      OllamaChatPanel.log('fetchModelsFromServer error: ' + msg);
+    let connUrl2 = ollamaUrls[0];
+    for (const url of ollamaUrls) {
+      try {
+        const models = await ollamaListModels(url);
+        for (const m of models) {
+          liveModels.push({ id: encodeOllamaModelId(url, m, ollamaUrls), label: ollamaDisplayLabel(url, m, ollamaUrls) });
+        }
+        if (!connOk2) { connOk2 = true; connMsg2 = ollamaUrls.length > 1 ? `${ollamaUrls.length} 台伺服器已連線` : 'OK'; connUrl2 = url; }
+        OllamaChatPanel.log('fetchModelsFromServer OK from ' + url);
+      } catch (e: unknown) {
+        const emsg = e instanceof Error ? e.message : String(e);
+        if (!connOk2) { connMsg2 = emsg; connUrl2 = url; }
+        OllamaChatPanel.log('fetchModelsFromServer error from ' + url + ': ' + emsg);
+      }
     }
     try {
       const lms2 = await vscode.lm.selectChatModels({ vendor: 'copilot' });
@@ -3298,9 +3350,9 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         if (!seen2.has(m.id)) { seen2.add(m.id); const n2 = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi, '').trim(); copilotModels.push({ id: m.id, name: n2, multiplier: '' }); }
       }
     } catch { /* Copilot not available */ }
-    const current2 = cfg.get<string>('model') ?? ollamaModels[0] ?? '';
-    const r1 = await this._panel.webview.postMessage({ type: 'modelList', models: ollamaModels, copilotModels, current: current2 });
-    const r2 = await this._panel.webview.postMessage({ type: 'connectionStatus', ok: connOk2, url: baseUrl, message: connMsg2 });
+    const current2 = cfg.get<string>('model') ?? liveModels[0]?.id ?? '';
+    const r1 = await this._panel.webview.postMessage({ type: 'modelList', models: liveModels, copilotModels, current: current2 });
+    const r2 = await this._panel.webview.postMessage({ type: 'connectionStatus', ok: connOk2, url: connUrl2, message: connMsg2 });
     OllamaChatPanel.log('fetchModelsFromServer postMessage results: modelList=' + r1 + ' connectionStatus=' + r2);
   }
 
@@ -3777,6 +3829,31 @@ function ollamaChatStream(
       req.write(body); req.end();
     } catch (e) { reject(e); }
   });
+}
+
+/** 讀取所有設定的 Ollama 伺服器 URL。優先使用 amiClaw.urls，fallback 到 amiClaw.url。 */
+function getOllamaUrls(cfg: vscode.WorkspaceConfiguration): string[] {
+  const arr = (cfg.get<string[]>('urls') ?? []).filter((u: string) => u.trim());
+  if (arr.length > 0) return arr;
+  return [cfg.get<string>('url') ?? 'http://localhost:11434'];
+}
+
+/** 解碼 Ollama model ID：多伺服器格式為 "http://host:port||modelname"，單伺服器為 "modelname"。 */
+function decodeOllamaModel(modelId: string, fallbackUrls: string[]): { url: string; model: string } {
+  const sep = modelId.indexOf('||');
+  if (sep !== -1) return { url: modelId.slice(0, sep), model: modelId.slice(sep + 2) };
+  return { url: fallbackUrls[0] ?? 'http://localhost:11434', model: modelId };
+}
+
+/** 編碼 Ollama model ID：多伺服器時加 URL 前綴，單伺服器時返回原始 model 名稱（向後相容）。 */
+function encodeOllamaModelId(url: string, model: string, allUrls: string[]): string {
+  return allUrls.length > 1 ? `${url}||${model}` : model;
+}
+
+/** 顯示標籤：多伺服器時加上 [hostname:port] 前綴。 */
+function ollamaDisplayLabel(url: string, model: string, allUrls: string[]): string {
+  if (allUrls.length <= 1) return model;
+  try { const u = new URL(url); return `[${u.hostname}:${u.port || '11434'}] ${model}`; } catch { return model; }
 }
 
 function ollamaListModels(baseUrl: string): Promise<string[]> {
