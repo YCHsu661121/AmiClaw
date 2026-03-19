@@ -2,6 +2,8 @@
   "name": "ami-claw",
   "displayName": "AmiClaw",
   "description": "AmiClaw - Local Ollama chat assistant for code generation and insertion.",
+  "author": "YCHsu",
+  "license": "MIT",
   "version": "0.0.1",
   "publisher": "localdev",
   "icon": "AmiClaw.png",

@@ -1,4 +1,6 @@
-﻿import * as vscode from 'vscode';
+﻿// Copyright (c) 2026 YCHsu. All rights reserved.
+// Licensed under the MIT License.
+import * as vscode from 'vscode';
 import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
