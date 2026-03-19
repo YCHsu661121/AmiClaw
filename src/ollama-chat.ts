@@ -1802,14 +1802,12 @@ export class OllamaChatPanel {
     // Determine context type from prompt keywords
     const isGame = /圍棋|象棋|西洋棋|chess|go\b|tic.tac|game|遊戲|下棋/i.test(prompt);
     const roleADesc = isGame
-      ? '你正在進行一場對弈。議題：\n\n' + prompt + '\n\n請直接回應你的走法或行動，並解釋思路。'
-      : '請針對以下議題，提出你的觀點與分析：\n\n' + prompt + '\n\n請條理分明地陳述你的立場與理由。';
+      ? '你是一位棋手，以下是對局題目：\n\n' + prompt + '\n\n請說明你的走法與思路。'
+      : '請針對以下議題提出你的分析與見解：\n\n' + prompt;
     const roleBDesc = isGame
-      ? '你正在進行一場對弈。議題：\n\n' + prompt + '\n\n請直接回應你的走法或行動，並解釋思路。'
-      : '請針對以下議題，提出你的觀點與分析：\n\n' + prompt + '\n\n請從不同角度補充見解，或提出你認為重要的考量。';
-    const roleJDesc = labelJ
-      ? '以下是多位參與者針對同一議題各自的分析：\n\n' + prompt + '\n\n請整合所有觀點，做出客觀的綜合總結。'
-      : '';
+      ? '你是一位棋手，以下是對局題目：\n\n' + prompt + '\n\n請說明你的走法與思路。'
+      : '請針對以下議題提出你的分析與見解：\n\n' + prompt;
+    const roleJDesc = '請整合以下多份針對同一議題的分析，做出客觀的綜合總結：';
 
     const callModel = async (
       model: string,
@@ -1820,19 +1818,35 @@ export class OllamaChatPanel {
     ): Promise<string> => {
       if (model.startsWith('copilot/') || model.startsWith('copilot::')) {
         const family = model.startsWith('copilot/') ? model.slice('copilot/'.length) : model.slice('copilot::'.length);
-        // Copilot: flatten into single prompt (no tool calls needed)
-        const flatCtx = systemPrompt + '\n\n' + history.map(m => (m.role === 'user' ? '[對方]: ' : '[我]: ') + m.content).join('\n\n');
-        return await this.copilotStream(family, flatCtx, onChunk);
+        // Send system + history as structured Copilot messages
+        const [lm] = await vscode.lm.selectChatModels({ vendor: 'copilot', family });
+        if (!lm) { throw new Error(`Copilot 模型 "${family}" 不可用`); }
+        const cts = new vscode.CancellationTokenSource();
+        const cancelInterval = setInterval(() => { if (this._teamCancel) cts.cancel(); }, 200);
+        const vmMsgs: vscode.LanguageModelChatMessage[] = [
+          vscode.LanguageModelChatMessage.User(systemPrompt),
+          ...history.map(h => h.role === 'user'
+            ? vscode.LanguageModelChatMessage.User(h.content)
+            : vscode.LanguageModelChatMessage.Assistant(h.content))
+        ];
+        try {
+          const resp = await lm.sendRequest(vmMsgs, {}, cts.token);
+          let full = '';
+          for await (const part of resp.stream) {
+            if (this._teamCancel) break;
+            if (part instanceof vscode.LanguageModelTextPart) { full += part.value; onChunk(part.value); }
+          }
+          return full;
+        } finally { clearInterval(cancelInterval); cts.dispose(); }
       } else {
-        // Ollama: use /api/chat with proper role separation to avoid safety misclassification
+        // Ollama: use /api/chat with proper role separation
         await this.ensureModelReady(baseUrl, model);
         const messages: ChatMessage[] = [
           { role: 'system', content: systemPrompt },
           ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
         ];
-        // Ollama /api/chat requires the last message to be from 'user'
         if (messages[messages.length - 1].role !== 'user') {
-          messages.push({ role: 'user', content: '請繼續分享你的觀點。' });
+          messages.push({ role: 'user', content: '請繼續。' });
         }
         return await ollamaChatStream(baseUrl, model, messages, onChunk, onThink);
       }
@@ -1867,7 +1881,7 @@ export class OllamaChatPanel {
       if (this._teamCancel) break;
       // A's own memory: append its answer, then prime next user turn
       historyA.push({ role: 'assistant', content: responseA });
-      historyA.push({ role: 'user', content: '請繼續深入分析。' });
+      historyA.push({ role: 'user', content: '請進一步說明。' });
       summaryLines.push(`【${labelA}】\n${responseA}`);
 
       // B speaks — only sees its own prior turns
@@ -1887,7 +1901,7 @@ export class OllamaChatPanel {
       if (this._teamCancel) break;
       // B's own memory: append its answer, then prime next user turn
       historyB.push({ role: 'assistant', content: responseB });
-      historyB.push({ role: 'user', content: '請繼續深入分析。' });
+      historyB.push({ role: 'user', content: '請進一步說明。' });
       summaryLines.push(`【${labelB}】\n${responseB}`);
     }
 
