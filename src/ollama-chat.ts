@@ -544,6 +544,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk); }
           else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
           else if (msg.type === 'streamEnd')     { _agentStepNode = null; _streamNode = null; setSendEnabled(true); }
+          else if (msg.type === 'streamStats')   { var _sb = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null; if (_sb) { var _det = _sb.querySelector('details.think'); if (_det) { var _lbl = _det.querySelector('.think-label'); var _secs = _det._thinkEnd ? Math.round((_det._thinkEnd - (_det._thinkStart||_det._thinkEnd)) / 1000) : 0; if (_lbl) _lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (' + msg.tokens + ' tokens, \u8017\u6642 ' + _secs + 's, ' + msg.tps.toFixed(1) + ' t/s)'; } } }
           else if (msg.type === 'error')         { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', '\u932f\u8aa4\uff1a' + msg.text); }
           else if (msg.type === 'teamMemberStart') { createTeamMember(msg.id, msg.model, msg.color, msg.task); }
           else if (msg.type === 'teamThinkChunk')  { appendTeamThinkChunk(msg.id, msg.color, msg.chunk); }
@@ -569,7 +570,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'debateTurnStart') { startDebateTurn(msg.speaker, msg.round); }
           else if (msg.type === 'debateChunk')   { appendDebateChunk(msg.speaker, msg.chunk); }
           else if (msg.type === 'debateThinkChunk') { appendDebateThinkChunk(msg.speaker, msg.chunk); }
-          else if (msg.type === 'debateTurnEnd') { finalizeDebateTurn(msg.speaker); }
+          else if (msg.type === 'debateTurnEnd') { finalizeDebateTurn(msg.speaker, msg.tokens, msg.tps); }
           else if (msg.type === 'debateEnd')     { finalizeDebate(msg.consensus); setSendEnabled(true); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f'; }
           else if (msg.type === 'agentStatus')   {
             if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
@@ -937,6 +938,7 @@ export class OllamaChatPanel {
         const d = bubble.querySelector('details.think');
         if (d && d.hasAttribute('open')) {
           d.removeAttribute('open');
+          d._thinkEnd = Date.now();
           if (d._thinkTimer) { clearInterval(d._thinkTimer); d._thinkTimer = null; }
           const icon = d.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
           const lbl = d.querySelector('.think-label');
@@ -1331,6 +1333,7 @@ export class OllamaChatPanel {
         var d = _debateNodes[speaker]; if (!d) return;
         if (d.thinkNode && d.thinkNode.hasAttribute('open')) {
           d.thinkNode.removeAttribute('open');
+          d.thinkEnd = Date.now();
           if (d.thinkTimer) { clearInterval(d.thinkTimer); d.thinkTimer = null; }
           var icon = d.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
           var lbl = d.thinkNode.querySelector('.think-label');
@@ -1339,12 +1342,18 @@ export class OllamaChatPanel {
         }
         d.body.textContent += chunk; chat.scrollTop = chat.scrollHeight;
       }
-      function finalizeDebateTurn(speaker) {
+      function finalizeDebateTurn(speaker, tokens, tps) {
         var d = _debateNodes[speaker]; if (!d) return;
         if (d.thinkTimer) { clearInterval(d.thinkTimer); d.thinkTimer = null; }
         if (d.thinkNode && d.thinkNode.hasAttribute('open')) {
           d.thinkNode.removeAttribute('open');
+          d.thinkEnd = Date.now();
           var icon = d.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
+        }
+        if (d.thinkNode && tokens !== undefined && tps !== undefined) {
+          var lbl = d.thinkNode.querySelector('.think-label');
+          var secs = d.thinkEnd ? Math.round((d.thinkEnd - d.thinkStart) / 1000) : 0;
+          if (lbl) lbl.textContent = '🧠 思考過程 (' + tokens + ' tokens, 耗時 ' + secs + 's, ' + tps.toFixed(1) + ' t/s)';
         }
       }
       function finalizeDebate(consensus) {
@@ -1874,7 +1883,7 @@ export class OllamaChatPanel {
       history: { role: 'user' | 'assistant'; content: string }[],
       onChunk: (c: string) => void,
       onThink?: (c: string) => void
-    ): Promise<string> => {
+    ): Promise<{ text: string; tokens?: number; tps?: number }> => {
       if (model.startsWith('copilot/') || model.startsWith('copilot::')) {
         const family = model.startsWith('copilot/') ? model.slice('copilot/'.length) : model.slice('copilot::'.length);
         const [lm] = await vscode.lm.selectChatModels({ vendor: 'copilot', family });
@@ -1894,7 +1903,7 @@ export class OllamaChatPanel {
             if (this._teamCancel) break;
             if (part instanceof vscode.LanguageModelTextPart) { full += part.value; onChunk(part.value); }
           }
-          return full;
+          return { text: full };
         } finally { clearInterval(cancelInterval); cts.dispose(); }
       } else {
         await this.ensureModelReady(...((): [string, string] => { const d = decodeOllamaModel(model, urls); return [d.url, d.model]; })());
@@ -1906,7 +1915,11 @@ export class OllamaChatPanel {
         if (messages[messages.length - 1].role !== 'user') {
           messages.push({ role: 'user', content: '請繼續。' });
         }
-        return await ollamaChatStream(ollamaUrl, ollamaModel, messages, onChunk, onThink);
+        let statsTokens: number | undefined;
+        let statsTps: number | undefined;
+        const text = await ollamaChatStream(ollamaUrl, ollamaModel, messages, onChunk, onThink,
+          (tokens, tps) => { statsTokens = tokens; statsTps = tps; });
+        return { text, tokens: statsTokens, tps: statsTps };
       }
     };
 
@@ -1928,15 +1941,17 @@ export class OllamaChatPanel {
         // A moves
         this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'A', round });
         let moveA = '';
+        let statsA: { tokens?: number; tps?: number } = {};
         try {
-          moveA = await callModel(modelA, gameSystemA, historyA,
+          const rA = await callModel(modelA, gameSystemA, historyA,
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: c }); },
             (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); });
+          moveA = rA.text; statsA = { tokens: rA.tokens, tps: rA.tps };
         } catch (e) {
           moveA = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
           if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: moveA });
         }
-        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A' });
+        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A', tokens: statsA.tokens, tps: statsA.tps });
         if (this._teamCancel) break;
         historyA.push({ role: 'assistant', content: moveA });
         gameMoves.push(`第 ${round + 1} 手（${labelA}）：${moveA}`);
@@ -1944,16 +1959,18 @@ export class OllamaChatPanel {
         // B responds to A's move
         this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'B', round });
         let moveB = '';
+        let statsB: { tokens?: number; tps?: number } = {};
         const boardState = initPrompt + '\n\n目前棋譜：\n' + gameMoves.join('\n') + '\n\n請回應你的下一手。';
         try {
-          moveB = await callModel(modelB, gameSystemB, [{ role: 'user', content: boardState }],
+          const rB = await callModel(modelB, gameSystemB, [{ role: 'user', content: boardState }],
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: c }); },
             (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'B', chunk: t }); });
+          moveB = rB.text; statsB = { tokens: rB.tokens, tps: rB.tps };
         } catch (e) {
           moveB = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
           if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: moveB });
         }
-        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B' });
+        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B', tokens: statsB.tokens, tps: statsB.tps });
         if (this._teamCancel) break;
         gameMoves.push(`第 ${round + 1} 手（${labelB}）：${moveB}`);
         // Feed B's reply back to A as the next user turn
@@ -1964,14 +1981,16 @@ export class OllamaChatPanel {
       if (judgeModel && !this._teamCancel) {
         this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'J', round: -1 });
         const gameSummary = initPrompt + '\n\n完整棋譜：\n' + gameMoves.join('\n') + '\n\n請分析這場對局，說明雙方的策略與得失。';
+        let statsJ: { tokens?: number; tps?: number } = {};
         try {
-          await callModel(judgeModel, '你是棋局分析師，請客觀分析以下對局。', [{ role: 'user', content: gameSummary }],
+          const rJ = await callModel(judgeModel, '你是棋局分析師，請客觀分析以下對局。', [{ role: 'user', content: gameSummary }],
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); });
+          statsJ = { tokens: rJ.tokens, tps: rJ.tps };
         } catch (e) {
           const errJ = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
           if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: errJ });
         }
-        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J' });
+        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J', tokens: statsJ.tokens, tps: statsJ.tps });
       }
 
       this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
@@ -1999,17 +2018,19 @@ export class OllamaChatPanel {
       // A speaks — only sees its own prior turns
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'A', round });
       let responseA = '';
+      let statsDA: { tokens?: number; tps?: number } = {};
       try {
-        responseA = await callModel(
+        const rA = await callModel(
           modelA, roleADesc, historyA,
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: c }); },
           (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); }
         );
+        responseA = rA.text; statsDA = { tokens: rA.tokens, tps: rA.tps };
       } catch (e) {
         responseA = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
         if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: responseA });
       }
-      this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A' });
+      this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A', tokens: statsDA.tokens, tps: statsDA.tps });
       if (this._teamCancel) break;
       // A's own memory: append its answer, then prime next user turn
       historyA.push({ role: 'assistant', content: responseA });
@@ -2019,17 +2040,19 @@ export class OllamaChatPanel {
       // B speaks — only sees its own prior turns
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'B', round });
       let responseB = '';
+      let statsDB: { tokens?: number; tps?: number } = {};
       try {
-        responseB = await callModel(
+        const rB = await callModel(
           modelB, roleBDesc, historyB,
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: c }); },
           (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'B', chunk: t }); }
         );
+        responseB = rB.text; statsDB = { tokens: rB.tokens, tps: rB.tps };
       } catch (e) {
         responseB = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
         if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: responseB });
       }
-      this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B' });
+      this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B', tokens: statsDB.tokens, tps: statsDB.tps });
       if (this._teamCancel) break;
       // B's own memory: append its answer, then prime next user turn
       historyB.push({ role: 'assistant', content: responseB });
@@ -2043,16 +2066,18 @@ export class OllamaChatPanel {
         { role: 'user', content: summaryLines.join('\n\n---\n\n') + '\n\n請做出綜合總結。' }
       ];
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'J', round: -1 });
+      let statsDJ: { tokens?: number; tps?: number } = {};
       try {
-        await callModel(
+        const rJ = await callModel(
           judgeModel, roleJDesc, judgeMsgs,
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); }
         );
+        statsDJ = { tokens: rJ.tokens, tps: rJ.tps };
       } catch (e) {
         const errJ = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
         if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: errJ });
       }
-      this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J' });
+      this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J', tokens: statsDJ.tokens, tps: statsDJ.tps });
     }
 
     this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
@@ -2251,7 +2276,8 @@ ${reviewText.replace('[APPROVED]', '').trim()}
             OllamaChatPanel.log('thinkChunk: ' + thinkChunk.substring(0, 50));
             thinkBuf += thinkChunk;
             if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80);
-          }
+          },
+          (tokens, tps) => { this._panel.webview.postMessage({ type: 'streamStats', tokens, tps }); }
         );
       }
       if (thinkTimer) { clearTimeout(thinkTimer); }
@@ -3646,11 +3672,12 @@ async function ollamaGenerateStreamWithRetry(
   onThinkChunk?: (chunk: string) => void,
   onRetry?: (attempt: number, waitSec: number, err: string) => void,
   maxRetries = 10,
-  retrySec = 60
+  retrySec = 60,
+  onStats?: (tokens: number, tps: number) => void
 ): Promise<string> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await ollamaGenerateStream(baseUrl, model, prompt, onResponseChunk, onThinkChunk);
+      return await ollamaGenerateStream(baseUrl, model, prompt, onResponseChunk, onThinkChunk, onStats);
     } catch (e) {
       if (attempt >= maxRetries || !isRetryableOllamaError(e)) throw e;
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -3664,7 +3691,8 @@ async function ollamaGenerateStreamWithRetry(
 function ollamaGenerateStream(
   baseUrl: string, model: string, prompt: string,
   onResponseChunk: (chunk: string) => void,
-  onThinkChunk?: (chunk: string) => void
+  onThinkChunk?: (chunk: string) => void,
+  onStats?: (tokens: number, tps: number) => void
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     try {
@@ -3736,6 +3764,9 @@ function ollamaGenerateStream(
               // dedicated thinking field (Ollama >= 0.9 with think models)
               if (json.thinking && onThinkChunk) onThinkChunk(json.thinking as string);
               if (json.response) processToken(json.response as string);
+              if (json.done && onStats && typeof json.eval_count === 'number' && typeof json.eval_duration === 'number' && json.eval_duration > 0) {
+                onStats(json.eval_count as number, (json.eval_count as number) / ((json.eval_duration as number) / 1e9));
+              }
             } catch { /* partial or non-JSON line */ }
           }
         });
@@ -3754,7 +3785,8 @@ function ollamaGenerateStream(
 function ollamaChatStream(
   baseUrl: string, model: string, messages: ChatMessage[],
   onResponseChunk: (chunk: string) => void,
-  onThinkChunk?: (chunk: string) => void
+  onThinkChunk?: (chunk: string) => void,
+  onStats?: (tokens: number, tps: number) => void
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     try {
@@ -3817,6 +3849,9 @@ function ollamaChatStream(
               // /api/chat stream format: json.message.thinking + json.message.content
               if (json.message?.thinking && onThinkChunk) onThinkChunk(json.message.thinking as string);
               if (json.message?.content) processToken(json.message.content as string);
+              if (json.done && onStats && typeof json.eval_count === 'number' && typeof json.eval_duration === 'number' && json.eval_duration > 0) {
+                onStats(json.eval_count as number, (json.eval_count as number) / ((json.eval_duration as number) / 1e9));
+              }
             } catch { /* partial */ }
           }
         });
