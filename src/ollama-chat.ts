@@ -27,6 +27,8 @@ export class OllamaChatPanel {
   private _agentTodos: { id: number; text: string; done: boolean }[] = [];
   private _teamCancel = false;
   private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
+  private _rovoDevCache: { url: string; token: string; expiry: number } | undefined = undefined;
+  private _rovoDevNullUntil = 0;
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
   private _chatHistory: ChatMessage[] = [];
@@ -54,7 +56,7 @@ export class OllamaChatPanel {
 1. 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
 2. 分析 / RCA / 查看內容：第一步必須立即呼叫 jira_fetch，取得內容後再回答。
 3. 「我將」「我會」「我打算」等宣告意圖而不伴隨工具呼叫，一律禁止。
-4. 工具判斷：jira_fetch=取得內容供分析; jira_open=開 VS Code UI; jira_create=建立; jira_transition=轉狀態; bb_create_pr=開 PR; rovo_ask=問 Rovo Dev（不回傳）。`;
+4. 工具判斷：jira_fetch=取得內容供分析; jira_open=開 VS Code UI; jira_create=建立; jira_transition=轉狀態; bb_create_pr=開 PR; rovo_ask=問 Rovo Dev（回傳 AI 回覆，可含 Jira/Confluence 知識）。`;
     if (!existingLtm.includes(LTM_SEED_VER)) {
       // Remove any previous atlassian seed block before re-seeding
       const stripped = existingLtm.replace(/\[atlassian-v\d+\][\s\S]*?(?=\n\n\[|$)/g, '').trim();
@@ -1702,7 +1704,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 \
    - 「開啟 / 查看 / 顯示」 → 呼叫 \`jira_open\`（純 UI，不回傳內容）。
 \
-   - 建立 Issue → jira_create | 轉換狀態 → jira_transition | 開 PR → bb_create_pr | 問 Rovo Dev → rovo_ask
+   - 建立 Issue → jira_create | 轉換狀態 → jira_transition | 開 PR → bb_create_pr | 問 Rovo Dev（AI 分析）→ rovo_ask（回傳回覆）
 \
 3. 【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖的語句而不實際呼叫工具。看到 Jira Key 就直接呼叫工具，立即執行，不詄語。`;
     return content;
@@ -1865,7 +1867,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 工具選擇規則：
 - 任何分析 / RCA / 查看內容 → 第一步必須立即呼叫 jira_fetch，取得 Issue 內容後再回答
 - 開啟 VS Code 面板 → jira_open（純 UI，不回傳內容）
-- 建立 Issue → jira_create；轉換狀態 → jira_transition；開 PR → bb_create_pr；問 Rovo Dev → rovo_ask
+- 建立 Issue → jira_create；轉換狀態 → jira_transition；開 PR → bb_create_pr；問 Rovo Dev（AI 分析，回傳回覆）→ rovo_ask
 ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
 
 請使用繁體中文回答，完成後告知使用者結果。`
@@ -2009,6 +2011,154 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       OllamaChatPanel.log(`getAtlascodeJiraAuth error: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }
+  }
+
+  /** 探索 Rovo Dev 本地 HTTP server (127.0.0.1:{port})，優先讀 env var，否則掃描 Windows 程序表。
+   *  正向結果快取 5 分鐘；負向結果快取 30 秒。*/
+  private async discoverRovoDevUrl(): Promise<{ url: string; token: string } | null> {
+    if (this._rovoDevCache && Date.now() < this._rovoDevCache.expiry) {
+      return { url: this._rovoDevCache.url, token: this._rovoDevCache.token };
+    }
+    if (!this._rovoDevCache && Date.now() < this._rovoDevNullUntil) { return null; }
+
+    const envToken = process.env['ROVODEV_SERVE_SESSION_TOKEN'] ?? '';
+
+    const tryUrl = async (url: string): Promise<boolean> => {
+      return new Promise(resolve => {
+        try {
+          const u = new URL('/healthcheck', url);
+          const headers: Record<string, string> = envToken ? { 'Authorization': `Bearer ${envToken}` } : {};
+          const req = http.request({ hostname: u.hostname, port: parseInt(u.port || '80'), path: u.pathname, method: 'GET', headers }, res => {
+            res.resume(); resolve(res.statusCode === 200);
+          });
+          req.on('error', () => resolve(false));
+          req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+          req.end();
+        } catch { resolve(false); }
+      });
+    };
+
+    // 1. Env var (Boysenberry mode)
+    const envPort = process.env['ROVODEV_PORT'];
+    if (envPort && /^\d+$/.test(envPort)) {
+      const url = `http://127.0.0.1:${envPort}`;
+      if (await tryUrl(url)) {
+        this._rovoDevCache = { url, token: envToken, expiry: Date.now() + 5 * 60_000 };
+        return { url, token: envToken };
+      }
+    }
+
+    // 2. Windows: find atlassian_cli_rovodev.exe port via tasklist + netstat
+    if (process.platform === 'win32') {
+      const port = this.findRovoDevPortWindows();
+      if (port) {
+        const url = `http://127.0.0.1:${port}`;
+        if (await tryUrl(url)) {
+          this._rovoDevCache = { url, token: envToken, expiry: Date.now() + 5 * 60_000 };
+          return { url, token: envToken };
+        }
+      }
+    }
+
+    this._rovoDevCache = undefined;
+    this._rovoDevNullUntil = Date.now() + 30_000;
+    return null;
+  }
+
+  /** 用 tasklist + netstat 同步取得 Rovo Dev 監聽 port (Windows)。*/
+  private findRovoDevPortWindows(): string | null {
+    try {
+      const taskOut = execSync('tasklist /FI "IMAGENAME eq atlassian_cli_rovodev.exe" /FO CSV /NH 2>nul',
+        { shell: 'cmd.exe', timeout: 3000, windowsHide: true }).toString();
+      const pidMatch = taskOut.match(/"atlassian_cli_rovodev\.exe","(\d+)"/);
+      if (!pidMatch) return null;
+      const pid = pidMatch[1];
+      const netOut = execSync('netstat -ano 2>nul | findstr " LISTENING"',
+        { shell: 'cmd.exe', timeout: 5000, windowsHide: true }).toString();
+      for (const line of netOut.split('\n')) {
+        if (!line.trimEnd().endsWith(pid)) { continue; }
+        const m = line.match(/127\.0\.0\.1:(\d+)/);
+        if (!m) { continue; }
+        const p = parseInt(m[1]);
+        if (p >= 40000 && p <= 41000) { return String(p); }
+      }
+      return null;
+    } catch { return null; }
+  }
+
+  /** 向 Rovo Dev 本地 HTTP server 提問並以 SSE stream 收集文字回覆。
+   *  回傳 AI 回覆文字，若無法連線則回傳 null。*/
+  private async callRovoDevApi(question: string): Promise<string | null> {
+    const target = await this.discoverRovoDevUrl();
+    if (!target) { return null; }
+    const { url, token } = target;
+    const reqHeaders: Record<string, string> = { 'Content-Type': 'application/json', 'accept': 'text/event-stream' };
+    if (token) { reqHeaders['Authorization'] = `Bearer ${token}`; }
+
+    // Step 1: POST /v3/set_chat_message
+    const body = JSON.stringify({ message: question, context: [] });
+    const step1Ok = await new Promise<boolean>(resolve => {
+      try {
+        const u = new URL('/v3/set_chat_message', url);
+        const req = http.request({
+          hostname: u.hostname, port: parseInt(u.port || '80'),
+          path: u.pathname, method: 'POST',
+          headers: { ...reqHeaders, 'Content-Length': Buffer.byteLength(body) },
+        }, res => { res.resume(); resolve(res.statusCode !== undefined && res.statusCode < 400); });
+        req.on('error', () => resolve(false));
+        req.setTimeout(10000, () => { req.destroy(); resolve(false); });
+        req.write(body); req.end();
+      } catch { resolve(false); }
+    });
+    if (!step1Ok) {
+      // Auth or connection failed – invalidate cache so we re-discover next time
+      this._rovoDevCache = undefined; this._rovoDevNullUntil = 0;
+      return null;
+    }
+
+    // Step 2: GET /v3/stream_chat (SSE) and collect text parts
+    return new Promise<string | null>(resolve => {
+      try {
+        const u = new URL('/v3/stream_chat?pause_on_call_tools_start=false&enable_deferred_tools=true', url);
+        const req = http.request({
+          hostname: u.hostname, port: parseInt(u.port || '80'),
+          path: u.pathname + u.search, method: 'GET',
+          headers: reqHeaders,
+        }, res => {
+          if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
+          let sseBuffer = '';
+          const parts: string[] = [];
+          res.on('data', (chunk: Buffer) => {
+            sseBuffer += chunk.toString('utf8');
+            const blocks = sseBuffer.split(/\r?\n\r?\n/g);
+            sseBuffer = blocks.pop() ?? '';
+            for (const block of blocks) {
+              if (block.startsWith(': ping')) { continue; }
+              const m = block.match(/^event: ([^\r\n]+)\r?\ndata: ([\s\S]*)$/);
+              if (!m) { continue; }
+              const kind = m[1].trim();
+              let data: Record<string, unknown> = {};
+              try { data = JSON.parse(m[2]); } catch { continue; }
+              if (kind === 'text') {
+                const c = (data['content'] ?? data['content_delta'] ?? '') as string;
+                if (c) { parts.push(c); }
+              } else if (kind === 'part_start') {
+                const part = (data['part'] ?? {}) as Record<string, unknown>;
+                if (part['part_kind'] === 'text' && part['content']) { parts.push(part['content'] as string); }
+              } else if (kind === 'part_delta') {
+                const delta = (data['delta'] ?? {}) as Record<string, unknown>;
+                if (delta['part_delta_kind'] === 'text' && delta['content_delta']) { parts.push(delta['content_delta'] as string); }
+              }
+            }
+          });
+          res.on('end', () => { resolve(parts.join('').trim() || null); });
+          res.on('error', () => resolve(null));
+        });
+        req.on('error', () => resolve(null));
+        req.setTimeout(60000, () => { req.destroy(); resolve(null); });
+        req.end();
+      } catch { resolve(null); }
+    });
   }
 
   private async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
@@ -2315,9 +2465,15 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       case 'rovo_ask': {
         const question = (args.question as string || '').trim();
         if (!question) return '請提供 question 參數';
+        // Try Rovo Dev local HTTP server first (returns actual AI response)
+        try {
+          const rovoResp = await this.callRovoDevApi(question);
+          if (rovoResp) { return `[Rovo Dev 回覆]\n${rovoResp}`; }
+        } catch { /* fall through */ }
+        // Fallback: open interactive panel (no return value)
         try {
           await vscode.commands.executeCommand('atlascode.rovodev.askInteractive', question);
-          return `已向 Rovo Dev 提問: ${question}`;
+          return `已在 Rovo Dev 面板提問（無法直接取回回覆），請查看 Rovo Dev 面板。`;
         } catch (e) { return `失敗: ${e instanceof Error ? e.message : String(e)}`; }
       }
       default:
@@ -2407,7 +2563,7 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'jira_create', description: '開啟 Jira 建立 Issue 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { summary: { type: 'string', description: 'Issue 標題（可選，預填）' }, description: { type: 'string', description: 'Issue 詳細描述（可選，預填）' } } } } },
   { type: 'function', function: { name: 'jira_transition', description: '開啟 Jira Issue 狀態轉換面板（如 TODO → IN PROGRESS → DONE）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'bb_create_pr', description: '開啟 Bitbucket 建立 Pull Request 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'rovo_ask', description: '向 Atlassian Rovo Dev AI 提問（在 VS Code 中開啟 Rovo Dev 面板並填入問題，不回傳答案給 Agent）。若需取得 Jira Issue 資料請用 jira_fetch。', parameters: { type: 'object', properties: { question: { type: 'string', description: '要問 Rovo Dev 的問題' } }, required: ['question'] } } },
+  { type: 'function', function: { name: 'rovo_ask', description: '向 Atlassian Rovo Dev AI 提問並回傳回覆（需要 Rovo Dev 本地 server 正在執行）。可查詢 Jira/Confluence 知識庫、RCA 分析等。若 Rovo Dev 未執行則退化為開啟面板。', parameters: { type: 'object', properties: { question: { type: 'string', description: '要問 Rovo Dev 的問題' } }, required: ['question'] } } },
 ];
 
 function getToolIcon(name: string): string {
