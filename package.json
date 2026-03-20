@@ -189,6 +189,16 @@
             "items": { "type": "string" },
             "default": [],
             "description": "永遠要求確認的工具名稱（即使 session 中按過「永遠允許」仍每次詢問）。例：[\"run_terminal\", \"delete_file\", \"git_commit\"]"
+          },
+          "amiAiClaw.browserUseDocker": {
+            "type": "boolean",
+            "default": false,
+            "description": "瀏覽器工具使用 Docker 執行（沙箱隔離、不需在噥主機安裝 playwright）。需要將 Docker Desktop 正在執行並已拉取指定影像。"
+          },
+          "amiAiClaw.browserDockerImage": {
+            "type": "string",
+            "default": "mcr.microsoft.com/playwright/python:v1.49.0-jammy",
+            "description": "瀏覽器 Docker 模式使用的影像名稱。預設為內建 playwright + Chromium 的官方影像。送出前請先執行: docker pull mcr.microsoft.com/playwright/python:v1.49.0-jammy"
           }
         }
       }

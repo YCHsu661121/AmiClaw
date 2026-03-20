@@ -5424,13 +5424,17 @@ except Exception as e:
         const bnTimeout = Math.min(Number(args.timeout_ms || 20000), 60000);
         const bnAllowed = await this.requestPermission('run', `瀏覽器訪問: ${bnUrl}`, 'browser_navigate');
         if (!bnAllowed) return '使用者已拒絕瀏覽器操作';
-        const bnPy = [
+        const bnCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const bnUseDocker = bnCfg.get<boolean>('browserUseDocker', false);
+        const bnDockerImage = bnCfg.get<string>('browserDockerImage', 'mcr.microsoft.com/playwright/python:v1.49.0-jammy');
+        const bnPyCore = [
           'import asyncio, json, sys',
-          'try:',
-          '    from playwright.async_api import async_playwright',
-          'except ImportError:',
-          '    print(json.dumps({"error": "找不到 playwright，請執行: pip install playwright && playwright install chromium"}))',
-          '    sys.exit(0)',
+          ...(bnUseDocker
+            ? ['from playwright.async_api import async_playwright']
+            : ['try:', '    from playwright.async_api import async_playwright',
+               'except ImportError:',
+               '    print(json.dumps({"error": "找不到 playwright，請執行: pip install playwright && playwright install chromium"}))',
+               '    sys.exit(0)']),
           'async def main():',
           '    async with async_playwright() as p:',
           '        browser = await p.chromium.launch(headless=True)',
@@ -5453,9 +5457,18 @@ except Exception as e:
           '            await browser.close()',
           'asyncio.run(main())',
         ].join('\n');
+        const parseBnResult = (raw: string): string => {
+          try {
+            const j = JSON.parse(raw) as { error?: string; title?: string; url?: string; text?: string; links?: Array<{ text: string; href: string }> };
+            if (j.error) return `瀏覽器錯誤: ${j.error}`;
+            const linksStr = j.links && j.links.length > 0 ? '\n\n=== 連結 ===\n' + j.links.map(l => `[${l.text || '(no text)'}] ${l.href}`).join('\n') : '';
+            return `標題: ${j.title}\n網址: ${j.url}\n\n=== 頁面文字 ===\n${j.text}${linksStr}`;
+          } catch { return raw.slice(0, 8000) || '(無輸出)'; }
+        };
+        if (bnUseDocker) { return parseBnResult(await runDockerPython(bnPyCore, bnDockerImage, bnTimeout + 15000)); }
         const bnTmp = path.join(os.tmpdir(), `ami_browser_nav_${Date.now()}.py`);
         try {
-          fs.writeFileSync(bnTmp, bnPy, 'utf-8');
+          fs.writeFileSync(bnTmp, bnPyCore, 'utf-8');
           return await new Promise<string>(res => {
             const { exec } = require('child_process') as typeof import('child_process');
             const cmds = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
@@ -5465,13 +5478,7 @@ except Exception as e:
               const pc = cmds[tried++];
               exec(`${pc} "${bnTmp}"`, { cwd: wsRoot || process.cwd(), timeout: bnTimeout + 10000 }, (_e, o, e) => {
                 if (_e && (_e as NodeJS.ErrnoException).code === 'ENOENT') { tryNext(); return; }
-                const raw = (o || e || '').trim();
-                try {
-                  const j = JSON.parse(raw) as { error?: string; title?: string; url?: string; text?: string; links?: Array<{ text: string; href: string }> };
-                  if (j.error) { res(`瀏覽器錯誤: ${j.error}`); return; }
-                  const linksStr = j.links && j.links.length > 0 ? '\n\n=== 連結 ===\n' + j.links.map(l => `[${l.text || '(no text)'}] ${l.href}`).join('\n') : '';
-                  res(`標題: ${j.title}\n網址: ${j.url}\n\n=== 頁面文字 ===\n${j.text}${linksStr}`);
-                } catch { res(raw.slice(0, 8000) || '(無輸出)'); }
+                res(parseBnResult((o || e || '').trim()));
               });
             };
             tryNext();
@@ -5486,7 +5493,39 @@ except Exception as e:
         const bsSelector = (args.selector as string) || '';
         const bsAllowed = await this.requestPermission('write', `瀏覽器截圖: ${bsUrl} → ${bsOut}`, 'browser_screenshot');
         if (!bsAllowed) return '使用者已拒絕截圖操作';
-        const bsPy = [
+        const bsCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const bsUseDocker = bsCfg.get<boolean>('browserUseDocker', false);
+        const bsDockerImage = bsCfg.get<string>('browserDockerImage', 'mcr.microsoft.com/playwright/python:v1.49.0-jammy');
+        // Docker 模式：Python 輸出 base64 JSON（避免改容器路徑挂載問題）
+        if (bsUseDocker) {
+          const bsPyDocker = [
+            'import asyncio, json, base64',
+            'from playwright.async_api import async_playwright',
+            'async def main():',
+            '    async with async_playwright() as p:',
+            '        browser = await p.chromium.launch(headless=True)',
+            '        page = await browser.new_page(viewport={"width": 1280, "height": 800})',
+            '        try:',
+            '            await page.goto(' + JSON.stringify(bsUrl) + ', wait_until="networkidle", timeout=25000)',
+            ...(bsSelector ? ['            await page.wait_for_selector(' + JSON.stringify(bsSelector) + ', timeout=10000)'] : []),
+            '            target = page if not ' + JSON.stringify(bsSelector) + ' else await page.query_selector(' + JSON.stringify(bsSelector || 'body') + ')',
+            '            data = await target.screenshot(full_page=True)',
+            '            print(json.dumps({"ok": True, "b64": base64.b64encode(data).decode()}))',
+            '        except Exception as e:',
+            '            print(json.dumps({"error": str(e)}))',
+            '        finally:',
+            '            await browser.close()',
+            'asyncio.run(main())',
+          ].join('\n');
+          const rawBs = await runDockerPython(bsPyDocker, bsDockerImage, 40000);
+          try {
+            const j = JSON.parse(rawBs) as { ok?: boolean; b64?: string; error?: string };
+            if (j.error) return `截圖錯誤: ${j.error}`;
+            if (j.b64) { fs.writeFileSync(bsOut, Buffer.from(j.b64, 'base64')); return `截圖已儲存: ${bsOut}`; }
+          } catch { return rawBs || '(無輸出)'; }
+        }
+        // 本機模式：直接儲存檔案
+        const bsPyLocal = [
           'import asyncio, json, sys',
           'try:',
           '    from playwright.async_api import async_playwright',
@@ -5512,7 +5551,7 @@ except Exception as e:
         ].join('\n');
         const bsTmp = path.join(os.tmpdir(), `ami_browser_ss_${Date.now()}.py`);
         try {
-          fs.writeFileSync(bsTmp, bsPy, 'utf-8');
+          fs.writeFileSync(bsTmp, bsPyLocal, 'utf-8');
           return await new Promise<string>(res => {
             const { exec } = require('child_process') as typeof import('child_process');
             const cmds = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
@@ -5540,9 +5579,12 @@ except Exception as e:
         const bscDesc = (args.description as string || bscCode.split('\n')[0]).slice(0, 120);
         const bscAllowed = await this.requestPermission('run', `瀏覽器腳本: ${bscDesc}`, 'browser_script');
         if (!bscAllowed) return '使用者已拒絕瀏覽器腳本執行';
-        // Prepend playwright import guard if not present
+        const bscCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const bscUseDocker = bscCfg.get<boolean>('browserUseDocker', false);
+        const bscDockerImage = bscCfg.get<string>('browserDockerImage', 'mcr.microsoft.com/playwright/python:v1.49.0-jammy');
         const bscFull = bscCode.includes('playwright') ? bscCode
           : 'from playwright.sync_api import sync_playwright\n' + bscCode;
+        if (bscUseDocker) { return await runDockerPython(bscFull, bscDockerImage, 130000); }
         const bscTmp = path.join(os.tmpdir(), `ami_browser_script_${Date.now()}.py`);
         try {
           fs.writeFileSync(bscTmp, bscFull, 'utf-8');
@@ -5723,6 +5765,32 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'browser_script': return `Playwright: ${(args.description as string) || (args.script as string || '').split('\n')[0].slice(0, 60)}`;
     default: return name;
   }
+}
+
+/** Docker 模式瀏覽器工具執行助手：透過 stdin 將 Python 程式碼傳送至容器，回傳 stdout。
+ *  使用 `docker run --rm -i <image> python -` ，不需要挂載影約或在害端安裝 playwright。
+ */
+function runDockerPython(pyCode: string, dockerImage: string, timeoutMs: number): Promise<string> {
+  return new Promise(res => {
+    try {
+      const { spawn } = require('child_process') as typeof import('child_process');
+      const proc = spawn('docker', ['run', '--rm', '-i', '--network=host', dockerImage, 'python', '-']);
+      let out = '', err = '';
+      proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+      proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+      proc.on('close', () => {
+        const combined = (out + (err ? '\n[stderr]\n' + err : '')).trim();
+        res(combined.slice(0, 10000) || '(無輸出)');
+      });
+      proc.on('error', (e: Error) => res(`Docker 錯誤: ${e.message} — 請確認 Docker Desktop 正在執行`));
+      const timer = setTimeout(() => { try { proc.kill(); } catch { /* noop */ } res('逾時 (' + timeoutMs + 'ms)'); }, timeoutMs);
+      proc.on('close', () => clearTimeout(timer));
+      proc.stdin.write(pyCode, 'utf-8');
+      proc.stdin.end();
+    } catch (e) {
+      res(`Docker 執行失敗: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  });
 }
 
 /** 過濾輸出文字中的敏感資訊（API key、token、密碼等），避免模型學習或外洩憑證。 */
