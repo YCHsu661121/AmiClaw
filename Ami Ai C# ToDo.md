@@ -20,8 +20,9 @@
 ### 3. Agent 工具擴充
 - [x] **檔案搜尋工具**：支援正規表達式、全工作區搜尋
 - [x] **Git 整合**：commit、branch、merge、diff 操作
-- [ ] **資料庫查詢工具**（選配）：支援 SQLite、PostgreSQL
-- [ ] **網路請求工具**：GET/POST HTTP API 呼叫（需使用者授權）
+- [x] **資料庫查詢工具**（選配）：支援 SQLite（`db_query` 工具，透過 Python sqlite3）
+- [x] **網路請求工具**：GET/POST HTTP API 呼叫（需使用者授權）
+- [x] **正規表達式搜尋**：`search_regex` 工具，支援 glob 檔案樣式、flags
 - [ ] **瀏覽器自動化**（選配）：Playwright/Puppeteer 整合
 
 ### 4. Team 模式優化

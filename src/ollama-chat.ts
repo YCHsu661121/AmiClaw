@@ -4259,6 +4259,134 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           });
         });
       }
+      case 'http_request': {
+        const reqMethod = ((args.method as string) || 'GET').toUpperCase();
+        const reqUrl = (args.url as string || '').trim();
+        if (!reqUrl) return '請提供 url 參數';
+        const reqHeaders = (args.headers as Record<string, string>) || {};
+        const reqBody = args.body ? String(args.body) : undefined;
+        const reqTimeout = Number(args.timeout || 15000);
+        if (reqMethod !== 'GET' && reqMethod !== 'HEAD') {
+          const allowed = await this.requestPermission('run', `HTTP ${reqMethod}: ${reqUrl}`);
+          if (!allowed) return '使用者已拒絕 HTTP 請求';
+        }
+        return new Promise<string>((resolve) => {
+          let parsedUrl: URL;
+          try { parsedUrl = new URL(reqUrl); } catch { resolve('無效的 URL'); return; }
+          const protocol = parsedUrl.protocol === 'https:' ? https : http;
+          const bodyBuf = reqBody ? Buffer.from(reqBody, 'utf8') : undefined;
+          const options = {
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: reqMethod,
+            headers: {
+              'User-Agent': 'AMI-AiClaw-Agent/1.0',
+              'Accept': 'application/json, text/plain, */*',
+              ...(bodyBuf ? { 'Content-Type': 'application/json', 'Content-Length': bodyBuf.length } : {}),
+              ...reqHeaders,
+            },
+          };
+          let buf = '';
+          const req = protocol.request(options, (res) => {
+            res.setEncoding('utf8');
+            res.on('data', (d: string) => { buf += d; if (buf.length > 100000) { res.destroy(); } });
+            res.on('end', () => {
+              const statusLine = `HTTP ${res.statusCode} ${res.statusMessage}`;
+              const hdrs = Object.entries(res.headers).slice(0, 8).map(([k, v]) => `${k}: ${v}`).join('\n');
+              resolve(`${statusLine}\n${hdrs}\n\n${buf.trim().slice(0, 8000)}`);
+            });
+            res.on('error', (e: Error) => resolve(`回應錯誤: ${e.message}`));
+          });
+          req.on('error', (e: Error) => resolve(`網路錯誤: ${e.message}`));
+          req.setTimeout(reqTimeout, () => { req.destroy(); resolve(`超時 (${reqTimeout}ms)`); });
+          if (bodyBuf) { req.write(bodyBuf); }
+          req.end();
+        });
+      }
+      case 'db_query': {
+        const dbPath = resolvePath(args.db_path as string);
+        const sqlQuery = (args.query as string || '').trim();
+        if (!sqlQuery) return '請提供 query 參數';
+        const sqlParams = args.params ? JSON.stringify(args.params) : '[]';
+        const isWriteOp = /^\s*(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|ATTACH|DETACH)/i.test(sqlQuery);
+        if (isWriteOp) {
+          const allowed = await this.requestPermission('run', `SQLite 寫入: ${sqlQuery.slice(0, 80)}`);
+          if (!allowed) return '使用者已拒絕資料庫寫入操作';
+        }
+        const pyCode = `import sqlite3, json, sys
+db_path = ${JSON.stringify(dbPath)}
+query = ${JSON.stringify(sqlQuery)}
+params = json.loads(${JSON.stringify(sqlParams)})
+try:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(query, params)
+    if cur.description:
+        cols = [d[0] for d in cur.description]
+        rows = [list(r) for r in cur.fetchmany(200)]
+        col_widths = [max(len(str(c)), max((len(str(r[i])) for r in rows), default=0)) for i, c in enumerate(cols)]
+        sep = '+' + '+'.join('-'*(w+2) for w in col_widths) + '+'
+        header = '|' + '|'.join(f' {c:<{w}} ' for c, w in zip(cols, col_widths)) + '|'
+        print(sep); print(header); print(sep)
+        for row in rows: print('|' + '|'.join(f' {str(v):<{w}} ' for v, w in zip(row, col_widths)) + '|')
+        print(sep)
+        print(f'({len(rows)} rows)')
+    else:
+        conn.commit()
+        print(f'OK, affected rows: {cur.rowcount}')
+    conn.close()
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+`;
+        const dbTmpFile = path.join(os.tmpdir(), `ami_ai_claw_py_${Date.now()}.py`);
+        try {
+          fs.writeFileSync(dbTmpFile, pyCode, 'utf-8');
+          return await new Promise<string>((resolve) => {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { exec } = require('child_process') as typeof import('child_process');
+            const pythonCmds = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+            let tried = 0;
+            const tryNext = () => {
+              if (tried >= pythonCmds.length) { resolve('錯誤：找不到 Python，無法執行 SQLite 查詢'); return; }
+              const pcmd = pythonCmds[tried++];
+              exec(`${pcmd} "${dbTmpFile}"`, { cwd: wsRoot || process.cwd(), timeout: 30000 }, (_err, stdout, stderr) => {
+                if (_err && (_err as NodeJS.ErrnoException).code === 'ENOENT') { tryNext(); return; }
+                const out = (stdout || '') + (stderr ? (stdout ? '\n[stderr]\n' : '[stderr]\n') + stderr : '');
+                resolve((out.trim() || '（無輸出）').slice(0, 8000));
+              });
+            };
+            tryNext();
+          });
+        } finally { try { fs.unlinkSync(dbTmpFile); } catch { /* ignore */ } }
+      }
+      case 'search_regex': {
+        const pattern = (args.pattern as string || '').trim();
+        if (!pattern) return '請提供 pattern 參數';
+        const reFlags = ((args.flags as string) || 'i').replace(/[^gimu]/g, '');
+        let regex: RegExp;
+        try { regex = new RegExp(pattern, reFlags); } catch (e) { return `無效的正規表達式: ${e}`; }
+        const includeGlob = (args.include as string) || '**/*';
+        const allUris = await vscode.workspace.findFiles(includeGlob, '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**}', 500);
+        const reMatches: string[] = [];
+        for (const uri of allUris) {
+          if (reMatches.length >= 100) break;
+          try {
+            const ext = path.extname(uri.fsPath).toLowerCase();
+            if (['.png','.jpg','.jpeg','.ico','.vsix','.zip','.exe','.dll','.pdf','.wasm'].includes(ext)) continue;
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const text = Buffer.from(bytes).toString('utf8');
+            const lines = text.split('\n');
+            for (let li = 0; li < lines.length && reMatches.length < 100; li++) {
+              if (regex.test(lines[li])) { reMatches.push(`${uri.fsPath}:${li + 1}: ${lines[li].trim().slice(0, 120)}`); }
+            }
+          } catch { /* skip binary */ }
+        }
+        return reMatches.length > 0
+          ? `=== RegExp /${pattern}/${reFlags} 匹配 (${reMatches.length}) ===\n${reMatches.join('\n')}`
+          : `找不到符合 /${pattern}/${reFlags} 的結果`;
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -4359,10 +4487,13 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'git_diff', description: '取得 Git diff（工作區變更或 staged 變更）', parameters: { type: 'object', properties: { file: { type: 'string', description: '指定檔案路徑（可選，空白表示全部）' }, staged: { type: 'boolean', description: '是否顯示 staged diff（預設 false）' } }, required: [] } } },
   { type: 'function', function: { name: 'git_log', description: '取得 Git commit 歷史（oneline 格式）', parameters: { type: 'object', properties: { count: { type: 'number', description: '回傳筆數（預設 20，最多 100）' }, file: { type: 'string', description: '指定檔案的 commit 歷史（可選）' } }, required: [] } } },
   { type: 'function', function: { name: 'git_commit', description: '建立 Git commit（預設 git add -A 後 commit，需使用者確認）', parameters: { type: 'object', properties: { message: { type: 'string', description: 'Commit 訊息' }, add_all: { type: 'boolean', description: '是否 git add -A（預設 true）' } }, required: ['message'] } } },
+  { type: 'function', function: { name: 'http_request', description: '發送 HTTP 請求（GET/POST/PUT/DELETE/PATCH）並回傳回應內容。適合呼叫 REST API、切換 Webhook、測試端點。非 GET 請求需使用者確認。', parameters: { type: 'object', properties: { method: { type: 'string', enum: ['GET','POST','PUT','DELETE','PATCH','HEAD'], description: 'HTTP 方法（預設 GET）' }, url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, headers: { type: 'object', description: '自訂請求標頭（可選）', additionalProperties: { type: 'string' } }, body: { type: 'string', description: '請求本文（POST/PUT 用，JSON 字串或純文字）' }, timeout: { type: 'number', description: '超時毫秒（預設 15000）' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'db_query', description: '對 SQLite 資料庫執行 SQL 查詢（SELECT/INSERT/UPDATE/DELETE）並回傳結果表格。寫入操作需使用者確認。', parameters: { type: 'object', properties: { db_path: { type: 'string', description: 'SQLite 資料庫檔案路徑（.db 檔）' }, query: { type: 'string', description: '要執行的 SQL 語句' }, params: { type: 'array', items: {}, description: 'SQL 參數（防止 SQL injection，? 佔位符對應）' } }, required: ['db_path', 'query'] } } },
+  { type: 'function', function: { name: 'search_regex', description: '使用正規表達式在工作區搜尋檔案內容。支援 glob 檔案樣式、大小寫、multiline 等 flag。', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'JavaScript 正規表達式字串（不包括 //）' }, include: { type: 'string', description: 'glob 檔案樣式（預設 **/*），如 **/*.ts' }, flags: { type: 'string', description: 'regex flags（預設 i，可用 g/i/m）' } }, required: ['pattern'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎' };
   return m[name] ?? '🔧';
 }
 
@@ -4394,6 +4525,9 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'git_diff': return `Git Diff${args.file ? ': ' + args.file : (args.staged ? ' (staged)' : '')}`;
     case 'git_log': return `Git Log (最近 ${args.count || 20} 筆${args.file ? ', ' + args.file : ''})`;
     case 'git_commit': return `Git Commit: ${args.message}`;
+    case 'http_request': return `HTTP ${(args.method as string || 'GET').toUpperCase()}: ${args.url}`;
+    case 'db_query': return `SQLite: ${(args.query as string || '').trim().slice(0, 60)}`;
+    case 'search_regex': return `RegExp /${args.pattern}/${args.flags || 'i'}`;
     default: return name;
   }
 }
