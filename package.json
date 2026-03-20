@@ -1,19 +1,19 @@
 {
-  "name": "ami-claw",
-  "displayName": "AmiClaw",
-  "description": "AmiClaw - Local Ollama chat assistant for code generation and insertion.",
-  "author": "YCHsu",
+  "name": "ami-ai-claw",
+  "displayName": "AMI-AiClaw",
+  "description": "AMI-AiClaw - Local Ollama AI assistant for code generation, Agent automation, and multi-model collaboration.",
+  "author": "Y.C. Hsu",
   "license": "MIT",
   "version": "0.0.1",
   "publisher": "localdev",
-  "icon": "AmiClaw.png",
+  "icon": "AMI-AiClaw.png",
   "engines": { "vscode": "^1.90.0" },
   "main": "./out/extension.js",
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -p . -w",
-    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ami-claw.vsix --no-dependencies"
+    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ami-ai-claw.vsix --no-dependencies"
   },
   "devDependencies": {
     "typescript": "^5.3.3",
@@ -22,129 +22,124 @@
     "vsce": "^2.12.0"
   },
   "dependencies": {},
-  "activationEvents": ["onCommand:amiClaw.chat", "onCommand:amiClaw.sendToChat", "onView:amiClaw.openChat"],
+  "activationEvents": ["onCommand:amiAiClaw.chat", "onCommand:amiAiClaw.sendToChat", "onView:amiAiClaw.openChat"],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "amiClaw",
-          "title": "AmiClaw",
-          "icon": "media/ami-claw-activity.svg"
+          "id": "amiAiClaw",
+          "title": "AMI-AiClaw",
+          "icon": "media/ami-ai-claw-activity.svg"
         }
       ]
     },
     "views": {
-      "amiClaw": [
+      "amiAiClaw": [
         {
-          "id": "amiClaw.openChat",
+          "id": "amiAiClaw.openChat",
           "name": "聊天記錄"
         }
       ]
     },
     "commands": [
       {
-        "command": "amiClaw.chat",
-        "title": "AmiClaw"
+        "command": "amiAiClaw.chat",
+        "title": "AMI-AiClaw"
       },
       {
-        "command": "amiClaw.sendToChat",
-        "title": "傳送到 AmiClaw"
+        "command": "amiAiClaw.sendToChat",
+        "title": "傳送到 AMI-AiClaw"
       },
       {
-        "command": "amiClaw.newChatSession",
+        "command": "amiAiClaw.newChatSession",
         "title": "新增聊天",
         "icon": "$(add)"
       },
       {
-        "command": "amiClaw.switchChatSession",
+        "command": "amiAiClaw.switchChatSession",
         "title": "切換到此聊天"
       },
       {
-        "command": "amiClaw.renameChatSession",
+        "command": "amiAiClaw.renameChatSession",
         "title": "重新命名"
       },
       {
-        "command": "amiClaw.deleteChatSession",
+        "command": "amiAiClaw.deleteChatSession",
         "title": "刪除聊天"
       }
     ],
     "menus": {
       "explorer/context": [
         {
-          "command": "amiClaw.sendToChat",
+          "command": "amiAiClaw.sendToChat",
           "group": "navigation@99"
         }
       ],
       "editor/context": [
         {
-          "command": "amiClaw.sendToChat",
+          "command": "amiAiClaw.sendToChat",
           "group": "navigation@99"
         }
       ],
       "view/title": [
         {
-          "command": "amiClaw.newChatSession",
-          "when": "view == amiClaw.openChat",
+          "command": "amiAiClaw.newChatSession",
+          "when": "view == amiAiClaw.openChat",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "amiClaw.renameChatSession",
-          "when": "view == amiClaw.openChat && viewItem == chatSession",
+          "command": "amiAiClaw.renameChatSession",
+          "when": "view == amiAiClaw.openChat && viewItem == chatSession",
           "group": "1_modify@1"
         },
         {
-          "command": "amiClaw.deleteChatSession",
-          "when": "view == amiClaw.openChat && viewItem == chatSession",
+          "command": "amiAiClaw.deleteChatSession",
+          "when": "view == amiAiClaw.openChat && viewItem == chatSession",
           "group": "1_modify@2"
         }
       ]
     },
     "configuration": [
       {
-        "id": "amiClaw",
-        "title": "AmiClaw",
+        "id": "amiAiClaw",
+        "title": "AMI-AiClaw",
         "properties": {
-          "amiClaw.url": {
-            "type": "string",
-            "default": "http://localhost:11434",
-            "description": "Ollama server URL（單一伺服器時使用；多伺服器請改用 amiClaw.urls）"
-          },
-          "amiClaw.urls": {
+          "amiAiClaw.urls": {
             "type": "array",
             "items": { "type": "string" },
-            "default": [],
-            "description": "多台 Ollama 伺服器 URL 列表，例如 [\"http://localhost:11434\", \"http://192.168.1.100:11434\"]。設定後將優先取代 amiClaw.url。"
+            "default": ["http://localhost:11434"],
+            "description": "Ollama 伺服器 URL 列表，例如 [\"http://localhost:11434\", \"http://192.168.1.100:11434\"]。重複出現的 URL 視為停用。"
           },
-          "amiClaw.model": {
+          "amiAiClaw.model": {
             "type": "string",
             "default": "llama3",
             "description": "Ollama model name"
           },
-          "amiClaw.models": {
+          "amiAiClaw.models": {
             "type": "array",
             "items": { "type": "string" },
             "default": ["llama3", "llama2", "vicuna", "mistral"],
             "description": "Available model options shown in the chat UI"
           },
-          "amiClaw.systemPrompt": {
+          "amiAiClaw.systemPrompt": {
             "type": "string",
             "editPresentation": "multilineText",
             "default": "你是一位資深頂尖全端軟體工程師，精通 TypeScript/JavaScript、Python、C/C++、Rust、Go、Shell/PowerShell、UEFI/BIOS 韌體工程。你邏輯嚴密、思路清晰，能直接找出問題根因並提供完整可執行的解法，不說廢話。請用繁體中文回答，技術術語附上英文原文。",
             "description": "AI 角色設定（System Prompt），每次對話都會自動套用。可在此自訂角色、背景知識與回答風格。"
           },
-          "amiClaw.jiraBaseUrl": {
+          "amiAiClaw.jiraBaseUrl": {
             "type": "string",
             "default": "",
             "description": "（選填）Jira server base URL，例如 https://yourcompany.atlassian.net。若已安裝 atlassian.atlascode 並登入，系統會自動取得，無需手動設定。僅在無 atlascode 時作為 fallback。"
           },
-          "amiClaw.jiraEmail": {
+          "amiAiClaw.jiraEmail": {
             "type": "string",
             "default": "",
             "description": "（選填）Jira 登入 Email（Jira Cloud Basic Auth fallback 用）。已安裝 atlascode 時不需要設定。"
           },
-          "amiClaw.jiraPat": {
+          "amiAiClaw.jiraPat": {
             "type": "string",
             "default": "",
             "description": "（選填）Jira API Token（Cloud）或 Personal Access Token（Server/DC）。已安裝 atlascode 時不需要設定。"

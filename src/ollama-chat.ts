@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 YCHsu. All rights reserved.
+// Copyright (c) 2026 YCHsu. All rights reserved.
 // Licensed under the MIT License.
 import * as vscode from 'vscode';
 import * as http from 'http';
@@ -13,7 +13,7 @@ import { URL } from 'url';
 // (Copied implementation from top-level file)
 export class OllamaChatPanel {
   public static currentPanel: OllamaChatPanel | undefined;
-  public static readonly viewType = 'amiClaw.chat';
+  public static readonly viewType = 'amiAiClaw.chat';
   private static _log: vscode.OutputChannel;
   /** Called by extension.ts to keep sidebar in sync */
   public static onSessionsChanged?: (sessions: { id: string; title: string }[], activeId: string) => void;
@@ -33,11 +33,11 @@ export class OllamaChatPanel {
   private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
   private _rovoDevCache: { url: string; token: string; expiry: number } | undefined = undefined;
   private _rovoDevNullUntil = 0;
-  /** 寫入/刪除/執行 永遠允許集合（session 內持續）*/
+  /** �g�J/�R��/���� �û����\���X�]session ������^*/
   private _alwaysAllow = new Set<string>();
-  /** 等待使用者確認的 pending promise resolve */
+  /** ���ݨϥΪ̽T�{�� pending promise resolve */
   private _pendingPermission: ((allow: boolean) => void) | null = null;
-  /** 最後一次送出請求的 Ollama server URL + model（切換時需清 VRAM，但只在同一台 server）*/
+  /** �̫�@���e�X�ШD�� Ollama server URL + model�]�����ɻݲM VRAM�A���u�b�P�@�x server�^*/
   private _lastOllamaUrl = '';
   private _lastOllamaModel = '';
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -48,7 +48,7 @@ export class OllamaChatPanel {
 
   private static log(msg: string): void {
     if (!OllamaChatPanel._log) {
-      OllamaChatPanel._log = vscode.window.createOutputChannel('AmiClaw');
+      OllamaChatPanel._log = vscode.window.createOutputChannel('AMI-AiClaw');
     }
     OllamaChatPanel._log.appendLine(`[${new Date().toISOString()}] ${msg}`);
   }
@@ -57,27 +57,34 @@ export class OllamaChatPanel {
     this._panel = panel;
     this._context = context;
     OllamaChatPanel.log('Constructor: start');
-    vscode.window.showInformationMessage('AmiClaw: Extension activated');
+    vscode.window.showInformationMessage('AMI-AiClaw: Extension activated');
 
     // Seed long-term memory with Atlassian rules (re-seed when version tag changes)
     const LTM_SEED_VER = 'atlassian-v3';
-    const existingLtm = context.globalState.get<string>('amiClaw.longTermMemory') ?? '';
+    const existingLtm = context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
     const atlassianSeed = `[${LTM_SEED_VER}]
-【Atlassian for VS Code — atlassian.atlascode】
+�iAtlassian for VS Code �X atlassian.atlascode�j
 
-【強制規則，絕對不得違反】
-1. 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
-2. 分析 / RCA / 查看內容：第一步必須立即呼叫 jira_fetch，取得內容後再回答。
-3. 「我將」「我會」「我打算」等宣告意圖而不伴隨工具呼叫，一律禁止。
-4. 工具判斷：jira_fetch=取得內容供分析; jira_open=開 VS Code UI; jira_create=建立; jira_transition=轉狀態; bb_create_pr=開 PR; rovo_ask=問 Rovo Dev（回傳 AI 回覆，可含 Jira/Confluence 知識）。`;
+�i�j��W�h�A���藍�o�H�ϡj
+1. �T�����X�{ [A-Z][A-Z0-9]*-\\d+�]�� UOEM2-3476�BBIOS-123�^�� Jira Issue Key�C
+2. ���R / RCA / �d�ݤ��e�G�Ĥ@�B�����ߧY�I�s jira_fetch�A���o���e��A�^���C
+3. �u�ڱN�v�u�ڷ|�v�u�ڥ���v���ŧi�N�ϦӤ����H�u��I�s�A�@�߸T��C
+4. �u��P�_�Gjira_fetch=���o���e�Ѥ��R; jira_open=�} VS Code UI; jira_create=�إ�; jira_transition=�બ�A; bb_create_pr=�} PR; rovo_ask=�� Rovo Dev�]�^�� AI �^�СA�i�t Jira/Confluence ���ѡ^�C`;
     if (!existingLtm.includes(LTM_SEED_VER)) {
       // Remove any previous atlassian seed block before re-seeding
       const stripped = existingLtm.replace(/\[atlassian-v\d+\][\s\S]*?(?=\n\n\[|$)/g, '').trim();
       const seeded = stripped ? stripped + '\n\n' + atlassianSeed : atlassianSeed;
-      context.globalState.update('amiClaw.longTermMemory', seeded);
+      context.globalState.update('amiAiClaw.longTermMemory', seeded);
     }
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+
+    // �����O�q�����ܬ��i���ɡA���s��s�s�u���A�]retainContextWhenHidden �Ҧ��U webviewReady ���|���e�^
+    this._panel.onDidChangeViewState(async (e) => {
+      if (e.webviewPanel.visible) {
+        await this.fetchModelsFromServer();
+      }
+    }, null, this._disposables);
 
     this._panel.webview.onDidReceiveMessage(async message => {
       OllamaChatPanel.log('Received message: ' + message.type);
@@ -112,7 +119,7 @@ export class OllamaChatPanel {
             await this.handlePickFile();
             break;
           case 'webviewReady':
-            OllamaChatPanel.log('webviewReady received — calling fetchModelsFromServer');
+            OllamaChatPanel.log('webviewReady received �X calling fetchModelsFromServer');
             await this.fetchModelsFromServer();
             break;
           case 'agentSend':
@@ -165,13 +172,13 @@ export class OllamaChatPanel {
             break;
           case 'memoryGet': {
             this.switchChatSession(message.sessionId);
-            const cfg2 = vscode.workspace.getConfiguration('amiClaw');
+            const cfg2 = vscode.workspace.getConfiguration('amiAiClaw');
             const persona2 = cfg2.get<string>('systemPrompt') ?? '';
             const previewMsgs = this._chatHistory.slice(-10);
             const historyPreview = previewMsgs.map(m => {
-              const role = m.role === 'user' ? '👤 你' : '🤖 AI';
+              const role = m.role === 'user' ? '?? �A' : '?? AI';
               const text = (m.content ?? '').slice(0, 200);
-              return `${role}：${text}${(m.content ?? '').length > 200 ? '…' : ''}`;
+              return `${role}�G${text}${(m.content ?? '').length > 200 ? '�K' : ''}`;
             }).join('\n\n');
             this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: this.getLongTermMemory(), persona: persona2, historyCount: this._chatHistory.length, historyPreview, sessionId: this._activeSessionId });
             break;
@@ -184,7 +191,7 @@ export class OllamaChatPanel {
             await this.handleMemoryConsolidate(message.sessionId);
             break;
           case 'openSettings':
-            vscode.commands.executeCommand('workbench.action.openSettings', 'amiClaw.systemPrompt');
+            vscode.commands.executeCommand('workbench.action.openSettings', 'amiAiClaw.systemPrompt');
             break;
           case 'notifySessionsChanged':
             if (OllamaChatPanel.onSessionsChanged && Array.isArray(message.sessions)) {
@@ -211,7 +218,7 @@ export class OllamaChatPanel {
     const _webview = this._panel.webview;
     const _self = this;
     (async () => {
-      const cfg = vscode.workspace.getConfiguration('amiClaw');
+      const cfg = vscode.workspace.getConfiguration('amiAiClaw');
       const ollamaUrls = getOllamaUrls(cfg);
       const liveModels: { id: string; label: string }[] = [];
       let connOk = false;
@@ -223,7 +230,7 @@ export class OllamaChatPanel {
           for (const m of models) {
             liveModels.push({ id: encodeOllamaModelId(url, m, ollamaUrls), label: ollamaDisplayLabel(url, m, ollamaUrls) });
           }
-          if (!connOk) { connOk = true; connMsg = ollamaUrls.length > 1 ? `${ollamaUrls.length} 台伺服器已連線` : 'OK'; connUrl = url; }
+          if (!connOk) { connOk = true; connMsg = ollamaUrls.length > 1 ? `${ollamaUrls.length} �x���A���w�s�u` : 'OK'; connUrl = url; }
           OllamaChatPanel.log('Models from ' + url + ': ' + models.join(', '));
         } catch (e) {
           const emsg = e instanceof Error ? e.message : String(e);
@@ -263,7 +270,7 @@ export class OllamaChatPanel {
 
     const panel = vscode.window.createWebviewPanel(
       OllamaChatPanel.viewType,
-      'AmiClaw',
+      'AMI-AiClaw',
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
       { enableScripts: true, retainContextWhenHidden: true }
     );
@@ -313,14 +320,14 @@ export class OllamaChatPanel {
         panel._panel.webview.postMessage({
           type: 'fileAttached',
           name: uri.fsPath,
-          content: `[目錄列表]\n${listing}`
+          content: `[�ؿ��C��]\n${listing}`
         });
       } else {
         // Send file content (limit to 500 KB)
         const MAX = 500 * 1024;
         const raw = await vscode.workspace.fs.readFile(uri);
         const content = raw.byteLength > MAX
-          ? Buffer.from(raw).toString('utf8', 0, MAX) + '\n...(截斷)'
+          ? Buffer.from(raw).toString('utf8', 0, MAX) + '\n...(�I�_)'
           : Buffer.from(raw).toString('utf8');
         panel._panel.webview.postMessage({
           type: 'fileAttached',
@@ -339,7 +346,7 @@ export class OllamaChatPanel {
 
   private getHtmlForWebview(_webview: vscode.Webview): string {
     const nonce = getNonce();
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const defaultModel = cfg.get<string>('model') ?? '';
     const models = cfg.get<string[]>('models') ?? (defaultModel ? [defaultModel] : []);
     const optionsHtml = models.map(m => `<option value="${m}" ${m === defaultModel ? 'selected' : ''}>${m}</option>`).join('');
@@ -350,7 +357,7 @@ export class OllamaChatPanel {
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AmiClaw</title>
+    <title>AMI-AiClaw</title>
     <style>
       *{box-sizing:border-box}
       body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;margin:0;padding:0;height:100vh;display:flex;flex-direction:column;background:var(--vscode-editor-background);color:var(--vscode-editor-foreground)}
@@ -396,17 +403,20 @@ export class OllamaChatPanel {
       .loading-dots span:nth-child(3){animation-delay:.32s}
       .tool-step{border-left:3px solid var(--vscode-debugConsole-warningForeground,#cca700);margin:3px 0;padding:2px 8px;background:rgba(128,128,128,0.05);border-radius:2px;font-size:0.85em}
       .tool-step summary{cursor:pointer;color:var(--vscode-descriptionForeground,#999);list-style:none;padding:2px 0;user-select:none;display:flex;align-items:center;gap:4px}
-      .tool-step summary::before{content:'▶  ';font-size:0.7em;flex-shrink:0}
-      .tool-step[open] summary::before{content:'▼  ';font-size:0.7em}
-      .tool-step[data-s=running] .step-status::after{content:' ⏳'}
+      .tool-step summary::before{content:'?  ';font-size:0.7em;flex-shrink:0}
+      .tool-step[open] summary::before{content:'��  ';font-size:0.7em}
+      .tool-step[data-s=running] .step-status::after{content:' ?'}
       .tool-step[data-s=done] .step-status{color:var(--vscode-terminal-ansiGreen,#4ec94e)}
-      .tool-step[data-s=done] .step-status::after{content:' ✓'}
+      .tool-step[data-s=done] .step-status::after{content:' ?'}
       .tool-step[data-s=error] .step-status{color:var(--vscode-errorForeground,red)}
-      .tool-step[data-s=error] .step-status::after{content:' ✗'}
+      .tool-step[data-s=error] .step-status::after{content:' ?'}
       .tool-step pre{margin:3px 0;white-space:pre-wrap;font-size:0.82em;max-height:140px;overflow:auto;color:var(--vscode-descriptionForeground,#999);background:transparent}
+      .agent-progress-card{display:flex;flex-direction:column;gap:4px;margin:0 0 8px;padding:8px 10px;border:1px solid rgba(79,193,255,0.28);border-left:3px solid #4fc1ff;border-radius:6px;background:rgba(79,193,255,0.08)}
+      .agent-progress-title{font-size:0.82em;font-weight:700;color:var(--vscode-editorInfo-foreground,#4fc1ff)}
+      .agent-progress-meta{font-size:0.8em;opacity:0.82;white-space:pre-wrap;line-height:1.45}
       .code-block-wrap{margin:4px 0}
       .code-actions{display:flex;gap:4px;margin:2px 0 1px;flex-wrap:wrap}
-      /* 團隊討論模式 */
+      /* �ζ��Q�׼Ҧ� */
       .team-member-node { width:100% }
       .team-member-node .bubble { border-left:3px solid; padding-left:10px; width:100% }
       .team-header { display:flex; align-items:center; gap:6px; padding:0 0 5px; border-bottom:1px solid rgba(128,128,128,0.12); margin-bottom:6px }
@@ -436,7 +446,7 @@ export class OllamaChatPanel {
       .team-todo-item.t-done .team-todo-task { text-decoration:line-through; opacity:0.42 }
       .team-todo-item.t-running .team-todo-task { color:#4fc1ff }
       .team-todo-worker { font-size:0.72em; opacity:0.5; margin-left:3px; font-style:italic; white-space:nowrap }
-      /* 對話模式 */
+      /* ��ܼҦ� */
       .debate-turn { margin:6px 0; border-radius:6px; overflow:hidden }
       .debate-turn-header { font-size:0.78em; font-weight:700; padding:3px 10px; display:flex; align-items:center; gap:5px }
       .debate-turn-body { padding:6px 10px; white-space:pre-wrap; font-size:0.87em; line-height:1.55 }
@@ -454,7 +464,7 @@ export class OllamaChatPanel {
       .role-badge-manager{background:#f7cc65;color:#1e1e1e}.role-badge-member{background:#4fc1ff;color:#1e1e1e}
       .team-pick-mini-btn{font-size:11px;padding:1px 7px;border-radius:3px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.3);color:inherit;cursor:pointer}
       #teamPickerCount{font-size:11px;opacity:0.7}
-      /* 記憶管理 Modal */
+      /* �O�к޲z Modal */
       #memModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:flex-start;justify-content:center;padding-top:40px}
       #memModal.open{display:flex}
       #memBox{background:var(--vscode-editor-background);border:1px solid rgba(128,128,128,0.35);border-radius:10px;padding:18px;width:min(540px,95vw);max-height:80vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
@@ -490,105 +500,106 @@ export class OllamaChatPanel {
     <div id="chat"></div>
     <div id="bottomBar">
       <div id="topBar">
-        <select id="chatSessionSelect" aria-label="選擇聊天"></select>
-        <button class="icon-btn" id="newChat" title="新增聊天">➕</button>
-        <button class="icon-btn" id="renameChat" title="設定聊天標題">🏷️</button>
-        <select id="modelSelect" aria-label="選擇模型">${optionsHtml}</select><span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
-        <button class="icon-btn" id="refreshModels" title="重整模型 / 測試連線">🔄</button>
-        <button class="icon-btn" id="pickFile" title="附加檔案">📎</button>
-        <button class="icon-btn" id="toggleStream" title="切換串流模式">⚡</button>
-        <button class="icon-btn" id="agentMode" title="Agent 模式 (AI 可讀寫檔案、執行命令)">🤖</button>
-        <button class="icon-btn" id="teamMode" title="團隊討論模式 (多個 AI 並行思考👥)">👥</button>
-        <button class="icon-btn" id="debateMode" title="對話模式：2 個 AI 辯論/對弈，可加第 3 個裁判 ⚔️">⚔️</button>
-        <button class="icon-btn" id="stopAgent" title="停止 Agent">⏹</button>
-        <button class="icon-btn" id="memBtn" title="記憶管理">🧠</button>
-        <button class="icon-btn" id="clear" title="清除對話">🗑</button>
-        <button class="icon-btn" id="debugBtn" title="Debug Console" style="font-size:12px;">🐛</button>
+        <select id="chatSessionSelect" aria-label="��ܲ��"></select>
+        <button class="icon-btn" id="newChat" title="�s�W���">?</button>
+        <button class="icon-btn" id="renameChat" title="�]�w��Ѽ��D">???</button>
+        <select id="modelSelect" aria-label="��ܼҫ�">${optionsHtml}</select><span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
+        <button class="icon-btn" id="refreshModels" title="����ҫ� / ���ճs�u">??</button>
+        <button class="icon-btn" id="pickFile" title="���[�ɮ�">??</button>
+        <button class="icon-btn" id="toggleStream" title="������y�Ҧ�">?</button>
+        <button class="icon-btn" id="agentMode" title="Agent �Ҧ� (AI �iŪ�g�ɮסB����R�O)">??</button>
+        <button class="icon-btn" id="teamMode" title="�ζ��Q�׼Ҧ� (�h�� AI �æ���??)">??</button>
+        <button class="icon-btn" id="debateMode" title="��ܼҦ��G2 �� AI �G��/��١A�i�[�� 3 �ӵ��P ??">??</button>
+        <button class="icon-btn" id="stopAgent" title="���� Agent">?</button>
+        <button class="icon-btn" id="memBtn" title="�O�к޲z">??</button>
+        <button class="icon-btn" id="clear" title="�M�����">??</button>
+        <button class="icon-btn" id="debugBtn" title="Debug Console" style="font-size:12px;">??</button>
         <span style="flex:1"></span>
         <span id="connStatus" style="font-size:11px;opacity:0.8">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
       </div>
       <div id="attachedFiles"></div>
       <div id="teamPicker">
         <div id="teamPickerBar">
-          <span style="font-size:11px;font-weight:700">&#x1F465; 選擇團隊成員（最多 5 個）</span>
+          <span style="font-size:11px;font-weight:700">&#x1F465; ��ܹζ������]�̦h 5 �ӡ^</span>
             <button class="team-pick-mini-btn" id="teamPickerRefresh">&#x1F504;</button>
-            <label style="font-size:11px;margin-left:8px">模式：</label>
+            <label style="font-size:11px;margin-left:8px">�Ҧ��G</label>
             <select id="teamModeSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
-              <option value="task" selected>&#x1F9E9; 任務分解</option>
-              <option value="discussion">&#x1F4AC; 討論模式</option>
-              <option value="agent">&#x1F916; Agent 模式</option>
-              <option value="manager">&#x1F3E2; 主管模式</option>
+              <option value="task" selected>&#x1F9E9; ���Ȥ���</option>
+              <option value="discussion">&#x1F4AC; �Q�׼Ҧ�</option>
+              <option value="agent">&#x1F916; Agent �Ҧ�</option>
+              <option value="manager">&#x1F3E2; �D�޼Ҧ�</option>
+              <option value="supervisor">&#x1F9D1;&#x200D;&#x1F4BC; Supervisor Multi-Agent</option>
             </select>
-            <label style="font-size:11px;margin-left:6px">回合：</label>
+            <label style="font-size:11px;margin-left:6px">�^�X�G</label>
             <select id="teamRoundsSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
               <option value="10">10</option>
               <option value="20" selected>20</option>
               <option value="30">30</option>
               <option value="150">150</option>
-              <option value="infinite">無限</option>
+              <option value="infinite">�L��</option>
             </select>
             <span style="flex:1"></span>
-            <span id="teamPickerCount">0/5 已選</span>
+            <span id="teamPickerCount">0/5 �w��</span>
         </div>
-        <div id="teamPickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
+        <div id="teamPickerList"><span style="font-size:11px;opacity:0.6">���J���K</span></div>
       </div>
       <div id="debatePicker">
         <div id="debatePickerBar">
-          <span style="font-size:11px;font-weight:700">&#x2694;&#xFE0F; 對話成員（2 個應戰，可加第 3 個裁判）</span>
+          <span style="font-size:11px;font-weight:700">&#x2694;&#xFE0F; ��ܦ����]2 �����ԡA�i�[�� 3 �ӵ��P�^</span>
             <button class="team-pick-mini-btn" id="debatePickerRefresh">&#x1F504;</button>
-            <label style="font-size:11px;margin-left:8px">回合：</label>
+            <label style="font-size:11px;margin-left:8px">�^�X�G</label>
             <select id="debateRoundsSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
               <option value="10">10</option>
               <option value="20" selected>20</option>
               <option value="30">30</option>
               <option value="150">150</option>
-              <option value="infinite">無限</option>
+              <option value="infinite">�L��</option>
             </select>
             <span style="flex:1"></span>
-            <span id="debatePickerCount">0/3 已選</span>
+            <span id="debatePickerCount">0/3 �w��</span>
         </div>
-        <div id="debatePickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
+        <div id="debatePickerList"><span style="font-size:11px;opacity:0.6">���J���K</span></div>
       </div>
       <div id="inputRow">
-        <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
-        <button id="sendBtn" title="送出 (Enter)">&#9658;</button>
+        <textarea id="prompt" rows="1" placeholder="��J�T���K (Enter �e�X / Ctrl+Enter ����)"></textarea>
+        <button id="sendBtn" title="�e�X (Enter)">&#9658;</button>
       </div>
       <div id="permissionBar">
         <div id="permissionDesc"></div>
         <div id="permissionBtns">
-          <button class="perm-btn perm-btn-allow" id="permAllow">✅ 允許（此次）</button>
-          <button class="perm-btn perm-btn-always" id="permAlways">♾️ 永遠允許此類</button>
-          <button class="perm-btn perm-btn-deny" id="permDeny">❌ 拒絕</button>
+          <button class="perm-btn perm-btn-allow" id="permAllow">? ���\�]�����^</button>
+          <button class="perm-btn perm-btn-always" id="permAlways">?? �û����\����</button>
+          <button class="perm-btn perm-btn-deny" id="permDeny">? �ڵ�</button>
         </div>
       </div>
       <div id="statusBar"></div>
     </div>
     <div id="memModal">
       <div id="memBox">
-        <h3>&#x1F9E0; 記憶管理 <button class="mem-close-btn" id="memClose">✕</button></h3>
+        <h3>&#x1F9E0; �O�к޲z <button class="mem-close-btn" id="memClose">?</button></h3>
         <div class="mem-section">
-          <p class="mem-section-title">&#x1F4CB; 角色設定（System Prompt）</p>
-          <p class="mem-section-desc">每次對話都自動套用，在 VS Code 設定中編輯</p>
-          <textarea id="personaPreview" readonly rows="3" placeholder="（讀取中...）"></textarea>
-          <div class="mem-row"><button class="mem-btn" id="editPersonaBtn">&#x2699;&#xFE0F; 在設定中編輯角色</button></div>
+          <p class="mem-section-title">&#x1F4CB; ����]�w�]System Prompt�^</p>
+          <p class="mem-section-desc">�C����ܳ��۰ʮM�ΡA�b VS Code �]�w���s��</p>
+          <textarea id="personaPreview" readonly rows="3" placeholder="�]Ū����...�^"></textarea>
+          <div class="mem-row"><button class="mem-btn" id="editPersonaBtn">&#x2699;&#xFE0F; �b�]�w���s�訤��</button></div>
         </div>
         <div class="mem-section">
-          <p class="mem-section-title">&#x1F5C2; 長期記憶（跨對話持續保存）</p>
-          <p class="mem-section-desc">每次對話都會套用此記憶為背景知識。可寫入專案偏好、環境、重要事實等。</p>
-          <textarea id="ltmArea" rows="5" placeholder="例如：- 用 Windows 11 + WSL2&#10;- 此專案用 TypeScript strict mode，將染色器用 VS Code，编譯器用 GCC 13，板子是 AMI Aptio V，它是基於 x64 UEFI。"></textarea>
+          <p class="mem-section-title">&#x1F5C2; �����O�С]���ܫ���O�s�^</p>
+          <p class="mem-section-desc">�C����ܳ��|�M�Φ��O�Ь��I�����ѡC�i�g�J�M�װ��n�B���ҡB���n�ƹ굥�C</p>
+          <textarea id="ltmArea" rows="5" placeholder="�Ҧp�G- �� Windows 11 + WSL2&#10;- ���M�ץ� TypeScript strict mode�A�N�V�⾹�� VS Code�A?Ķ���� GCC 13�A�O�l�O AMI Aptio V�A���O��� x64 UEFI�C"></textarea>
           <div class="mem-row">
-            <button class="mem-btn primary" id="saveLtmBtn">&#x1F4BE; 儲存長期記憶</button>
-            <button class="mem-btn" id="clearLtmBtn">&#x1F5D1; 清除長期記憶</button>
+            <button class="mem-btn primary" id="saveLtmBtn">&#x1F4BE; �x�s�����O��</button>
+            <button class="mem-btn" id="clearLtmBtn">&#x1F5D1; �M�������O��</button>
           </div>
         </div>
         <div class="mem-section">
-          <p class="mem-section-title">&#x1F4AC; 短期記憶（本次對話歷史）</p>
-          <p class="mem-section-desc">關閉 Panel 後消失。AI 會記得本次對話中所有問答內容。</p>
-          <p id="historyInfo" style="font-size:12px;margin:2px 0;">對話歷史：0 條訊息</p>
-          <textarea id="historyPreview" readonly rows="5" placeholder="（開啟此面板時載入最近 10 條）" style="font-size:11px;opacity:0.85;background:var(--vscode-input-background,#1e1e1e);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,#555);border-radius:4px;width:100%;box-sizing:border-box;padding:4px 6px;resize:vertical;margin:4px 0"></textarea>
+          <p class="mem-section-title">&#x1F4AC; �u���O�С]������ܾ��v�^</p>
+          <p class="mem-section-desc">���� Panel ������CAI �|�O�o������ܤ��Ҧ��ݵ����e�C</p>
+          <p id="historyInfo" style="font-size:12px;margin:2px 0;">��ܾ��v�G0 ���T��</p>
+          <textarea id="historyPreview" readonly rows="5" placeholder="�]�}�Ҧ����O�ɸ��J�̪� 10 ���^" style="font-size:11px;opacity:0.85;background:var(--vscode-input-background,#1e1e1e);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,#555);border-radius:4px;width:100%;box-sizing:border-box;padding:4px 6px;resize:vertical;margin:4px 0"></textarea>
           <div class="mem-row" style="gap:6px;flex-wrap:wrap">
-            <button class="mem-btn primary" id="consolidateLtmBtn">&#x1F9E0; AI 整理為長期記憶</button>
-            <button class="mem-btn" id="clearHistoryBtn2">&#x1F5D1; 清除對話歷史</button>
+            <button class="mem-btn primary" id="consolidateLtmBtn">&#x1F9E0; AI ��z�������O��</button>
+            <button class="mem-btn" id="clearHistoryBtn2">&#x1F5D1; �M����ܾ��v</button>
           </div>
           <p id="consolidateStatus" style="font-size:11px;opacity:0.7;margin:2px 0;display:none"></p>
         </div>
@@ -600,7 +611,7 @@ export class OllamaChatPanel {
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
 
-      // ── Debug Console ──────
+      // �w�w Debug Console �w�w�w�w�w�w
       window._debugLog = [];
       function dbg(msg) { var t = new Date().toISOString().slice(11,23); window._debugLog.push(t + ' ' + msg); var dp = document.getElementById('debugPanel'); if (dp && dp.style.display !== 'none') { dp.textContent = window._debugLog.slice(-10).join('\\n'); } }
       dbg('webview init start');
@@ -610,19 +621,19 @@ export class OllamaChatPanel {
       document.body.appendChild(debugPanel);
       window.onerror = function(msg, src, line, col) { dbg('ERROR: ' + msg + ' at line ' + line + ':' + col); return false; };
 
-      // ── 訊息處理 (最先掛上，避免後續程式碼拋例外導致 listener 遺失) ──────
+      // �w�w �T���B�z (�̥����W�A�קK����{���X�ߨҥ~�ɭP listener ��) �w�w�w�w�w�w
       window.addEventListener('message', function(event) {
         try {
           const msg = event.data;
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
           if (debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
-          if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking); }
+          if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; if (_agentProgress.running) { _agentProgress.activeTitle = '��z�̲צ^��'; renderAgentProgressCard(); } setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking); }
           else if (msg.type === 'streamStart')   { clearPendingBubble(); _streamNode = null; }
           else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk); }
           else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
           else if (msg.type === 'streamEnd')     { _agentStepNode = null; _streamNode = null; setSendEnabled(true); }
           else if (msg.type === 'streamStats')   { var _sb = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null; if (_sb) { var _det = _sb.querySelector('details.think'); if (_det) { var _lbl = _det.querySelector('.think-label'); var _secs = _det._thinkEnd ? Math.round((_det._thinkEnd - (_det._thinkStart||_det._thinkEnd)) / 1000) : 0; if (_lbl) _lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (' + msg.tokens + ' tokens, \u8017\u6642 ' + _secs + 's, ' + msg.tps.toFixed(1) + ' t/s)'; } } }
-          else if (msg.type === 'error')         { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', '\u932f\u8aa4\uff1a' + msg.text); }
+          else if (msg.type === 'error')         { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); if (_agentProgress.running) { _agentProgress.activeTitle = '\u767C\u751F\u932F\u8AA4'; try { renderAgentProgressCard(); } catch(e) { dbg('progress card err: ' + e); } } _agentProgress.running = false; appendMessage('assistant', '\u932f\u8aa4\uff1a' + msg.text); }
           else if (msg.type === 'teamMemberStart') { createTeamMember(msg.id, msg.model, msg.color, msg.task); }
           else if (msg.type === 'teamThinkChunk')  { appendTeamThinkChunk(msg.id, msg.color, msg.chunk); }
           else if (msg.type === 'teamResponseChunk'){ appendTeamResponseChunk(msg.id, msg.chunk); }
@@ -637,7 +648,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamRoundDone')         { finalizeTeamRound(msg.id, msg.approved); }
           else if (msg.type === 'teamSynthStart')  { createTeamSynthBubble(); }
           else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
-          else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
+          else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718���Q�ק���'; } else { if (statusBar) statusBar.textContent = '\u5718���Q�ק����A��ε� Agent\u2026'; } }
           else if (msg.type === 'teamAgentStart')  { var tah = document.createElement('div'); tah.className = 'team-agent-header'; tah.textContent = '\uD83E\uDD16 Agent \u63A5\u529B\u57F7\u884C\u8A08\u5283\uFF08' + (msg.model||'') + '\uFF09'; chat.appendChild(tah); chat.scrollTop = chat.scrollHeight; }
           else if (msg.type === 'teamModelList')   { populateTeamPicker(msg.models); populateDebatePicker(msg.models); }
           else if (msg.type === 'teamTodoList')  { createTodoPanel(msg.tasks); }
@@ -650,8 +661,17 @@ export class OllamaChatPanel {
           else if (msg.type === 'debateTurnEnd') { finalizeDebateTurn(msg.speaker, msg.tokens, msg.tps); }
           else if (msg.type === 'debateEnd')     { finalizeDebate(msg.consensus); setSendEnabled(true); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f'; }
           else if (msg.type === 'agentStatus')   {
-            if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
+            if (msg.running) {
+              _agentProgress.running = true;
+              _agentProgress.summary = msg.summary || _agentProgress.summary || '';
+              _agentProgress.activeTitle = msg.current || '\u521D\u59CB\u5316 Agent';
+              _agentProgress.completed = typeof msg.completed === 'number' ? msg.completed : 0;
+            } else {
+              _agentProgress.running = false;
+              _agentProgress.activeTitle = '';
+            }
             setSendEnabled(!msg.running);
+            try { renderAgentProgressCard(); } catch(e) { dbg('progress card err: ' + e); }
           }
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
@@ -672,7 +692,7 @@ export class OllamaChatPanel {
             var cs3 = document.getElementById('consolidateStatus');
             if (msg.error) { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u274c \u6574\u7406\u5931\u6557\uff1a' + msg.error; } }
             else if (msg.skipped) { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u26a0\ufe0f \u5c0d\u8a71\u6b77\u53f2\u70ba\u7a7a\uff0c\u7121\u9700\u6574\u7406'; } }
-            else { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u2713 \u5df2\u6574\u7406\u4e26\u5132\u5b58\u5230\u9577\u671f\u8a18\u61b6'; } var a2 = document.getElementById('ltmArea'); if (a2) a2.value = msg.ltm || ''; chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null; saveActiveSessionSnapshot(); var hp2 = document.getElementById('historyPreview'); if (hp2) hp2.value = '（已整理並清除）'; var hii2 = document.getElementById('historyInfo'); if (hii2) hii2.textContent = '對話歷史：0 條訊息'; }
+            else { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u2713 \u5df2\u6574\u7406\u4e26\u5132\u5b58\u5230\u9577\u671f\u8a18\u61b6'; } var a2 = document.getElementById('ltmArea'); if (a2) a2.value = msg.ltm || ''; chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null; _agentProgress = { running: false, summary: '', activeTitle: '', completed: 0, card: null }; saveActiveSessionSnapshot(); var hp2 = document.getElementById('historyPreview'); if (hp2) hp2.value = '�]�w��z�òM���^'; var hii2 = document.getElementById('historyInfo'); if (hii2) hii2.textContent = '��ܾ��v�G0 ���T��'; }
           }
           // --- Messages FROM extension host (sidebar commands) ---
           else if (msg.type === 'newChatSession') { createNewSession(); }
@@ -697,6 +717,7 @@ export class OllamaChatPanel {
       let teamMode = false;
       let debateMode = false;
       let _agentStepNode = null;
+      let _agentProgress = { running: false, summary: '', activeTitle: '', completed: 0, card: null };
       const _teamNodes = {}; // id -> { node, bubble, thinkNode, responseNode, charCount, thinkStart, thinkTimer }
       var _todosPanel = null;
       var _todoChecked = 0;
@@ -715,7 +736,7 @@ export class OllamaChatPanel {
       const renameChatBtn = document.getElementById('renameChat');
 
       function defaultSessionState() {
-        return { sessions: [{ id: 'default', title: '聊天 1', html: '', manualTitle: false }], activeId: 'default', seq: 1 };
+        return { sessions: [{ id: 'default', title: '��� 1', html: '', manualTitle: false }], activeId: 'default', seq: 1 };
       }
 
       const savedState = vscode.getState && vscode.getState();
@@ -751,6 +772,7 @@ export class OllamaChatPanel {
       function resetTransientNodes() {
         _streamNode = null; _agentStepNode = null; _pendingBubble = null;
         _synthNode = null; _orchestratorNode = null; _orchestratorModel = '';
+        _agentProgress.card = null;
         Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; });
         Object.keys(_debateNodes).forEach(function(k){ delete _debateNodes[k]; });
       }
@@ -772,7 +794,7 @@ export class OllamaChatPanel {
         _activeChatSessionId = sessionId;
         var s = getActiveSession();
         if (!s) {
-          s = { id: sessionId, title: '聊天', html: '', manualTitle: false };
+          s = { id: sessionId, title: '���', html: '', manualTitle: false };
           _chatSessions.push(s);
         }
         resetTransientNodes();
@@ -786,10 +808,10 @@ export class OllamaChatPanel {
       function autoTitleFromPrompt(text) {
         var s = getActiveSession();
         if (!s || s.manualTitle) return;
-        if (!s.title || /^聊天\s*\d+$/.test(s.title)) {
+        if (!s.title || /^���\s*\d+$/.test(s.title)) {
           var t = (text || '').replace(/\s+/g, ' ').trim();
           if (!t) return;
-          s.title = t.length > 18 ? t.slice(0, 18) + '…' : t;
+          s.title = t.length > 18 ? t.slice(0, 18) + '�K' : t;
           renderChatSessionSelect();
           persistSessionState();
         }
@@ -799,7 +821,7 @@ export class OllamaChatPanel {
         saveActiveSessionSnapshot();
         _chatSeq += 1;
         var id = 'chat-' + Date.now() + '-' + _chatSeq;
-        var s = { id: id, title: '聊天 ' + _chatSeq, html: '', manualTitle: false };
+        var s = { id: id, title: '��� ' + _chatSeq, html: '', manualTitle: false };
         _chatSessions.push(s);
         _activeChatSessionId = id;
         resetTransientNodes();
@@ -813,7 +835,7 @@ export class OllamaChatPanel {
       function renameActiveSession() {
         var s = getActiveSession();
         if (!s) return;
-        var title = window.prompt('請輸入聊天標題：', s.title || '');
+        var title = window.prompt('�п�J��Ѽ��D�G', s.title || '');
         if (title === null) return;
         var t = title.trim();
         if (!t) return;
@@ -855,7 +877,7 @@ export class OllamaChatPanel {
       }
       prompt.addEventListener('input', resizePrompt);
 
-      // ── Jira key auto-detect ──────────────────────────────────────────────
+      // �w�w Jira key auto-detect �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       var _jiraChips = document.createElement('div');
       _jiraChips.id = 'jiraChips';
       _jiraChips.style.cssText = 'display:none;padding:2px 6px 4px;display:flex;flex-wrap:wrap;gap:4px;';
@@ -884,7 +906,7 @@ export class OllamaChatPanel {
         });
       });
 
-      // ── 送出 helper ──────────────────────────────────────────────────────
+      // �w�w �e�X helper �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       function appendLoadingBubble() {
         if (_pendingBubble) { _pendingBubble.remove(); _pendingBubble = null; }
         const node = document.createElement('div'); node.className = 'msg assistant';
@@ -911,7 +933,7 @@ export class OllamaChatPanel {
             var roundsVal = roundsEl ? roundsEl.value : '20';
             var teamModeEl = document.getElementById('teamModeSelect');
             var teamExecMode = teamModeEl ? teamModeEl.value : 'task';
-            var tModeLabel = teamExecMode === 'discussion' ? '\u{1F4AC} \u8a0e\u8ad6\u4e2d\u2026' : teamExecMode === 'agent' ? '\u{1F916} Agent \u57f7\u884c\u4e2d\u2026' : teamExecMode === 'manager' ? '\u{1F3E2} \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
+            var tModeLabel = teamExecMode === 'discussion' ? '\u{1F4AC} \u8a0e\u8ad6\u4e2d\u2026' : teamExecMode === 'agent' ? '\u{1F916} Agent \u57f7\u884c\u4e2d\u2026' : teamExecMode === 'manager' ? '\u{1F3E2} \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : teamExecMode === 'supervisor' ? '\u{1F9D1}\u200D\u{1F4BC} Supervisor \u57f7\u884c\u4e2d\u2026' : '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
             vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, rounds: roundsVal, teamExecMode: teamExecMode, sessionId: _activeChatSessionId });
             prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
             if (statusBar) statusBar.textContent = tModeLabel;
@@ -945,7 +967,7 @@ export class OllamaChatPanel {
 
       sendBtn.addEventListener('click', doSend);
 
-      // Enter = 送出；Ctrl+Enter = 換行
+      // Enter = �e�X�FCtrl+Enter = ����
       prompt.addEventListener('keydown', function(e) {
         if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
           e.preventDefault();
@@ -965,8 +987,8 @@ export class OllamaChatPanel {
         document.getElementById('agentMode').classList.toggle('active', agentMode);
         if (agentMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
         if (agentMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
-        if (statusBar) statusBar.textContent = agentMode ? '🤖 Agent 模式 — AI 可自動讀寫檔案、執行命令' : '💬 Ask 模式 — 直接對話，不使用工具';
-        prompt.placeholder = agentMode ? '輸入任務… Agent 會自動使用工具 (Enter 送出)' : '輸入訊息… (Enter 送出 / Ctrl+Enter 換行)';
+        if (statusBar) statusBar.textContent = agentMode ? '?? Agent �Ҧ� �X AI �i�۰�Ū�g�ɮסB����R�O' : '?? Ask �Ҧ� �X ������ܡA���ϥΤu��';
+        prompt.placeholder = agentMode ? '��J���ȡK Agent �|�۰ʨϥΤu�� (Enter �e�X)' : '��J�T���K (Enter �e�X / Ctrl+Enter ����)';
       });
 
       document.getElementById('teamMode').addEventListener('click', function() {
@@ -1022,7 +1044,7 @@ export class OllamaChatPanel {
         });
       }
 
-      // ── 附加檔案 ─────────────────────────────────────────────────────────
+      // �w�w ���[�ɮ� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       function buildPromptWithFiles(text) {
         if (!attachedFiles.length) return text;
         return attachedFiles.map(function(f) {
@@ -1048,7 +1070,7 @@ export class OllamaChatPanel {
         const af = document.getElementById('attachedFiles'); if (af) af.innerHTML = '';
       }
 
-      // ── 思考過程 ─────────────────────────────────────────────────────────
+      // �w�w ��ҹL�{ �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       function makeThinkBlock(text, open) {
         const d = document.createElement('details'); d.className = 'think'; if (open) d.setAttribute('open', '');
         const s = document.createElement('summary');
@@ -1059,7 +1081,7 @@ export class OllamaChatPanel {
         d.appendChild(s); d.appendChild(p); return d;
       }
 
-      // ── 訊息 ─────────────────────────────────────────────────────────────
+      // �w�w �T�� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       // -- parseBlocks + makeCodeBlock -------------------------------------------
       function parseBlocks(text) {
         var TICK = String.fromCharCode(96, 96, 96);
@@ -1123,7 +1145,7 @@ export class OllamaChatPanel {
         chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
       }
 
-      // ── 串流 ─────────────────────────────────────────────────────────────
+      // �w�w ��y �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       function getOrCreateStreamNode() {
         if (_streamNode && chat.contains(_streamNode)) return _streamNode;
         const node = document.createElement('div'); node.className = 'msg assistant';
@@ -1189,7 +1211,7 @@ export class OllamaChatPanel {
         chat.scrollTop = chat.scrollHeight;
       }
 
-      // ── Agent 工具步驟 ───────────────────────────────────────────────────────────
+      // �w�w Agent �u��B�J �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       function ensureLastAssistantBubble() {
         clearPendingBubble();
         var last = chat.lastElementChild;
@@ -1201,8 +1223,52 @@ export class OllamaChatPanel {
         node.appendChild(bub); chat.appendChild(node); return bub;
       }
 
+      function shortenAgentText(text, maxLen) {
+        var clean = String(text || '').replace(/\s+/g, ' ').trim();
+        if (!clean) return '';
+        return clean.length > maxLen ? clean.slice(0, maxLen - 1) + '�K' : clean;
+      }
+
+      function renderAgentProgressCard() {
+        if (!_agentProgress.running && !_agentProgress.completed && !_agentProgress.card) return;
+        var card = _agentProgress.card;
+        var bub;
+        if (_agentProgress.running) {
+          // ���椤�G�T�O���U�z�w�w�æb�䤤�إߩΧ�s�d��
+          bub = ensureLastAssistantBubble();
+          if (!card || !bub.contains(card)) {
+            card = document.createElement('div');
+            card.className = 'agent-progress-card';
+            var title = document.createElement('div'); title.className = 'agent-progress-title';
+            var meta = document.createElement('div'); meta.className = 'agent-progress-meta';
+            card.appendChild(title); card.appendChild(meta);
+            bub.insertBefore(card, bub.firstChild);
+            _agentProgress.card = card;
+          }
+        } else {
+          // �����G�u��s�{���d���A���إ߷s�w�w
+          if (!card || !document.body.contains(card)) { _agentProgress.card = null; return; }
+          bub = card.parentElement;
+        }
+        var titleEl = card.querySelector('.agent-progress-title');
+        var metaEl = card.querySelector('.agent-progress-meta');
+        var current = _agentProgress.activeTitle ? '�ثe�G' + shortenAgentText(_agentProgress.activeTitle, 72) : (_agentProgress.running ? '�ثe�G���ݤU�@�Ӥu��B�J�K' : '�ثe�G�w����');
+        var summary = _agentProgress.summary ? '���ȺK�n�G' + shortenAgentText(_agentProgress.summary, 88) : '���ȺK�n�G�B�z�ϥΪ̽ШD';
+        if (titleEl) titleEl.textContent = _agentProgress.running ? '?? Agent ���b����' : '? Agent ���槹��';
+        if (metaEl) metaEl.textContent = summary + '\\n�i�סG�w���� ' + _agentProgress.completed + ' �B' + (_agentProgress.running ? '�A���椤' : '') + '\\n' + current;
+        if (statusBar) {
+          if (_agentProgress.running) {
+            statusBar.textContent = '?? ' + shortenAgentText(_agentProgress.summary || '�B�z���Ȥ�', 28) + '�U�w���� ' + _agentProgress.completed + ' �B' + (_agentProgress.activeTitle ? '�U' + shortenAgentText(_agentProgress.activeTitle, 24) : '');
+          } else {
+            statusBar.textContent = _agentProgress.completed > 0 ? '? Agent �w���� ' + _agentProgress.completed + ' �B' : (agentMode ? '?? Agent �Ҧ�' : '');
+          }
+        }
+      }
+
       function appendAgentStep(icon, title, fullPath) {
         var bub = ensureLastAssistantBubble();
+        _agentProgress.activeTitle = title || '';
+        renderAgentProgressCard();
         var d = document.createElement('details'); d.className = 'tool-step'; d.dataset.s = 'running';
         var s = document.createElement('summary');
         var span = document.createElement('span'); span.textContent = (icon || '\uD83D\uDD27') + '\u00A0' + title;
@@ -1217,10 +1283,13 @@ export class OllamaChatPanel {
         if (!_agentStepNode) return;
         _agentStepNode.dataset.s = isError ? 'error' : 'done';
         if (result) { var pre = document.createElement('pre'); pre.textContent = result; _agentStepNode.appendChild(pre); }
+        _agentProgress.completed++;
+        _agentProgress.activeTitle = '';
+        renderAgentProgressCard();
         _agentStepNode = null; chat.scrollTop = chat.scrollHeight;
       }
 
-      // ── 團隊模式 ──────────────────────────────────────────────────────────
+      // �w�w �ζ��Ҧ� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       var TEAM_COLORS = ['#4fc1ff','#89d185','#ce9178','#c586c0','#dcdcaa','#f7cc65'];
 
       function createTeamMember(id, model, color, task) {
@@ -1451,7 +1520,7 @@ export class OllamaChatPanel {
         m.reviewNode = null;
       }
 
-      // ── 團隊模式 — 成員選擇面板 ──────────────────────────────────────
+      // �w�w �ζ��Ҧ� �X ������ܭ��O �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       function populateTeamPicker(models) {
         _teamAvailModels = models || [];
         var list = document.getElementById('teamPickerList'); if (!list) return;
@@ -1480,23 +1549,33 @@ export class OllamaChatPanel {
       }
       function updateTeamRoleLabels() {
         var modeEl = document.getElementById('teamModeSelect');
-        var isManager = modeEl && modeEl.value === 'manager';
+        var modeVal = modeEl ? modeEl.value : '';
+        var isManager = modeVal === 'manager';
+        var isSupervisor = modeVal === 'supervisor';
         var memberIdx = 0;
         document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
           var cb = row.querySelector('input[type=checkbox]');
           var lbl = row.querySelector('label');
           if (!cb || !lbl) return;
           var badge = lbl.querySelector('.role-badge');
-          if (!isManager) {
+          if (!isManager && !isSupervisor) {
             if (badge) badge.remove();
             return;
           }
           if (!badge) { badge = document.createElement('span'); badge.className = 'role-badge'; lbl.appendChild(badge); }
           if (cb.checked) {
             if (memberIdx === 0) {
-              badge.textContent = '\uD83C\uDFE2 \u4e3b\u7ba1'; badge.className = 'role-badge role-badge-manager';
+              if (isSupervisor) {
+                badge.textContent = '\uD83E\uDDD1\u200D\uD83D\uDCBC Supervisor'; badge.className = 'role-badge role-badge-manager';
+              } else {
+                badge.textContent = '\uD83C\uDFE2 \u4e3b\u7ba1'; badge.className = 'role-badge role-badge-manager';
+              }
             } else {
-              badge.textContent = '\uD83D\uDC68\u200D\uD83D\uDCBB \u7d44\u54e1 #' + memberIdx; badge.className = 'role-badge role-badge-member';
+              if (isSupervisor) {
+                badge.textContent = '\uD83E\uDD16 \u7d44\u54e1 #' + memberIdx; badge.className = 'role-badge role-badge-member';
+              } else {
+                badge.textContent = '\uD83D\uDC68\u200D\uD83D\uDCBB \u7d44\u54e1 #' + memberIdx; badge.className = 'role-badge role-badge-member';
+              }
             }
             badge.style.display = '';
             memberIdx++;
@@ -1542,7 +1621,7 @@ export class OllamaChatPanel {
         return r;
       }
 
-      // ── Debate bubble functions ──────────────────────────────────────────
+      // �w�w Debate bubble functions �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       function createDebateHeader(labelA, labelB, labelJ, colorA, colorB, colorJ) {
         _debateLabelA = labelA; _debateLabelB = labelB; _debateLabelJ = labelJ || '';
         _debateColorA = colorA; _debateColorB = colorB; _debateColorJ = colorJ;
@@ -1577,7 +1656,7 @@ export class OllamaChatPanel {
           var s = document.createElement('summary');
           var color = speaker === 'A' ? _debateColorA : speaker === 'B' ? _debateColorB : _debateColorJ;
           var icon = document.createElement('span'); icon.className = 'think-icon pulse'; icon.style.background = color;
-          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '🧠 思考中…';
+          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '?? ��Ҥ��K';
           s.appendChild(icon); s.appendChild(lbl);
           var p = document.createElement('pre'); p.className = 'think-stream';
           det.appendChild(s); det.appendChild(p);
@@ -1587,7 +1666,7 @@ export class OllamaChatPanel {
             if (!det.hasAttribute('open')) { clearInterval(d.thinkTimer); return; }
             var secs = Math.round((Date.now() - d.thinkStart) / 1000);
             var tok = Math.round((d.thinkChars || 0) / 4);
-            var ll = det.querySelector('.think-label'); if (ll) ll.textContent = '🧠 思考中… (~' + tok + ' tokens, ' + secs + 's)';
+            var ll = det.querySelector('.think-label'); if (ll) ll.textContent = '?? ��Ҥ��K (~' + tok + ' tokens, ' + secs + 's)';
           }, 1000);
         }
         d.thinkChars = (d.thinkChars || 0) + chunk.length;
@@ -1603,7 +1682,7 @@ export class OllamaChatPanel {
           var icon = d.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
           var lbl = d.thinkNode.querySelector('.think-label');
           var tok = Math.round((d.thinkChars || 0) / 4); var secs = Math.round((Date.now() - d.thinkStart) / 1000);
-          if (lbl) lbl.textContent = '🧠 思考過程 (~' + tok + ' tokens, 耗時 ' + secs + 's)';
+          if (lbl) lbl.textContent = '?? ��ҹL�{ (~' + tok + ' tokens, �Ӯ� ' + secs + 's)';
         }
         d.body.textContent += chunk; chat.scrollTop = chat.scrollHeight;
       }
@@ -1618,7 +1697,7 @@ export class OllamaChatPanel {
         if (d.thinkNode && tokens !== undefined && tps !== undefined) {
           var lbl = d.thinkNode.querySelector('.think-label');
           var secs = d.thinkEnd ? Math.round((d.thinkEnd - d.thinkStart) / 1000) : 0;
-          if (lbl) lbl.textContent = '🧠 思考過程 (' + tokens + ' tokens, 耗時 ' + secs + 's, ' + tps.toFixed(1) + ' t/s)';
+          if (lbl) lbl.textContent = '?? ��ҹL�{ (' + tokens + ' tokens, �Ӯ� ' + secs + 's, ' + tps.toFixed(1) + ' t/s)';
         }
       }
       function finalizeDebate(consensus) {
@@ -1633,7 +1712,7 @@ export class OllamaChatPanel {
         modelSelect.innerHTML = '';
         var hasAny = false;
         if (models && models.length) {
-          // 支援 {id,label}[] 格式（多 URL 模式）和舊版 string[] 格式
+          // �䴩 {id,label}[] �榡�]�h URL �Ҧ��^�M�ª� string[] �榡
           var serverGroups = {}; var serverOrder = [];
           models.forEach(function(m) {
             var id = (typeof m === 'string') ? m : m.id;
@@ -1669,7 +1748,7 @@ export class OllamaChatPanel {
           modelSelect.appendChild(grpC);
         }
         if (!modelSelect.value && hasAny) { var firstOpt = modelSelect.querySelector('option'); if (firstOpt) modelSelect.value = firstOpt.value; }
-        // 更新倍數標籤
+        // ��s���Ƽ���
         (function() { var selOpt = modelSelect.options[modelSelect.selectedIndex]; var multEl = document.getElementById('modelMultiplier'); if (multEl) multEl.textContent = selOpt && selOpt.dataset.multiplier ? selOpt.dataset.multiplier : ''; })();
       }
 
@@ -1690,7 +1769,7 @@ export class OllamaChatPanel {
       setTimeout(function() { dbg('posting webviewReady'); vscode.postMessage({ type: 'webviewReady' }); dbg('webviewReady posted'); }, 0);
       window.addEventListener('beforeunload', function() { saveActiveSessionSnapshot(); });
 
-      // ── \u8a18\u61b6\u7ba1\u7406 Modal ──────────────────────────────────────────────────────
+      // �w�w \u8a18\u61b6\u7ba1\u7406 Modal �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       function onMemoryLoaded(msg) {
         if (msg.sessionId && msg.sessionId !== _activeChatSessionId) return;
         var area = document.getElementById('ltmArea');
@@ -1700,7 +1779,7 @@ export class OllamaChatPanel {
         var hii = document.getElementById('historyInfo');
         if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.historyCount || 0) + ' \u689d\u8a0a\u606f';
         var hp = document.getElementById('historyPreview');
-        if (hp) hp.value = msg.historyPreview || (msg.historyCount ? '（歷史存在但無預覽）' : '（目前沒有對話歷史）');
+        if (hp) hp.value = msg.historyPreview || (msg.historyCount ? '�]���v�s�b���L�w���^' : '�]�ثe�S����ܾ��v�^');
       }
 
       var memModal = document.getElementById('memModal');
@@ -1729,8 +1808,8 @@ export class OllamaChatPanel {
       var clearHistoryBtn2 = document.getElementById('clearHistoryBtn2');
       if (clearHistoryBtn2) clearHistoryBtn2.addEventListener('click', function() {
         chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
-        var hp = document.getElementById('historyPreview'); if (hp) hp.value = '（已清除）';
-        var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '對話歷史：0 條訊息';
+        var hp = document.getElementById('historyPreview'); if (hp) hp.value = '�]�w�M���^';
+        var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '��ܾ��v�G0 ���T��';
         saveActiveSessionSnapshot();
         vscode.postMessage({ type: 'clearHistory', sessionId: _activeChatSessionId });
       });
@@ -1744,7 +1823,7 @@ export class OllamaChatPanel {
       });
 
       // JS-side safety net: if connectionStatus never arrives in 5s, ask again
-      // ── Permission dialog ───────────────────────────────────────────────
+      // �w�w Permission dialog �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       var _currentPermCategory = '';
       function showPermissionBar(category, description) {
         _currentPermCategory = category || '';
@@ -1797,20 +1876,25 @@ export class OllamaChatPanel {
       dbg('connStatus initial: ' + (document.getElementById('connStatus') || {}).textContent);
       dbg('script completed OK, all functions defined');
 
-      setTimeout(function() {
-        dbg('safety-net timer fired, connStatus=' + ((document.getElementById('connStatus') || {}).textContent || '?'));
+      // �w�����G�C 2 ���T�{�s�u�O�_�w��s�A�̦h���� 5 ��
+      var _connRetry = 0;
+      var _connRetryTimer = setInterval(function() {
+        _connRetry++;
         var el = document.getElementById('connStatus');
-        if (el && el.textContent.indexOf('\u6aa2\u67e5\u4e2d') !== -1) {
-          vscode.postMessage({ type: 'fetchModels' });
+        dbg('conn-retry #' + _connRetry + ' connStatus=' + ((el || {}).textContent || '?'));
+        if (!el || el.textContent.indexOf('\u6aa2\u67e5\u4e2d') === -1) {
+          clearInterval(_connRetryTimer); return;
         }
-      }, 5000);
+        vscode.postMessage({ type: 'testConnection' });
+        if (_connRetry >= 5) { clearInterval(_connRetryTimer); }
+      }, 2000);
     </script>
   </body>
 </html>`;
   }
 
   private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number, teamExecMode?: string): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const defaultBaseUrl = urls[0];
     const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
@@ -1829,22 +1913,25 @@ export class OllamaChatPanel {
     // Parse rounds parameter: 'infinite' or numeric; default 20
     const roundsSelected = rounds ?? '20';
     const roundsNum = String(roundsSelected) === 'infinite' ? Infinity : Number(roundsSelected) || 20;
-    // 記錄使用者輸入到短期記憶
+    // �O���ϥΪ̿�J��u���O��
     this._chatHistory.push({ role: 'user', content: prompt });
     this._chatHistories[this._activeSessionId] = this._chatHistory;
     this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
 
-    // ── 討論模式：全員針對同一問題各自回答，依回合數重複，最後合成 ──────
+    // �w�w �Q�׼Ҧ��G�����w��P�@���D�U�ۦ^���A�̦^�X�ƭ��ơA�̫�X�� �w�w�w�w�w�w
     if (teamExecMode === 'discussion') {
       return this._handleTeamDiscussion(prompt, allModels, roundsNum);
     }
 
-    // ── Agent 模式：每個成員用 handleAgent（含工具）各自獨立完成任務 ──────
+    // �w�w Agent �Ҧ��G�C�Ӧ����� handleAgent�]�t�u��^�U�ۿW�ߧ������� �w�w�w�w�w�w
     if (teamExecMode === 'agent') {
       return this._handleTeamAgent(prompt, allModels);
     }
     if (teamExecMode === 'manager') {
       return this._handleTeamManager(prompt, allModels, roundsNum);
+    }
+    if (teamExecMode === 'supervisor') {
+      return this._handleSupervisorMultiAgent(prompt, allModels, roundsNum);
     }
 
     let finalDebateSummary = '';
@@ -1854,8 +1941,8 @@ export class OllamaChatPanel {
     const wsRoot = wsFolders.map(f => f.uri.fsPath).join(', ') || process.cwd();
     const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? '';
     const openFiles = vscode.workspace.textDocuments.filter(d => !d.isUntitled && d.uri.scheme === 'file').map(d => d.uri.fsPath);
-    const wsContext = `【工作區】${wsRoot}${activeFile ? '\n【作用中檔案】' + activeFile : ''}${openFiles.length ? '\n【開啟的檔案】\n' + openFiles.join('\n') : ''}`;
-    // Normalize copilot prefix for handleAgent: copilot/xxx → copilot::xxx
+    const wsContext = `�i�u�@�ϡj${wsRoot}${activeFile ? '\n�i�@�Τ��ɮסj' + activeFile : ''}${openFiles.length ? '\n�i�}�Ҫ��ɮסj\n' + openFiles.join('\n') : ''}`;
+    // Normalize copilot prefix for handleAgent: copilot/xxx �� copilot::xxx
     const normalizeForAgent = (m: string) => m.startsWith('copilot/') ? 'copilot::' + m.slice('copilot/'.length) : (m.includes('||') ? 'copilot::' + getWorkerModel(m) : m);
     const getDisplay = (m: string) => {
       if (m.startsWith('copilot/')) return '\uD83D\uDC19 ' + m.slice('copilot/'.length);
@@ -1877,13 +1964,13 @@ export class OllamaChatPanel {
     const results: { model: string; response: string }[] = [];
 
     if (hasOrchestrator) {
-      // ── Orchestration mode ────────────────────────────────────────────────
+      // �w�w Orchestration mode �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
       const orchestratorDisplay = '\uD83D\uDC19 ' + orchestratorFamily;
 
       // Phase 0: Orchestrator generates granular task list
       this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: orchestratorDisplay });
       const numCopilotTasks = Math.max(effectiveWorkers.length * 2, 4);
-      const planPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numCopilotTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
+      const planPrompt = `�A�O AI �u�@��խ��C�Ф��R�U�������ȡA����� ${numCopilotTasks} �ӥi�W�߰��檺�ӽo�l���ȡA���h�� AI �U��q��C���̧ǻ{��C\n\n${wsContext}\n\n�i���ȡj\n${prompt}\n\n�u�^�� JSON�]���t������r�^�A�榡�G\n{"assignments":[{"index":0,"task":"�l���ȴy�z"},{"index":1,"task":"�l���ȴy�z"},...]}`;
       let assignments: { index: number; task: string }[] = [{ index: 0, task: prompt }];
       try {
         const planText = await this.copilotStream(
@@ -1925,8 +2012,8 @@ export class OllamaChatPanel {
             results.push({ model: displayName, response });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
-            results.push({ model: displayName, response: `錯誤: ${msg}` });
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[���~] ${msg}` });
+            results.push({ model: displayName, response: `���~: ${msg}` });
           }
           this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
           this._panel.webview.postMessage({ type: 'teamTodoDone', idx: taskItem.index });
@@ -1938,7 +2025,7 @@ export class OllamaChatPanel {
       // Phase 2: Orchestrator (Copilot) synthesizes all worker results
       let synthResult = '';
       if (results.length > 0) {
-        const synthPrompt = `【原始任務】\n${prompt}\n\n各助手已完成分配的工作，結果如下：\n${results.map(r => `\n--- ${r.model} ---\n${r.response}`).join('')}\n\n請以繁體中文，整合所有結果，給出完整的綜合回覆（條列重點）：`;
+        const synthPrompt = `�i��l���ȡj\n${prompt}\n\n�U�U��w�������t���u�@�A���G�p�U�G\n${results.map(r => `\n--- ${r.model} ---\n${r.response}`).join('')}\n\n�ХH�c�餤��A��X�Ҧ����G�A���X���㪺��X�^�С]���C���I�^�G`;
         this._panel.webview.postMessage({ type: 'teamSynthStart' });
         try {
           synthResult = await this.copilotStream(
@@ -1946,7 +2033,7 @@ export class OllamaChatPanel {
             (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk }); }
           );
         } catch { /* ignore */ }
-        // 將協調員的綜合結果記入短期記憶
+        // �N��խ�����X���G�O�J�u���O��
         if (synthResult && synthResult.trim()) {
           this._chatHistory.push({ role: 'assistant', content: synthResult });
           this._chatHistories[this._activeSessionId] = this._chatHistory;
@@ -1962,16 +2049,16 @@ export class OllamaChatPanel {
         this._panel.webview.postMessage({ type: 'teamAgentStart', model: agentModel });
         this._agentMessages = [];
         this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
-        await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${synthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, agentModel, false);
+        await this.handleAgent(`�ھڥH�U�ζ��Q�׵��סA�ߧY���楲�n�ާ@�ӧ����ϥΪ̪����ȡC\n\n${wsContext}\n\n�i��l���ȡj\n${prompt}\n\n�i�ζ���X���סj\n${synthResult}\n\n�i�j��W�h�j\n- �T�����X�{ Jira Key�]�p UOEM2-3476�^�� �ߧY�I�s jira_fetch�A�T��u�ڱN�d�ߡv�C\n- �ݭn�z�Ѥu�@�ϥN�X �� �ߧY�I�s read_file / search_workspace�A�T��]���e�C\n- �ݨ���ȴN����u��A���o�ŧi�N�ϫᰱ��C\n\n�гv�B����C`, agentModel, false);
       }
 
     } else {
-      // ── Ollama-only: 最具思考能力的模型擔任協調員 ──────────────────────────
-      // Ollama 同一 URL 同時只能跑一個 LLM，所有呼叫必須序列執行
+      // �w�w Ollama-only: �̨��ү�O���ҫ������խ� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+      // Ollama �P�@ URL �P�ɥu��]�@�� LLM�A�Ҧ��I�s�����ǦC����
       const thinkModel = OllamaChatPanel.pickThinkingModel(effectiveWorkers);
 
-      // 序列 Ollama wrapper：使用 retry（ECONNRESET/timeout → 等 60s 再試，最多 10 次）
-      // model 可能為 "url||model" 格式，自動 decode
+      // �ǦC Ollama wrapper�G�ϥ� retry�]ECONNRESET/timeout �� �� 60s �A�աA�̦h 10 ���^
+      // model �i�ର "url||model" �榡�A�۰� decode
       const postStatus = (msg: string) => { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: msg }); };
       const ollamaCall = (model: string, prompt2: string,
         onResp: (c: string) => void, onThink?: (c: string) => void) => {
@@ -1979,13 +2066,13 @@ export class OllamaChatPanel {
         return ollamaGenerateStreamWithRetry(
           mUrl, mName, prompt2, onResp, onThink,
           (attempt, waitSec, err) => {
-            postStatus(`\n⚠️ [${mName}] 連線失敗 (${err})，第 ${attempt} 次重試，等待 ${waitSec}s...\n`);
+            postStatus(`\n?? [${mName}] �s�u���� (${err})�A�� ${attempt} �����աA���� ${waitSec}s...\n`);
           }
         );
       };
 
       if (effectiveWorkers.length === 1) {
-        // 單一模型：直接執行，無需討論
+        // ��@�ҫ��G��������A�L�ݰQ��
         const soloModel = effectiveWorkers[0];
         const soloId = 'team_0';
         const soloColor = COLORS[0];
@@ -2004,7 +2091,7 @@ export class OllamaChatPanel {
           );
           if (soloThinkTimer) { clearTimeout(soloThinkTimer); } soloFlushThink();
           results.push({ model: soloModel, response: soloResponse });
-          // 記錄單一模型回覆到短期記憶
+          // �O����@�ҫ��^�Ш�u���O��
           if (soloResponse && soloResponse.trim()) {
             this._chatHistory.push({ role: 'assistant', content: soloResponse });
             this._chatHistories[this._activeSessionId] = this._chatHistory;
@@ -2012,18 +2099,18 @@ export class OllamaChatPanel {
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          this._panel.webview.postMessage({ type: 'teamResponseChunk', id: soloId, chunk: `[錯誤] ${msg}` });
-          results.push({ model: soloModel, response: `錯誤: ${msg}` });
+          this._panel.webview.postMessage({ type: 'teamResponseChunk', id: soloId, chunk: `[���~] ${msg}` });
+          results.push({ model: soloModel, response: `���~: ${msg}` });
         }
         this._panel.webview.postMessage({ type: 'teamMemberEnd', id: soloId });
         this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
 
       } else {
-        // 多模型序列模式：思考模型擔任協調員，所有 Ollama 呼叫依序執行
-        // Phase 0: 思考模型生成細緻任務清單 (JSON)
+        // �h�ҫ��ǦC�Ҧ��G��Ҽҫ������խ��A�Ҧ� Ollama �I�s�̧ǰ���
+        // Phase 0: ��Ҽҫ��ͦ��ӽo���ȲM�� (JSON)
         this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: '\uD83D\uDC19 ' + thinkModel });
         const numOllamaTasks = Math.max(effectiveWorkers.length * 2, 4);
-        const tPlanPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numOllamaTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
+        const tPlanPrompt = `�A�O AI �u�@��խ��C�Ф��R�U�������ȡA����� ${numOllamaTasks} �ӥi�W�߰��檺�ӽo�l���ȡA���h�� AI �U��q��C���̧ǻ{��C\n\n${wsContext}\n\n�i���ȡj\n${prompt}\n\n�u�^�� JSON�]���t������r�^�A�榡�G\n{"assignments":[{"index":0,"task":"�l���ȴy�z"},{"index":1,"task":"�l���ȴy�z"},...]}`;
         // Tasks: pending=not started, running=in progress, done=completed, failed=error
         type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
         interface TaskItem { index: number; task: string; status: TaskStatus; assignedTo?: string; response?: string; }
@@ -2050,8 +2137,8 @@ export class OllamaChatPanel {
         this._panel.webview.postMessage({ type: 'teamTodoList', tasks: tTasks.map(a => a.task) });
         if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-        // Phase 1: 序列執行 — 依序讓每個模型處理一個任務，巡迴直到全部完成
-        // 序列佇列：一次只跑一個 Ollama call（包括 review）
+        // Phase 1: �ǦC���� �X �̧����C�Ӽҫ��B�z�@�ӥ��ȡA���j�����������
+        // �ǦC��C�G�@���u�]�@�� Ollama call�]�]�A review�^
         const ollamaReviewFn = async (p: string, onChunk: (c: string) => void) =>
           ollamaCall(thinkModel, p, onChunk);
 
@@ -2078,7 +2165,7 @@ export class OllamaChatPanel {
           this._panel.webview.postMessage({ type: 'teamMemberStart', id, model, color, task: activeItem.task });
           if (failedItem) {
             // Show reassignment notice
-            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `🔄 重新指派任務給 ${model}...\n` });
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `?? ���s�������ȵ� ${model}...\n` });
           }
 
           try {
@@ -2091,10 +2178,10 @@ export class OllamaChatPanel {
             results.push({ model, response });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[���~] ${msg}` });
             activeItem.status = 'failed';
             // Orchestrator monitors: notify about failure and mark for reassignment
-            this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n⚠️ 協調員偵測到 [任務#${activeItem.index}] 失敗（${model}），標記重新指派...\n` });
+            this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n?? ��խ������� [����#${activeItem.index}] ���ѡ]${model}�^�A�аO���s����...\n` });
           }
           this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
           if (activeItem.status === 'done') {
@@ -2106,7 +2193,7 @@ export class OllamaChatPanel {
           if (allFailed && tTasks.some(t => t.status === 'failed')) {
             // Push failed tasks as error results and break
             for (const ft of tTasks.filter(t => t.status === 'failed')) {
-              results.push({ model: ft.assignedTo ?? thinkModel, response: `[任務#${ft.index} 最終失敗，無法完成]` });
+              results.push({ model: ft.assignedTo ?? thinkModel, response: `[����#${ft.index} �̲ץ��ѡA�L�k����]` });
               this._panel.webview.postMessage({ type: 'teamTodoDone', idx: ft.index });
             }
             break;
@@ -2115,10 +2202,10 @@ export class OllamaChatPanel {
 
         if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-        // Phase 2: 思考模型綜合所有工作結果
+        // Phase 2: ��Ҽҫ���X�Ҧ��u�@���G
         let tSynthResult = '';
         if (results.length > 0) {
-          const tSynthPrompt = `【原始任務】\n${prompt}\n\n各助手已完成分配的工作，結果如下：\n${results.map(r => `\n--- ${r.model} ---\n${r.response}`).join('')}\n\n請以繁體中文，整合所有結果，給出完整的綜合回覆（條列重點）：`;
+          const tSynthPrompt = `�i��l���ȡj\n${prompt}\n\n�U�U��w�������t���u�@�A���G�p�U�G\n${results.map(r => `\n--- ${r.model} ---\n${r.response}`).join('')}\n\n�ХH�c�餤��A��X�Ҧ����G�A���X���㪺��X�^�С]���C���I�^�G`;
           this._panel.webview.postMessage({ type: 'teamSynthStart' });
           try {
             tSynthResult = await ollamaCall(
@@ -2136,7 +2223,7 @@ export class OllamaChatPanel {
           this._panel.webview.postMessage({ type: 'teamAgentStart', model: tAgentModel });
           this._agentMessages = [];
           this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
-          await this.handleAgent(`根據以下團隊討論結論，立即執行必要操作來完成使用者的任務。\n\n${wsContext}\n\n【原始任務】\n${prompt}\n\n【團隊綜合結論】\n${tSynthResult}\n\n【強制規則】\n- 訊息中出現 Jira Key（如 UOEM2-3476）→ 立即呼叫 jira_fetch，禁止說「我將查詢」。\n- 需要理解工作區代碼 → 立即呼叫 read_file / search_workspace，禁止假設內容。\n- 看到任務就執行工具，不得宣告意圖後停止。\n\n請逐步執行。`, tAgentModel, false);
+          await this.handleAgent(`�ھڥH�U�ζ��Q�׵��סA�ߧY���楲�n�ާ@�ӧ����ϥΪ̪����ȡC\n\n${wsContext}\n\n�i��l���ȡj\n${prompt}\n\n�i�ζ���X���סj\n${tSynthResult}\n\n�i�j��W�h�j\n- �T�����X�{ Jira Key�]�p UOEM2-3476�^�� �ߧY�I�s jira_fetch�A�T��u�ڱN�d�ߡv�C\n- �ݭn�z�Ѥu�@�ϥN�X �� �ߧY�I�s read_file / search_workspace�A�T��]���e�C\n- �ݨ���ȴN����u��A���o�ŧi�N�ϫᰱ��C\n\n�гv�B����C`, tAgentModel, false);
         }
       }
     }
@@ -2154,10 +2241,10 @@ export class OllamaChatPanel {
     return best;
   }
 
-  // ── Team 討論模式 ────────────────────────────────────────────────────────
-  /** 全員同題作答，每回合每人輪流發言，最後一輪收尾合成 */
+  // �w�w Team �Q�׼Ҧ� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+  /** �����P�D�@���A�C�^�X�C�H���y�o���A�̫�@�������X�� */
   private async _handleTeamDiscussion(prompt: string, allModels: string[], maxRounds: number): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
     const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
@@ -2167,7 +2254,7 @@ export class OllamaChatPanel {
       try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; }
     };
 
-    const roundsLimit = isFinite(maxRounds) ? maxRounds : 4; // 討論模式無限預設 4 輪
+    const roundsLimit = isFinite(maxRounds) ? maxRounds : 4; // �Q�׼Ҧ��L���w�] 4 ��
     const summaryLines: string[] = [];
 
     this._panel.webview.postMessage({ type: 'debateStart',
@@ -2197,29 +2284,29 @@ export class OllamaChatPanel {
           } else {
             const { url, model: mName } = decodeOllamaModel(model, urls);
             const messages: ChatMessage[] = [
-              { role: 'system', content: `你是 ${display}，正在和其他 AI 討論以下問題。每次回答請根據前幾輪的對話內容延伸，不要重複，請提出新觀點或補充說明。` },
+              { role: 'system', content: `�A�O ${display}�A���b�M��L AI �Q�ץH�U���D�C�C���^���Юھګe�X������ܤ��e�����A���n���ơA�д��X�s�[�I�θɥR�����C` },
               ...hist.map(h => ({ role: h.role as 'user'|'assistant', content: h.content }))
             ];
-            if (messages[messages.length - 1].role !== 'user') messages.push({ role: 'user', content: '請繼續。' });
+            if (messages[messages.length - 1].role !== 'user') messages.push({ role: 'user', content: '���~��C' });
             response = await ollamaChatStream(url, mName, messages,
               (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); });
           }
         } catch (e) {
-          response = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          response = '[���~: ' + (e instanceof Error ? e.message : String(e)) + ']';
           this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: response });
         }
         this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: speakerKey });
         // Update this model's own history
         hist.push({ role: 'assistant', content: response });
-        hist.push({ role: 'user', content: '請繼續補充或回應其他觀點。' });
-        summaryLines.push(`【${display} 第${round+1}輪】\n${response}`);
+        hist.push({ role: 'user', content: '���~��ɥR�Φ^����L�[�I�C' });
+        summaryLines.push(`�i${display} ��${round+1}���j\n${response}`);
       }
     }
 
-    // 合成：用第一個模型或思考模型
+    // �X���G�βĤ@�Ӽҫ��Ϋ�Ҽҫ�
     if (!this._teamCancel && summaryLines.length > 0) {
       const synthModel = OllamaChatPanel.pickThinkingModel(allModels.filter(m => isOllamaModel(m))) || allModels[0];
-      const synthPrompt = `【原始問題】\n${prompt}\n\n【各成員觀點】\n${summaryLines.join('\n\n---\n\n')}\n\n請整合所有觀點，給出完整的綜合結論：`;
+      const synthPrompt = `�i��l���D�j\n${prompt}\n\n�i�U�����[�I�j\n${summaryLines.join('\n\n---\n\n')}\n\n�о�X�Ҧ��[�I�A���X���㪺��X���סG`;
       this._panel.webview.postMessage({ type: 'teamSynthStart' });
       let synthResult = '';
       try {
@@ -2246,10 +2333,10 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
   }
 
-  // ── Team Agent 模式 ──────────────────────────────────────────────────────
-  /** 每個選定的模型各自以 Agent 身份（含工具）處理同一個任務 */
+  // �w�w Team Agent �Ҧ� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+  /** �C�ӿ�w���ҫ��U�ۥH Agent �����]�t�u��^�B�z�P�@�ӥ��� */
   private async _handleTeamAgent(prompt: string, allModels: string[]): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
     const getDisplay = (m: string) => {
@@ -2266,7 +2353,7 @@ export class OllamaChatPanel {
       const display = getDisplay(model);
       const id = `tagent_${mi}`;
       this._panel.webview.postMessage({ type: 'teamTodoStart', idx: mi, worker: display });
-      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `🤖 ${display}`, color, task: prompt });
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `?? ${display}`, color, task: prompt });
 
       // Pipe agent output to the team member bubble
       const origPost = this._panel.webview.postMessage.bind(this._panel.webview);
@@ -2309,51 +2396,585 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage({ type: 'agentStatus', running: false });
   }
 
-  // ── Team 主管模式 ────────────────────────────────────────────────────────
+  // �w�w Supervisor Multi-Agent System �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
   /**
-   * 主管模式流程：
-   * Phase-0 主管架構分析 → Phase-1 組員提案 → Phase-2 主管審核（循環直到 [APPROVED]）
-   * → Phase-3 Agent 執行 → Phase-4 全員 Review
-   * 人格與記憶分離：每個模型擁有自己獨立的系統提示詞與對話歷史。
+   * �u���� Supervisor Multi-Agent �t��
+   *
+   * �[�c�G
+   *   Supervisor�]�Ĥ@�Ӽҫ��^�X ¾�d�G���Ȥ��ѡB�ʺA�����B�v�B�f�֡]ACCEPT/REVISE/REASSIGN�^�B�̲צX��
+   *   Worker Agents�]��l�ҫ��^�X �C�H���W�ߨ��� + �O�СA�� handleAgent �u������u��
+   *
+   * �y�{�G
+   *   Phase-0 Supervisor �إߪ�l���ȹϡ]JSON�^
+   *   Phase-1 �q ready ��C������ �� ������ Worker Agent�]�u������u��^
+   *          �� Supervisor �f�֡GACCEPT | REVISE�]�̦h 3 ���^| REASSIGN | ESCALATE
+   *   Phase-2 �ʺA���Ȫ`�J�GSupervisor �i�b�C���f�֫�`�J�s����
+   *   Phase-3 ���������� Supervisor �X���̲׳��i
+   */
+  private async _handleSupervisorMultiAgent(prompt: string, allModels: string[], maxRounds: number): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const urls = getOllamaUrls(cfg);
+    const COLORS = ['#f7cc65', '#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa'];
+    const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
+    const getDisplay = (m: string): string => {
+      if (m.startsWith('copilot::')) return '?? ' + m.slice('copilot::'.length);
+      const { url, model } = decodeOllamaModel(m, urls);
+      try { const u = new URL(url); return `[${u.hostname}:${u.port || '11434'}] ${model}`; } catch { return model; }
+    };
+
+    if (allModels.length < 1) {
+      this._panel.webview.postMessage({ type: 'error', text: 'Supervisor �Ҧ��ܤֻݭn 1 �Ӽҫ��]�Ĥ@�Ӭ� Supervisor�^' });
+      return;
+    }
+
+    this._teamCancel = false;
+
+    const supervisorModel = allModels[0];
+    const workerModels = allModels.slice(1).length > 0 ? allModels.slice(1) : [allModels[0]]; // fallback: supervisor is also worker
+    const supervisorDisplay = '????? Supervisor (' + getDisplay(supervisorModel) + ')';
+
+    // Worker ����W�١]�̧� Backend / Frontend / QA / DevOps / Docs�K�`���^
+    const ROLES = ['��ݤu�{�v', '�e�ݤu�{�v', 'QA �u�{�v', 'DevOps �u�{�v', '���u�{�v', '�w���u�{�v'];
+    const workerDisplays = workerModels.map((m, i) => `?? ${ROLES[i % ROLES.length]} (${getDisplay(m)})`);
+
+    // �w�w �I�s Supervisor ���Τ@ helper�]�a������v�^�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+    const supervisorHist: { role: 'user' | 'assistant'; content: string }[] = [];
+    const supervisorPersona = [
+      '�A�O��` Supervisor�]�޳N�D�ޡ^�A�t�d���w��Ӧh Agent ���ȡC',
+      '�A��¾�d�G',
+      '1. ����ȩ�����Ӳɫפl���ȡA�H JSON �榡�^�СC',
+      '2. �����l���ȵ��X�A���u�{�v Agent�C',
+      '3. �v�@�f�֨C�� Agent �����浲�G�G',
+      '   - �Y���G�w�ŦX�ݨD �� �^�Х�����X [ACCEPT]',
+      '   - �Y�ݧ����ק� �� �^�� [REVISE] �ê��W��i����',
+      '   - �Y�ݴ��H���� �� �^�� [REASSIGN:<�u�{�v���� 0-based>]',
+      '   - �Y�o�{�Y�����I �� �^�� [ESCALATE] �û�����]',
+      '4. �f�֫�i��ܩʪ`�J�s�l���ȡ]JSON `newTasks` ���^�C',
+      '5. ���Ҧ��l���ȧ����ɡA��X�̲׾�X���i�A�������W [DONE]�C',
+      '�ХH�c�餤��^���A�O���Y��²��C',
+    ].join('\n');
+
+    const callSupervisor = async (
+      userMsg: string,
+      onChunk: (c: string) => void,
+      onThink?: (c: string) => void
+    ): Promise<string> => {
+      if (supervisorModel.startsWith('copilot::') || supervisorModel.startsWith('copilot/')) {
+        const family = supervisorModel.startsWith('copilot::')
+          ? supervisorModel.slice('copilot::'.length)
+          : supervisorModel.slice('copilot/'.length);
+        const messages: vscode.LanguageModelChatMessage[] = [
+          vscode.LanguageModelChatMessage.User(supervisorPersona),
+          ...supervisorHist.map(h => h.role === 'user'
+            ? vscode.LanguageModelChatMessage.User(h.content)
+            : vscode.LanguageModelChatMessage.Assistant(h.content)),
+          vscode.LanguageModelChatMessage.User(userMsg)
+        ];
+        const cts = new vscode.CancellationTokenSource();
+        const cancelTimer = setInterval(() => { if (this._teamCancel) { cts.cancel(); } }, 200);
+        try {
+          const [lm] = await vscode.lm.selectChatModels({ vendor: 'copilot', family });
+          if (!lm) { throw new Error(`Copilot �ҫ� "${family}" ���i��`); }
+          const resp = await lm.sendRequest(messages, {}, cts.token);
+          let full = '';
+          for await (const part of resp.stream) {
+            if (this._teamCancel) { break; }
+            if (part instanceof vscode.LanguageModelTextPart) { full += part.value; onChunk(part.value); }
+          }
+          return full;
+        } finally { clearInterval(cancelTimer); cts.dispose(); }
+      } else {
+        const { url, model: mName } = decodeOllamaModel(supervisorModel, urls);
+        let thinkBuf = '';
+        let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushThink = () => { if (thinkBuf && onThink) { onThink(thinkBuf); thinkBuf = ''; } thinkTimer = null; };
+        const histMsgs: ChatMessage[] = [
+          { role: 'system', content: supervisorPersona },
+          ...supervisorHist.map(h => ({ role: h.role as 'user' | 'assistant', content: h.content })),
+          { role: 'user', content: userMsg }
+        ];
+        const text = await ollamaChatStream(url, mName, histMsgs, onChunk,
+          (tc) => { thinkBuf += tc; if (!thinkTimer) { thinkTimer = setTimeout(flushThink, 80); } });
+        if (thinkTimer) { clearTimeout(thinkTimer); } flushThink();
+        return text;
+      }
+    };
+
+    // �w�w �u�@�ϤW�U�� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+    const wsFolders = vscode.workspace.workspaceFolders ?? [];
+    const wsRoot = wsFolders.map(f => f.uri.fsPath).join(', ') || process.cwd();
+    const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? '';
+    const openFiles = vscode.workspace.textDocuments
+      .filter(d => !d.isUntitled && d.uri.scheme === 'file').map(d => d.uri.fsPath);
+    const wsContext = `�i�u�@�ϡj${wsRoot}${activeFile ? '\n�i�@�Τ��ɮסj' + activeFile : ''}${openFiles.length ? '\n�i�}�Ҫ��ɮסj\n' + openFiles.slice(0, 10).join('\n') : ''}`;
+
+    // �w�w ����ŧi�w�w�G���ϥΪ̤@���ݨ�D�޻P�խ� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+    const introId = 'sv_intro';
+    this._panel.webview.postMessage({ type: 'teamMemberStart', id: introId, model: '????? Supervisor Multi-Agent �X ������t', color: '#f7cc65', task: '�t�Ϊ�l��' });
+    const introLines: string[] = [
+      `?? **Supervisor Multi-Agent �Ҧ��Ұ�**\n`,
+      `�z�w ????? �D�ޡ]Supervisor�^`,
+      `�x   ${getDisplay(supervisorModel)}`,
+      `�x   ¾�d�G���Ȥ��ѡB�����B�f�֡B�̲צX��`,
+      `�x`,
+    ];
+    if (workerModels.length === 1 && workerModels[0] === allModels[0]) {
+      introLines.push(`�|�w ??  �ȿ�@�Ӽҫ��ASupervisor �ݥ��խ�����u�@`);
+    } else {
+      workerModels.forEach((m, i) => {
+        const isLast = i === workerModels.length - 1;
+        introLines.push(`${isLast ? '�|' : '�u'}�w ?? �խ� #${i + 1}�]${ROLES[i % ROLES.length]}�^`);
+        introLines.push(`${isLast ? ' ' : '�x'}   ${getDisplay(m)}`);
+      });
+    }
+    introLines.push(`\n?? �y�{�GPhase-0 ���Ȥ��� �� Phase-1 ����+�f�� �� Phase-3 �X�����i`);
+    this._panel.webview.postMessage({ type: 'teamResponseChunk', id: introId, chunk: introLines.join('\n') });
+    this._panel.webview.postMessage({ type: 'teamMemberEnd', id: introId });
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // �w�w Phase-0�GSupervisor ������ȹ� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+    this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: supervisorDisplay });
+    const numTasks = Math.max(workerModels.length * 2, 4);
+    const p0 = [
+      `${wsContext}`,
+      ``,
+      `�i�ϥΪ̥��ȡj`,
+      `${prompt}`,
+      ``,
+      `�A�� ${workerModels.length} ��u�{�v Agent�G`,
+      ...workerDisplays.map((d, i) => `  [${i}] ${d}`),
+      ``,
+      `�бN���ȩ���� ${numTasks} �ӥi�W�߰��檺�l���ȡC`,
+      `�u�^�� JSON�]���t������r�^�A�榡�G`,
+      `{"tasks":[{"id":0,"desc":"�l���ȴy�z","assignTo":0,"deps":[]},...]}`
+      // assignTo = worker index (0-based); deps = �̿઺ task id �}�C
+    ].join('\n');
+
+    type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
+    interface SuperTask {
+      id: number; desc: string; assignTo: number; deps: number[];
+      status: TaskStatus; result: string; retries: number;
+    }
+
+    let tasks: SuperTask[] = [{ id: 0, desc: prompt, assignTo: 0, deps: [], status: 'pending', result: '', retries: 0 }];
+    let nextId = 1;
+
+    const parseTasks = (raw: string): SuperTask[] => {
+      try {
+        const jsonStr = (raw.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1] ?? raw).trim();
+        const parsed = JSON.parse(jsonStr);
+        const arr: SuperTask[] = (Array.isArray(parsed.tasks) ? parsed.tasks : [])
+          .map((t: { id: number; desc: string; assignTo?: number; deps?: number[] }) => ({
+            id: Number(t.id),
+            desc: String(t.desc),
+            assignTo: Math.min(Number(t.assignTo ?? 0), workerModels.length - 1),
+            deps: Array.isArray(t.deps) ? t.deps.map(Number) : [],
+            status: 'pending' as TaskStatus,
+            result: '',
+            retries: 0,
+          }));
+        return arr.length > 0 ? arr : tasks;
+      } catch { return tasks; }
+    };
+
+    let p0Raw = '';
+    try {
+      p0Raw = await callSupervisor(p0,
+        (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); },
+        (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); });
+    } catch (e) {
+      this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `[Phase-0 ����: ${e instanceof Error ? e.message : e}]` });
+    }
+    supervisorHist.push({ role: 'user', content: p0 });
+    supervisorHist.push({ role: 'assistant', content: p0Raw });
+    tasks = parseTasks(p0Raw);
+    nextId = Math.max(...tasks.map(t => t.id)) + 1;
+
+    this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+    this._panel.webview.postMessage({ type: 'teamTodoList', tasks: tasks.map(t => `[${workerDisplays[t.assignTo] ?? 'Agent'}] ${t.desc}`) });
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // �w�w Phase-1 �D�`���G�� ready ���� �� Worker Agent ���� �� Supervisor �f�� �w
+    const MAX_GLOBAL_ROUNDS = Math.min(isFinite(maxRounds) ? maxRounds : 30, 50);
+    const isDone = (t: SuperTask) => t.status === 'done';
+    const isReady = (t: SuperTask) => t.status === 'pending' && t.deps.every(dep => tasks.find(x => x.id === dep)?.status === 'done');
+
+    for (let globalRound = 0; globalRound < MAX_GLOBAL_ROUNDS && !this._teamCancel; globalRound++) {
+      const readyTask = tasks.find(isReady);
+      if (!readyTask) {
+        // �Y�S�� ready ���Ȧ��٦� pending�]�̿� stuck�^�A���X�קK�L�a����
+        if (tasks.every(isDone)) { break; }
+        const stuck = tasks.filter(t => t.status === 'pending');
+        if (stuck.length > 0) {
+          // �j��� stuck ���Ȫ��̿�M�������]
+          for (const t of stuck) { t.deps = []; }
+          continue;
+        }
+        break;
+      }
+
+      readyTask.status = 'running';
+      const workerIdx = readyTask.assignTo % workerModels.length;
+      const workerModel = workerModels[workerIdx];
+      const workerDisplay = workerDisplays[workerIdx];
+      const color = COLORS[(workerIdx + 1) % COLORS.length];
+      const id = `sv_t${readyTask.id}`;
+
+      this._panel.webview.postMessage({ type: 'teamTodoStart', idx: readyTask.id, worker: workerDisplay });
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: workerDisplay, color, task: readyTask.desc });
+
+      // �w�w Worker Agent ����]�u�����u��I�s�^�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+      // �ھڤw�������Ȫ����G�զ��W�U��
+      const doneContext = tasks
+        .filter(t => t.status === 'done' && t.result)
+        .map(t => `�i�l���� #${t.id}�G${t.desc}�j\n${t.result.slice(0, 800)}`)
+        .join('\n\n---\n\n');
+
+      const workerSystemPrompt = [
+        `�A�O ${ROLES[workerIdx % ROLES.length]}�A���b�ѻP�@�� Supervisor Multi-Agent ���ȡC`,
+        `�Юھګ������l���ȡA�ϥΥi�Ϊ��u��]Ū���ɮסB������O�B�j�M�N�X���^�����u�@�C`,
+        `������п�X [RESULT] �аO�A�᭱��W�A�����浲�G�K�n�C`,
+        `?? �Y�o�{�����ȶW�X�A����O�d��B�ݭn���P�M�~�B�ίʤ֥��n�u��A�Цb�^�Х�����X [CANNOT_COMPLETE:<��]>]�ASupervisor �N���s�����ο˦۳B�z�C`,
+      ].join('\n');
+
+      const workerPrompt = [
+        wsContext,
+        ``,
+        `�i�A������j${workerDisplay}`,
+        `�i�����l���� #${readyTask.id}�j${readyTask.desc}`,
+        doneContext ? `\n�i�w�����l���ȤW�U��j\n${doneContext}` : '',
+        `\n�ХߧY����A���n�u�ŧi�N�ϡC������b�^�Х�����X [RESULT] �P�K�n�F�Y�L�k�ӥ��п�X [CANNOT_COMPLETE:<��]>]�C`,
+      ].join('\n');
+
+      // �� agent ��X�ɦV team bubble
+      const origPost = this._panel.webview.postMessage.bind(this._panel.webview);
+      const patchedPost = (msg: object & { type?: string }): Thenable<boolean> => {
+        const t = (msg as { type?: string }).type;
+        if (t === 'assistant' || t === 'assistantChunk') {
+          origPost({ type: 'teamResponseChunk', id, chunk: (msg as { text?: string; chunk?: string }).text ?? (msg as { chunk?: string }).chunk ?? '' });
+          return Promise.resolve(true);
+        }
+        if (t === 'agentStep' || t === 'agentStepDone' || t === 'agentStatus') {
+          return origPost(msg);
+        }
+        return origPost(msg);
+      };
+      (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = patchedPost;
+
+      this._agentMessages = [];
+      this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+
+      let workerRawResult = '';
+      try {
+        // Run real agent with tools
+        await this.handleAgent(
+          [workerSystemPrompt, '', workerPrompt].join('\n'),
+          workerModel, false
+        );
+        // Collect result from agent messages
+        workerRawResult = this._agentMessages
+          .filter(m => m.role === 'assistant')
+          .map(m => m.content ?? '')
+          .join('\n');
+      } catch (e) {
+        workerRawResult = `[Agent ���楢��: ${e instanceof Error ? e.message : e}]`;
+        this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: workerRawResult });
+      }
+
+      // Restore original postMessage
+      (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = origPost;
+      this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+
+      if (this._teamCancel) { break; }
+
+      // �w�w �խ��D�ʤɯšG�Y worker �n���L�k�����ASupervisor �ߧY���J �w�w�w�w�w�w�w�w�w
+      const cannotMatch = workerRawResult.match(/\[CANNOT_COMPLETE:([^\]]*)\]/);
+      if (cannotMatch) {
+        const reason = cannotMatch[1].trim() || '��������]';
+        this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${supervisorDisplay} �X �����ɯŽШD` });
+        this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n?? ${workerDisplay} �^���L�k�����l���� #${readyTask.id}\n��]�G${reason}\n\nSupervisor �M����...\n` });
+        const otherWorkers = workerModels
+          .map((_, i) => i)
+          .filter(i => i !== workerIdx)
+          .map(i => `  [${i}] ${workerDisplays[i]}`);
+        const escalateMsg = [
+          `�i�l���� #${readyTask.id}�j${readyTask.desc}`,
+          `�i${workerDisplay} �^���L�k�����j��]�G${reason}`,
+          ``,
+          otherWorkers.length > 0 ? `�i�ଣ���u�{�v�G\n${otherWorkers.join('\n')}` : `�]�L��L�u�{�v�i�ଣ�^`,
+          `  [SELF] Supervisor �˦۰���`,
+          ``,
+          `�ШM�w�G`,
+          `- ���s���� �� �^�� [REASSIGN:<�u�{�v���� 0-based>]`,
+          `- Supervisor �˦۰��� �� �^�� [SELF_EXECUTE]`,
+        ].join('\n');
+        let escalateResp = '';
+        try {
+          escalateResp = await callSupervisor(escalateMsg,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); });
+        } catch { escalateResp = '[SELF_EXECUTE]'; }
+        supervisorHist.push({ role: 'user', content: escalateMsg });
+        supervisorHist.push({ role: 'assistant', content: escalateResp });
+        this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+
+        if (escalateResp.includes('[SELF_EXECUTE]') || otherWorkers.length === 0) {
+          // Supervisor �˦۰���
+          const selfId = `sv_self_${readyTask.id}`;
+          this._panel.webview.postMessage({ type: 'teamMemberStart', id: selfId, model: `${supervisorDisplay} �˦۰���`, color: COLORS[0], task: readyTask.desc });
+          let selfResult = '';
+          try {
+            selfResult = await callSupervisor(
+              `�i�˦۰���l���� #${readyTask.id}�j\n${readyTask.desc}\n${doneContext ? '\n�i�e�m���ȤW�U��j\n' + doneContext : ''}\n\n�Ъ������������ȡA���X����i�Ϊ����G�C`,
+              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id: selfId, chunk: c }); });
+          } catch (e) {
+            selfResult = `[Supervisor �ۦ���楢��: ${e instanceof Error ? e.message : e}]`;
+          }
+          this._panel.webview.postMessage({ type: 'teamMemberEnd', id: selfId });
+          readyTask.result = selfResult;
+          readyTask.status = 'done';
+          this._panel.webview.postMessage({ type: 'teamTodoDone', idx: readyTask.id });
+          continue;
+        } else {
+          // �ଣ����L worker
+          const reassignMatch = escalateResp.match(/\[REASSIGN:(\d+)\]/);
+          const newIdx = reassignMatch
+            ? Math.min(Number(reassignMatch[1]), workerModels.length - 1)
+            : (workerIdx + 1) % workerModels.length;
+          readyTask.assignTo = newIdx !== workerIdx ? newIdx : (workerIdx + 1) % workerModels.length;
+          readyTask.status = 'pending';
+          readyTask.retries++;
+          this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n?? �ଣ�� ${workerDisplays[readyTask.assignTo]}...\n` });
+          continue;
+        }
+      }
+
+      // �w�w Supervisor �f�� Worker ���G �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+      const MAX_REVISE = 2;
+      let accepted = false;
+      let currentResult = workerRawResult;
+
+      for (let revRound = 0; revRound <= MAX_REVISE && !this._teamCancel && !accepted; revRound++) {
+        const reviewMsg = [
+          `�i�l���� #${readyTask.id}�j${readyTask.desc}`,
+          `�i����̡j${workerDisplay}�]�� ${revRound + 1} ���^`,
+          `�i���浲�G�j`,
+          currentResult.slice(0, 2000),
+          ``,
+          `�мf�֥H�W���G�G`,
+          `- ���G�ŦX�ݨD�B���� �� �^�Х�����X [ACCEPT]`,
+          `- �ݧ����ק� �� �^�� [REVISE] �ê��W�����i����`,
+          `- �ݴ��H���� �� �^�� [REASSIGN:<�u�{�v���� 0-based>]�]�p [REASSIGN:1]�^`,
+          `- �o�{�Y�����D �� �^�� [ESCALATE] �û���`,
+          `�]�i��^�Y�ݷs�W�l���� �� ���W JSON: {"newTasks":[{"desc":"...","assignTo":0,"deps":[${readyTask.id}]}]}`,
+        ].join('\n');
+
+        this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${supervisorDisplay} �X �f�� #${readyTask.id}` });
+        let reviewResp = '';
+        try {
+          reviewResp = await callSupervisor(reviewMsg,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); },
+            (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); });
+        } catch (e) {
+          reviewResp = `[�f�֥���: ${e instanceof Error ? e.message : e}]`;
+          this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: reviewResp });
+        }
+        supervisorHist.push({ role: 'user', content: reviewMsg });
+        supervisorHist.push({ role: 'assistant', content: reviewResp });
+        this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+
+        // �w�w �ѪR Supervisor �M�� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+        // �`�J�s���ȡ]newTasks�^
+        const newTasksMatch = reviewResp.match(/\{"newTasks":\s*\[[\s\S]*?\]\s*\}/);
+        if (newTasksMatch) {
+          try {
+            const parsed2 = JSON.parse(newTasksMatch[0]);
+            if (Array.isArray(parsed2.newTasks)) {
+              for (const nt of parsed2.newTasks) {
+                const newT: SuperTask = {
+                  id: nextId++,
+                  desc: String(nt.desc ?? '(���R�W����)'),
+                  assignTo: Math.min(Number(nt.assignTo ?? 0), workerModels.length - 1),
+                  deps: Array.isArray(nt.deps) ? nt.deps.map(Number) : [readyTask.id],
+                  status: 'pending',
+                  result: '',
+                  retries: 0,
+                };
+                tasks.push(newT);
+                this._panel.webview.postMessage({ type: 'teamTodoList', tasks: tasks.map(t => `[${workerDisplays[t.assignTo] ?? 'Agent'}] ${t.desc}`) });
+              }
+            }
+          } catch { /* ignore parse errors */ }
+        }
+
+        if (reviewResp.includes('[ACCEPT]')) {
+          accepted = true;
+          readyTask.result = currentResult;
+          readyTask.status = 'done';
+          this._panel.webview.postMessage({ type: 'teamTodoDone', idx: readyTask.id });
+          break;
+        } else if (reviewResp.match(/\[REASSIGN:(\d+)\]/)) {
+          const match = reviewResp.match(/\[REASSIGN:(\d+)\]/);
+          const newWorkerIdx = Math.min(Number(match![1]), workerModels.length - 1);
+          readyTask.assignTo = newWorkerIdx;
+          readyTask.status = 'pending';
+          readyTask.retries++;
+          this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n?? ���s�����l���� #${readyTask.id} �� ${workerDisplays[newWorkerIdx]}...\n` });
+          break; // Will be picked up in next global round
+        } else if (reviewResp.includes('[ESCALATE]')) {
+          readyTask.status = 'failed';
+          readyTask.result = `[ESCALATED] ${reviewResp}`;
+          this._panel.webview.postMessage({ type: 'teamTodoDone', idx: readyTask.id });
+          accepted = true; // treat as terminal
+          break;
+        } else if (reviewResp.includes('[REVISE]') && revRound < MAX_REVISE) {
+          // Re-run worker with feedback
+          const reviseId = `sv_t${readyTask.id}_rv${revRound}`;
+          const reviseDisplay = `${workerDisplay} (�׭q ${revRound + 1})`;
+          const revisingWorkerModel = workerModels[readyTask.assignTo % workerModels.length];
+          this._panel.webview.postMessage({ type: 'teamMemberStart', id: reviseId, model: reviseDisplay, color, task: `�׭q #${readyTask.id}` });
+
+          const revisePrompt = [
+            wsContext,
+            `�i�l���� #${readyTask.id}�j${readyTask.desc}`,
+            `�i�A���W�@�����浲�G�j`,
+            currentResult.slice(0, 1500),
+            `�iSupervisor ��i���ܡj`,
+            reviewResp.replace('[REVISE]', '').trim(),
+            `\n�ЮھڥH�W���ܭק�í��s����A�������X [RESULT] �P�K�n�C`,
+          ].join('\n');
+
+          const origPost2 = this._panel.webview.postMessage.bind(this._panel.webview);
+          const patchedPost2 = (msg: object & { type?: string }): Thenable<boolean> => {
+            const t2 = (msg as { type?: string }).type;
+            if (t2 === 'assistant' || t2 === 'assistantChunk') {
+              origPost2({ type: 'teamResponseChunk', id: reviseId, chunk: (msg as { text?: string; chunk?: string }).text ?? (msg as { chunk?: string }).chunk ?? '' });
+              return Promise.resolve(true);
+            }
+            return origPost2(msg);
+          };
+          (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = patchedPost2;
+
+          this._agentMessages = [];
+          this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+          try {
+            await this.handleAgent(revisePrompt, revisingWorkerModel, false);
+            currentResult = this._agentMessages
+              .filter(m => m.role === 'assistant')
+              .map(m => m.content ?? '')
+              .join('\n');
+          } catch (e) {
+            currentResult = `[�׭q���楢��: ${e instanceof Error ? e.message : e}]`;
+          }
+          (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = origPost2;
+          this._panel.webview.postMessage({ type: 'teamMemberEnd', id: reviseId });
+          // Loop continues for next REVISE review
+        } else {
+          // No clear decision �� treat as ACCEPT after max revisions
+          accepted = true;
+          readyTask.result = currentResult;
+          readyTask.status = 'done';
+          this._panel.webview.postMessage({ type: 'teamTodoDone', idx: readyTask.id });
+        }
+      }
+
+      // �Y�׭q�ᤴ�� accepted�]escaped loop without done�^
+      if (!accepted && readyTask.status !== 'done' && readyTask.status !== 'pending') {
+        readyTask.result = currentResult;
+        readyTask.status = 'done';
+        this._panel.webview.postMessage({ type: 'teamTodoDone', idx: readyTask.id });
+      }
+
+      if (tasks.every(t => t.status === 'done' || t.status === 'failed')) { break; }
+    }
+
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // �w�w Phase-3�GSupervisor �̲צX�����i �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+    this._panel.webview.postMessage({ type: 'teamSynthStart' });
+    const allResults = tasks
+      .filter(t => t.result)
+      .map(t => `�i�l���� #${t.id}�G${t.desc}�j\n${t.result}`)
+      .join('\n\n---\n\n');
+
+    const synthMsg = [
+      `�i��l���ȡj`,
+      prompt,
+      ``,
+      `�i�U Agent ���浲�G�j`,
+      allResults || '�]�L���浲�G�^',
+      ``,
+      `�о�X�Ҧ����G�A�H�c�餤���X���㪺�̲׳��i�]�t�K�n�B�G�I�B���I�B�����ĳ�^�C`,
+      `������b������X [DONE]�C`,
+    ].join('\n');
+
+    let synthResult = '';
+    try {
+      synthResult = await callSupervisor(synthMsg,
+        (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: c }); },
+        (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); });
+    } catch (e) {
+      synthResult = `[�X������: ${e instanceof Error ? e.message : e}]`;
+    }
+    supervisorHist.push({ role: 'user', content: synthMsg });
+    supervisorHist.push({ role: 'assistant', content: synthResult });
+
+    if (synthResult.trim()) {
+      this._chatHistory.push({ role: 'assistant', content: synthResult });
+      this._chatHistories[this._activeSessionId] = this._chatHistory;
+      this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+    }
+
+    this._agentMessages = [];
+    this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+    this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
+    this._panel.webview.postMessage({ type: 'agentStatus', running: false });
+  }
+
+  // �w�w Team �D�޼Ҧ� �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+  /**
+   * �D�޼Ҧ��y�{�G
+   * Phase-0 �D�ެ[�c���R �� Phase-1 �խ����� �� Phase-2 �D�޼f�֡]�`������ [APPROVED]�^
+   * �� Phase-3 Agent ���� �� Phase-4 ���� Review
+   * �H��P�O�Ф����G�C�Ӽҫ��֦��ۤv�W�ߪ��t�δ��ܵ��P��ܾ��v�C
    */
   private async _handleTeamManager(prompt: string, allModels: string[], maxRounds: number): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const COLORS = ['#f7cc65', '#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa'];
     const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
     const getDisplay = (m: string) => {
-      if (m.startsWith('copilot::')) return '🐙 ' + m.slice('copilot::'.length);
+      if (m.startsWith('copilot::')) return '?? ' + m.slice('copilot::'.length);
       const { url, model } = decodeOllamaModel(m, urls);
       try { const u = new URL(url); return `[${u.hostname}:${u.port || '11434'}] ${model}`; } catch { return model; }
     };
     if (allModels.length < 1) {
-      this._panel.webview.postMessage({ type: 'error', text: '主管模式至少需要 1 個 AI 模型（第一個為主管）' });
+      this._panel.webview.postMessage({ type: 'error', text: '�D�޼Ҧ��ܤֻݭn 1 �� AI �ҫ��]�Ĥ@�Ӭ��D�ޡ^' });
       return;
     }
 
     const managerModel   = allModels[0];
     const memberModels   = allModels.slice(1);
-    const managerDisplay = '🏢 主管 (' + getDisplay(managerModel) + ')';
-    const memberDisplays = memberModels.map((m, i) => `👨‍💻 工程師 #${i + 1} (${getDisplay(m)})`);
+    const managerDisplay = '?? �D�� (' + getDisplay(managerModel) + ')';
+    const memberDisplays = memberModels.map((m, i) => `????? �u�{�v #${i + 1} (${getDisplay(m)})`);
 
-    // ─ 人格設定（分離）
+    // �w �H��]�w�]�����^
     const managerPersona =
-      `你是資深技術主管兼架構師。職責：\n` +
-      `1. 分析技術需求與架構\n` +
-      `2. 指派任務給工程師\n` +
-      `3. 審查提案並給出具體改進意見\n` +
-      `4. 確認方案無誤後才核准（回覆末尾輸出 [APPROVED]）\n` +
-      `5. 對執行結果進行最終 Review\n` +
-      `風格：嚴謹簡潔，繁體中文回答。`;
+      `�A�O��`�޳N�D�ޭݬ[�c�v�C¾�d�G\n` +
+      `1. ���R�޳N�ݨD�P�[�c\n` +
+      `2. �������ȵ��u�{�v\n` +
+      `3. �f�d���רõ��X�����i�N��\n` +
+      `4. �T�{��׵L�~��~�֭�]�^�Х�����X [APPROVED]�^\n` +
+      `5. ����浲�G�i��̲� Review\n` +
+      `����G�Y��²��A�c�餤��^���C`;
     const memberPersona = (i: number) =>
-      `你是工程師 #${i + 1}。職責：根據主管指示提出具體實作方案與程式碼修改建議。\n` +
-      `重要：你只看得到自己的對話歷史，不知道其他工程師的內容。繁體中文回答。`;
+      `�A�O�u�{�v #${i + 1}�C¾�d�G�ھڥD�ޫ��ܴ��X�����@��׻P�{���X�ק��ĳ�C\n` +
+      `���n�G�A�u�ݱo��ۤv����ܾ��v�A�����D��L�u�{�v�����e�C�c�餤��^���C`;
 
-    // ─ 記憶分離：各自獨立的對話歷史
+    // �w �O�Ф����G�U�ۿW�ߪ���ܾ��v
     const managerHist: { role: 'user' | 'assistant'; content: string }[] = [];
     const memberHists: { role: 'user' | 'assistant'; content: string }[][] = memberModels.map(() => []);
 
-    // Helper：用各自 persona + 獨立 history 呼叫模型
+    // Helper�G�ΦU�� persona + �W�� history �I�s�ҫ�
     const callModel = async (
       model: string,
       persona: string,
@@ -2375,7 +2996,7 @@ export class OllamaChatPanel {
         const cancelTimer = setInterval(() => { if (this._teamCancel) { cts.cancel(); } }, 200);
         try {
           const [lm] = await vscode.lm.selectChatModels({ vendor: 'copilot', family });
-          if (!lm) { throw new Error(`Copilot 模型 "${family}" 不可用`); }
+          if (!lm) { throw new Error(`Copilot �ҫ� "${family}" ���i��`); }
           const resp = await lm.sendRequest(messages, {}, cts.token);
           let full = '';
           for await (const part of resp.stream) {
@@ -2403,13 +3024,13 @@ export class OllamaChatPanel {
 
     this._teamCancel = false;
 
-    // ── Phase-0  主管架構分析 ────────────────────────────────────────────────
+    // �w�w Phase-0  �D�ެ[�c���R �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
     this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: managerDisplay });
-    const p0 = `【任務需求】\n${prompt}\n\n請進行架構分析：\n` +
-      `1. 分析問題範圍與技術要點\n` +
-      `2. 列出需要完成的子任務` +
+    const p0 = `�i���ȻݨD�j\n${prompt}\n\n�жi��[�c���R�G\n` +
+      `1. ���R���D�d��P�޳N�n�I\n` +
+      `2. �C�X�ݭn�������l����` +
       (memberModels.length > 0
-        ? `\n3. 為 ${memberModels.length} 位工程師分配具體工作項目\n4. 說明技術限制與注意事項`
+        ? `\n3. �� ${memberModels.length} ��u�{�v���t����u�@����\n4. �����޳N����P�`�N�ƶ�`
         : '');
     let managerAnalysis = '';
     try {
@@ -2417,7 +3038,7 @@ export class OllamaChatPanel {
         (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); } },
         (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); } });
     } catch (e) {
-      managerAnalysis = '[主管分析失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
+      managerAnalysis = '[�D�ޤ��R����: ' + (e instanceof Error ? e.message : String(e)) + ']';
       this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: managerAnalysis });
     }
     managerHist.push({ role: 'user', content: p0 });
@@ -2425,7 +3046,7 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
     if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-    // ── Phase-1/2  組員提案 ↔ 主管審核（循環）────────────────────────────────
+    // �w�w Phase-1/2  �խ����� ? �D�޼f�֡]�`���^�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
     const roundsLimit = isFinite(maxRounds) ? Math.min(maxRounds, 10) : 5;
     let approved = false;
     let managerFeedback = '';
@@ -2433,47 +3054,113 @@ export class OllamaChatPanel {
 
     for (let round = 0; round < roundsLimit && !this._teamCancel && !approved; round++) {
       memberProposals = [];
-      // 組員各自提案（序列執行避免 Ollama 衝突）
+      // �խ��U�۴��ס]�ǦC�����קK Ollama �Ĭ�^
       for (let mi = 0; mi < memberModels.length && !this._teamCancel; mi++) {
         const id = `mgr_r${round}_m${mi}`;
         const color = COLORS[(mi + 1) % COLORS.length];
         const taskMsg = round === 0
-          ? `【主管架構分析與任務分配】\n${managerAnalysis}\n\n你是工程師 #${mi + 1}，請根據主管分配給你的工作項目，提出詳細的實作方案（含程式碼或步驟）：`
-          : `【主管第 ${round} 輪審核意見】\n${managerFeedback}\n\n請根據主管意見修改並改進你的方案：`;
-        this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: memberDisplays[mi], color, task: `第 ${round + 1} 輪提案` });
+          ? `�i�D�ެ[�c���R�P���Ȥ��t�j\n${managerAnalysis}\n\n�A�O�u�{�v #${mi + 1}�A�ЮھڥD�ޤ��t���A���u�@���ءA���X�ԲӪ���@��ס]�t�{���X�ΨB�J�^�C\n?? �Y�o�{���t���u�@�W�X�A����O�λݭn���P�M�~�A�Цb�^�Х�����X [CANNOT_COMPLETE:<��]>]�A�D�ޱN���s�����ο˦۳B�z�C`
+          : `�i�D�޲� ${round} ���f�ַN���j\n${managerFeedback}\n\n�ЮھڥD�޷N���ק�ç�i�A����סC�Y���L�k�����п�X [CANNOT_COMPLETE:<��]>]�C`;
+        this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: memberDisplays[mi], color, task: `�� ${round + 1} ������` });
         let proposal = '';
         try {
           proposal = await callModel(memberModels[mi], memberPersona(mi), memberHists[mi], taskMsg,
             (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); } },
             (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: t }); } });
         } catch (e) {
-          proposal = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          proposal = '[���~: ' + (e instanceof Error ? e.message : String(e)) + ']';
           this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: proposal });
         }
         memberHists[mi].push({ role: 'user', content: taskMsg });
         memberHists[mi].push({ role: 'assistant', content: proposal });
+
+        // �w�w �խ��D�ʤɯšG�L�k���� �� �D�ޥߧY���J �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+        const mgrCannotMatch = proposal.match(/\[CANNOT_COMPLETE:([^\]]*)\]/);
+        if (mgrCannotMatch && !this._teamCancel) {
+          const mgrReason = mgrCannotMatch[1].trim() || '��������]';
+          this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `\n?? �u�{�v #${mi + 1} �^���L�k�����A�W���D�ޤ�...` });
+          const otherMembers = memberModels
+            .map((_, j) => j)
+            .filter(j => j !== mi)
+            .map(j => `  #${j + 1}: ${getDisplay(memberModels[j])}`);
+          const mgrEscalateMsg = [
+            `�u�{�v #${mi + 1}�]${getDisplay(memberModels[mi])}�^�^���L�k�������t���u�@�C`,
+            `��]�G${mgrReason}`,
+            ``,
+            otherMembers.length > 0 ? `��L�i���⪺�u�{�v�G\n${otherMembers.join('\n')}` : `�]�L��L�u�{�v�^`,
+            ``,
+            `�ШM�w�G`,
+            `- �ଣ����L�u�{�v �� �^�� [REASSIGN_MEMBER:<�u�{�v���� 1-based>]�]�p [REASSIGN_MEMBER:2]�^`,
+            `- �D�޿˦۳B�z �� �^�� [MANAGER_DO]`,
+          ].join('\n');
+          this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${managerDisplay} �X �����ɯ�` });
+          let mgrEscalateResp = '';
+          try {
+            mgrEscalateResp = await callModel(managerModel, managerPersona, managerHist, mgrEscalateMsg,
+              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); });
+          } catch { mgrEscalateResp = '[MANAGER_DO]'; }
+          managerHist.push({ role: 'user', content: mgrEscalateMsg });
+          managerHist.push({ role: 'assistant', content: mgrEscalateResp });
+          this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+
+          const assignMatch = mgrEscalateResp.match(/\[REASSIGN_MEMBER:(\d+)\]/);
+          if (assignMatch && otherMembers.length > 0) {
+            const targetMi = Math.min(Number(assignMatch[1]) - 1, memberModels.length - 1);
+            if (targetMi !== mi) {
+              const rid = `mgr_r${round}_m${mi}_reassign`;
+              const reassignTaskMsg = `�i�D���ଣ���ȡ]��Ѥu�{�v #${mi + 1} �t�d�^�j\n${taskMsg}\n\n�u�{�v #${mi + 1} ���ܵL�k�����]${mgrReason}�^�A�ЧA���⧹���G`;
+              this._panel.webview.postMessage({ type: 'teamMemberStart', id: rid, model: `${memberDisplays[targetMi]} (����)`, color: COLORS[(targetMi + 1) % COLORS.length], task: `����u�{�v #${mi + 1} ���u�@` });
+              let rprop = '';
+              try {
+                rprop = await callModel(memberModels[targetMi], memberPersona(targetMi), memberHists[targetMi], reassignTaskMsg,
+                  (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rid, chunk: c }); },
+                  (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamThinkChunk', id: rid, color: COLORS[(targetMi + 1) % COLORS.length], chunk: t }); });
+              } catch (e) { rprop = '[���⥢��: ' + (e instanceof Error ? e.message : String(e)) + ']'; }
+              memberHists[targetMi].push({ role: 'user', content: reassignTaskMsg });
+              memberHists[targetMi].push({ role: 'assistant', content: rprop });
+              this._panel.webview.postMessage({ type: 'teamMemberEnd', id: rid });
+              proposal = rprop;
+            }
+          } else {
+            // �D�޿˦۰���
+            const selfId = `mgr_r${round}_self_${mi}`;
+            this._panel.webview.postMessage({ type: 'teamMemberStart', id: selfId, model: `${managerDisplay} �˦۰���`, color: COLORS[0], task: `����u�{�v #${mi + 1} ���u�@` });
+            let selfProp = '';
+            try {
+              selfProp = await callModel(managerModel, managerPersona, managerHist,
+                `�u�{�v #${mi + 1} �L�k�������t�u�@�]${mgrReason}�^�A�ڱN�˦۳B�z�G\n${taskMsg}`,
+                (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id: selfId, chunk: c }); });
+            } catch (e) { selfProp = '[�D�ަۦ���楢��: ' + (e instanceof Error ? e.message : String(e)) + ']'; }
+            managerHist.push({ role: 'user', content: `�u�{�v #${mi + 1} �L�k�����A�D�޿˦۳B�z` });
+            managerHist.push({ role: 'assistant', content: selfProp });
+            this._panel.webview.postMessage({ type: 'teamMemberEnd', id: selfId });
+            proposal = selfProp;
+          }
+        }
+        // �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+
         memberProposals.push(proposal);
         this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
       }
       if (this._teamCancel) { break; }
 
-      // 主管審核
+      // �D�޼f��
       const reviewContent = memberModels.length > 0
-        ? memberProposals.map((p, i) => `【工程師 #${i + 1} 第 ${round + 1} 輪提案】\n${p}`).join('\n\n---\n\n')
-        : `（無組員，自行審查）\n${managerAnalysis}`;
+        ? memberProposals.map((p, i) => `�i�u�{�v #${i + 1} �� ${round + 1} �����סj\n${p}`).join('\n\n---\n\n')
+        : `�]�L�խ��A�ۦ�f�d�^\n${managerAnalysis}`;
       const reviewMsg =
         `${reviewContent}\n\n` +
-        `請審核以上方案：\n` +
-        `- 若方案完整可執行，請在回覆最後輸出：[APPROVED]\n` +
-        `- 若需改進，請指出具體問題要求修改（不要輸出 [APPROVED]）`;
-      this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${managerDisplay} — 審核第 ${round + 1} 輪` });
+        `�мf�֥H�W��סG\n` +
+        `- �Y��ק���i����A�Цb�^�г̫��X�G[APPROVED]\n` +
+        `- �Y�ݧ�i�A�Ы��X������D�n�D�ק�]���n��X [APPROVED]�^`;
+      this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${managerDisplay} �X �f�ֲ� ${round + 1} ��` });
       let reviewResp = '';
       try {
         reviewResp = await callModel(managerModel, managerPersona, managerHist, reviewMsg,
           (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); } },
           (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); } });
       } catch (e) {
-        reviewResp = '[審核失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        reviewResp = '[�f�֥���: ' + (e instanceof Error ? e.message : String(e)) + ']';
         this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: reviewResp });
       }
       managerHist.push({ role: 'user', content: reviewMsg });
@@ -2484,48 +3171,48 @@ export class OllamaChatPanel {
     }
     if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-    // ── Phase-3  主管批准後執行 ──────────────────────────────────────────────
+    // �w�w Phase-3  �D�ާ������ �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
     let execResult = '';
     if (approved) {
       const approvedId = 'mgr_exec_hdr';
-      this._panel.webview.postMessage({ type: 'teamMemberStart', id: approvedId, model: managerDisplay, color: COLORS[0], task: '✅ 方案已核准，開始執行' });
-      this._panel.webview.postMessage({ type: 'teamResponseChunk', id: approvedId, chunk: '✅ 主管已核准方案，交由 Agent 執行...' });
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id: approvedId, model: managerDisplay, color: COLORS[0], task: '? ��פw�֭�A�}�l����' });
+      this._panel.webview.postMessage({ type: 'teamResponseChunk', id: approvedId, chunk: '? �D�ޤw�֭��סA��� Agent ����...' });
       this._panel.webview.postMessage({ type: 'teamMemberEnd', id: approvedId });
       const agentModel = allModels.find(m => isOllamaModel(m) || m.startsWith('copilot::')) ?? allModels[0];
       if (agentModel) {
         const execPrompt =
-          `主管已核准以下工程師方案，請立即執行必要操作來完成任務。\n\n` +
-          `【原始任務】\n${prompt}\n\n` +
-          `【已核准方案】\n` +
+          `�D�ޤw�֭�H�U�u�{�v��סA�ХߧY���楲�n�ާ@�ӧ������ȡC\n\n` +
+          `�i��l���ȡj\n${prompt}\n\n` +
+          `�i�w�֭��סj\n` +
           (memberProposals.length > 0
-            ? memberProposals.map((p, i) => `工程師 #${i + 1}:\n${p}`).join('\n\n')
+            ? memberProposals.map((p, i) => `�u�{�v #${i + 1}:\n${p}`).join('\n\n')
             : managerAnalysis) +
-          `\n\n請逐步執行，不得僅宣告意圖而不行動。`;
+          `\n\n�гv�B����A���o�ȫŧi�N�ϦӤ���ʡC`;
         this._panel.webview.postMessage({ type: 'teamAgentStart', model: agentModel });
         this._agentMessages = [];
         this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
         await this.handleAgent(execPrompt, agentModel, false);
-        execResult = '已執行完畢，請查看上方 Agent 執行記錄。';
+        execResult = '�w���槹���A�Ьd�ݤW�� Agent ����O���C';
       }
     } else {
       const skipId = 'mgr_skip';
-      this._panel.webview.postMessage({ type: 'teamMemberStart', id: skipId, model: managerDisplay, color: COLORS[0], task: '⚠️ 未獲批准' });
-      this._panel.webview.postMessage({ type: 'teamResponseChunk', id: skipId, chunk: '⚠️ 方案未在回合限制內獲得批准，跳過執行。' });
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id: skipId, model: managerDisplay, color: COLORS[0], task: '?? ������' });
+      this._panel.webview.postMessage({ type: 'teamResponseChunk', id: skipId, chunk: '?? ��ץ��b�^�X�����o���A���L����C' });
       this._panel.webview.postMessage({ type: 'teamMemberEnd', id: skipId });
-      execResult = '方案未獲批准，未執行。';
+      execResult = '��ץ�����A������C';
     }
     if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-    // ── Phase-4  全員 Review（人格與記憶分離）──────────────────────────────────
+    // �w�w Phase-4  ���� Review�]�H��P�O�Ф����^�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
     const rvHdrId = 'mgr_rv_hdr';
-    this._panel.webview.postMessage({ type: 'teamMemberStart', id: rvHdrId, model: '📋 全員 Review', color: '#aaaaaa', task: '各成員獨立審查執行結果' });
-    this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvHdrId, chunk: '主管與工程師將各自獨立進行 Review（記憶分離，互不影響）...' });
+    this._panel.webview.postMessage({ type: 'teamMemberStart', id: rvHdrId, model: '?? ���� Review', color: '#aaaaaa', task: '�U�����W�߼f�d���浲�G' });
+    this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvHdrId, chunk: '�D�޻P�u�{�v�N�U�ۿW�߶i�� Review�]�O�Ф����A�����v�T�^...' });
     this._panel.webview.postMessage({ type: 'teamMemberEnd', id: rvHdrId });
 
     const rvPrompt =
-      `【原始任務】\n${prompt}\n\n【執行狀態】\n${execResult}\n\n` +
-      `請以你的專業角色對執行結果進行 Review：\n` +
-      `1. 是否符合需求？\n2. 有哪些潛在問題或風險？\n3. 建議的改進方向？`;
+      `�i��l���ȡj\n${prompt}\n\n�i���檬�A�j\n${execResult}\n\n` +
+      `�ХH�A���M�~�������浲�G�i�� Review�G\n` +
+      `1. �O�_�ŦX�ݨD�H\n2. �����Ǽ�b���D�έ��I�H\n3. ��ĳ����i��V�H`;
 
     const rvPersonas = [managerPersona, ...memberModels.map((_, i) => memberPersona(i))];
     const rvHists: { role: 'user' | 'assistant'; content: string }[][] = [managerHist, ...memberHists];
@@ -2535,19 +3222,19 @@ export class OllamaChatPanel {
       const rvId = `mgr_rv_${ri}`;
       const color = COLORS[ri % COLORS.length];
       const display = ri === 0 ? managerDisplay : memberDisplays[ri - 1];
-      this._panel.webview.postMessage({ type: 'teamMemberStart', id: rvId, model: `🔍 ${display}`, color, task: 'Review' });
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id: rvId, model: `?? ${display}`, color, task: 'Review' });
       let rvResp = '';
       try {
         rvResp = await callModel(allModels[ri], rvPersonas[ri], rvHists[ri], rvPrompt,
           (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvId, chunk: c }); } },
           (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id: rvId, color, chunk: t }); } });
       } catch (e) {
-        rvResp = '[Review 失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        rvResp = '[Review ����: ' + (e instanceof Error ? e.message : String(e)) + ']';
         this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvId, chunk: rvResp });
       }
       rvHists[ri].push({ role: 'user', content: rvPrompt });
       rvHists[ri].push({ role: 'assistant', content: rvResp });
-      reviewResults.push(`【${display} Review】\n${rvResp}`);
+      reviewResults.push(`�i${display} Review�j\n${rvResp}`);
       this._panel.webview.postMessage({ type: 'teamMemberEnd', id: rvId });
     }
 
@@ -2563,14 +3250,14 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage({ type: 'agentStatus', running: false });
   }
 
-  // ── Debate / Dialogue Mode ───────────────────────────────────────────────
-  /** 對話模式：2 個 AI 互相辯論/對弈；3 個 AI 則第三個當裁判 */
+  // �w�w Debate / Dialogue Mode �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+  /** ��ܼҦ��G2 �� AI �����G��/��١F3 �� AI �h�ĤT�ӷ����P */
   private async handleDebateSend(prompt: string, selectedModels?: string[], rounds?: string | number): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const allModels = (selectedModels && selectedModels.length >= 2) ? selectedModels.slice(0, 3) : [];
     if (allModels.length < 2) {
-      this._panel.webview.postMessage({ type: 'error', text: '對話模式需要選擇至少 2 個 AI 模型' });
+      this._panel.webview.postMessage({ type: 'error', text: '��ܼҦ��ݭn��ܦܤ� 2 �� AI �ҫ�' });
       return;
     }
     const COLORS = ['#4fc1ff', '#ce9178', '#89d185'];
@@ -2578,7 +3265,7 @@ export class OllamaChatPanel {
     // Parse rounds parameter (default 20)
     const roundsSelected = rounds ?? '20';
     const maxRounds = String(roundsSelected) === 'infinite' ? Infinity : Number(roundsSelected) || 20;
-    // 記錄使用者輸入到短期記憶
+    // �O���ϥΪ̿�J��u���O��
     this._chatHistory.push({ role: 'user', content: prompt });
     this._chatHistories[this._activeSessionId] = this._chatHistory;
     this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
@@ -2610,7 +3297,7 @@ export class OllamaChatPanel {
       if (model.startsWith('copilot/') || model.startsWith('copilot::')) {
         const family = model.startsWith('copilot/') ? model.slice('copilot/'.length) : model.slice('copilot::'.length);
         const [lm] = await vscode.lm.selectChatModels({ vendor: 'copilot', family });
-        if (!lm) { throw new Error(`Copilot 模型 "${family}" 不可用`); }
+        if (!lm) { throw new Error(`Copilot �ҫ� "${family}" ���i��`); }
         const cts = new vscode.CancellationTokenSource();
         const cancelInterval = setInterval(() => { if (this._teamCancel) cts.cancel(); }, 200);
         const vmMsgs: vscode.LanguageModelChatMessage[] = [
@@ -2636,7 +3323,7 @@ export class OllamaChatPanel {
           ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
         ];
         if (messages[messages.length - 1].role !== 'user') {
-          messages.push({ role: 'user', content: '請繼續。' });
+          messages.push({ role: 'user', content: '���~��C' });
         }
         let statsTokens: number | undefined;
         let statsTps: number | undefined;
@@ -2647,16 +3334,16 @@ export class OllamaChatPanel {
     };
 
     // Determine context type from prompt keywords
-    const isGame = /五子棋|圍棋|象棋|將棋|西洋棋|chess|go\b|tic.tac|gomoku|shogi|遊戲|下棋/i.test(prompt);
+    const isGame = /���l��|���|�H��|�N��|��v��|chess|go\b|tic.tac|gomoku|shogi|�C��|�U��/i.test(prompt);
 
-    // ── Game mode: A & B take turns, A's move is passed to B as board state ──
+    // �w�w Game mode: A & B take turns, A's move is passed to B as board state �w�w
     if (isGame) {
       this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
-      const gameSystemA = '你是棋手，正在進行以下棋局。每次只說明你這一步的落子位置（使用標準座標）和簡短理由，不要發表其他評論。';
-      const gameSystemB = '你是棋手，正在進行以下棋局。根據對手的上一步，回應你的落子位置（使用標準座標）和簡短理由，不要發表其他評論。';
+      const gameSystemA = '�A�O�Ѥ�A���b�i��H�U�ѧ��C�C���u�����A�o�@�B�����l��m�]�ϥμзǮy�С^�M²�u�z�ѡA���n�o����L���סC';
+      const gameSystemB = '�A�O�Ѥ�A���b�i��H�U�ѧ��C�ھڹ�⪺�W�@�B�A�^���A�����l��m�]�ϥμзǮy�С^�M²�u�z�ѡA���n�o����L���סC';
       const initPrompt = prompt;
       // historyA = A's own turns; gameMoves = shared move log passed to B each turn
-      const historyA: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: initPrompt + '\n\n請下第一手。' }];
+      const historyA: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: initPrompt + '\n\n�ФU�Ĥ@��C' }];
       const gameMoves: string[] = [];
       const MAX_GAME_ROUNDS = maxRounds;
       let finalDebateSummary = '';
@@ -2672,53 +3359,53 @@ export class OllamaChatPanel {
             (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); });
           moveA = rA.text; statsA = { tokens: rA.tokens, tps: rA.tps };
         } catch (e) {
-          moveA = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          moveA = '[���~: ' + (e instanceof Error ? e.message : String(e)) + ']';
           if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: moveA });
         }
         this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A', tokens: statsA.tokens, tps: statsA.tps });
         if (this._teamCancel) break;
         historyA.push({ role: 'assistant', content: moveA });
-        gameMoves.push(`第 ${round + 1} 手（${labelA}）：${moveA}`);
+        gameMoves.push(`�� ${round + 1} ��]${labelA}�^�G${moveA}`);
 
         // B responds to A's move
         this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'B', round });
         let moveB = '';
         let statsB: { tokens?: number; tps?: number } = {};
-        const boardState = initPrompt + '\n\n目前棋譜：\n' + gameMoves.join('\n') + '\n\n請回應你的下一手。';
+        const boardState = initPrompt + '\n\n�ثe���СG\n' + gameMoves.join('\n') + '\n\n�Ц^���A���U�@��C';
         try {
           const rB = await callModel(modelB, gameSystemB, [{ role: 'user', content: boardState }],
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: c }); },
             (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'B', chunk: t }); });
           moveB = rB.text; statsB = { tokens: rB.tokens, tps: rB.tps };
         } catch (e) {
-          moveB = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          moveB = '[���~: ' + (e instanceof Error ? e.message : String(e)) + ']';
           if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: moveB });
         }
         this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B', tokens: statsB.tokens, tps: statsB.tps });
         if (this._teamCancel) break;
-        gameMoves.push(`第 ${round + 1} 手（${labelB}）：${moveB}`);
+        gameMoves.push(`�� ${round + 1} ��]${labelB}�^�G${moveB}`);
         // Feed B's reply back to A as the next user turn
-        historyA.push({ role: 'user', content: `對手（${labelB}）下了：${moveB}\n請回應你的下一手。` });
+        historyA.push({ role: 'user', content: `���]${labelB}�^�U�F�G${moveB}\n�Ц^���A���U�@��C` });
       }
 
       // Judge summarizes the game if present
       if (judgeModel && !this._teamCancel) {
         this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'J', round: -1 });
-        const gameSummary = initPrompt + '\n\n完整棋譜：\n' + gameMoves.join('\n') + '\n\n請分析這場對局，說明雙方的策略與得失。';
+        const gameSummary = initPrompt + '\n\n������СG\n' + gameMoves.join('\n') + '\n\n�Ф��R�o���什�A�������誺�����P�o���C';
         let statsJ: { tokens?: number; tps?: number } = {};
         try {
-          const rJ = await callModel(judgeModel, '你是棋局分析師，請客觀分析以下對局。', [{ role: 'user', content: gameSummary }],
+          const rJ = await callModel(judgeModel, '�A�O�ѧ����R�v�A�Ы��[���R�H�U�什�C', [{ role: 'user', content: gameSummary }],
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); });
           statsJ = { tokens: rJ.tokens, tps: rJ.tps };
           finalDebateSummary = rJ.text || '';
         } catch (e) {
-          const errJ = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          const errJ = '[���~: ' + (e instanceof Error ? e.message : String(e)) + ']';
           if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: errJ });
         }
         this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J', tokens: statsJ.tokens, tps: statsJ.tps });
       }
 
-      // 儲存遊戲/裁判總結到短期記憶
+      // �x�s�C��/���P�`����u���O��
       if (finalDebateSummary && finalDebateSummary.trim()) {
         this._chatHistory.push({ role: 'assistant', content: finalDebateSummary });
       } else if (gameMoves.length) {
@@ -2732,15 +3419,15 @@ export class OllamaChatPanel {
       return;
     }
 
-    // ── Discussion mode (non-game) ────────────────────────────────────────────
-    const roleADesc = '請針對以下議題提出你的分析與見解：\n\n' + prompt;
-    const roleBDesc = '請針對以下議題提出你的分析與見解：\n\n' + prompt;
-    const roleJDesc = '請整合以下多份針對同一議題的分析，做出客觀的綜合總結：';
+    // �w�w Discussion mode (non-game) �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
+    const roleADesc = '�аw��H�Uĳ�D���X�A�����R�P���ѡG\n\n' + prompt;
+    const roleBDesc = '�аw��H�Uĳ�D���X�A�����R�P���ѡG\n\n' + prompt;
+    const roleJDesc = '�о�X�H�U�h���w��P�@ĳ�D�����R�A���X���[����X�`���G';
 
     // Announce start
     this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
 
-    // Each model has fully independent context — they don't know each other exists
+    // Each model has fully independent context �X they don't know each other exists
     // historyA/B only contains that model's own [user, assistant, user, assistant, ...] turns
     const historyA: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: prompt }];
     const historyB: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: prompt }];
@@ -2749,7 +3436,7 @@ export class OllamaChatPanel {
     const MAX_ROUNDS = maxRounds;
 
     for (let round = 0; round < MAX_ROUNDS && !this._teamCancel; round++) {
-      // A speaks — only sees its own prior turns
+      // A speaks �X only sees its own prior turns
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'A', round });
       let responseA = '';
       let statsDA: { tokens?: number; tps?: number } = {};
@@ -2761,17 +3448,17 @@ export class OllamaChatPanel {
         );
         responseA = rA.text; statsDA = { tokens: rA.tokens, tps: rA.tps };
       } catch (e) {
-        responseA = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        responseA = '[���~: ' + (e instanceof Error ? e.message : String(e)) + ']';
         if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: responseA });
       }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A', tokens: statsDA.tokens, tps: statsDA.tps });
       if (this._teamCancel) break;
       // A's own memory: append its answer, then prime next user turn
       historyA.push({ role: 'assistant', content: responseA });
-      historyA.push({ role: 'user', content: '請進一步說明。' });
-      summaryLines.push(`【${labelA}】\n${responseA}`);
+      historyA.push({ role: 'user', content: '�жi�@�B�����C' });
+      summaryLines.push(`�i${labelA}�j\n${responseA}`);
 
-      // B speaks — only sees its own prior turns
+      // B speaks �X only sees its own prior turns
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'B', round });
       let responseB = '';
       let statsDB: { tokens?: number; tps?: number } = {};
@@ -2783,21 +3470,21 @@ export class OllamaChatPanel {
         );
         responseB = rB.text; statsDB = { tokens: rB.tokens, tps: rB.tps };
       } catch (e) {
-        responseB = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        responseB = '[���~: ' + (e instanceof Error ? e.message : String(e)) + ']';
         if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: responseB });
       }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B', tokens: statsDB.tokens, tps: statsDB.tps });
       if (this._teamCancel) break;
       // B's own memory: append its answer, then prime next user turn
       historyB.push({ role: 'assistant', content: responseB });
-      historyB.push({ role: 'user', content: '請進一步說明。' });
-      summaryLines.push(`【${labelB}】\n${responseB}`);
+      historyB.push({ role: 'user', content: '�жi�@�B�����C' });
+      summaryLines.push(`�i${labelB}�j\n${responseB}`);
     }
 
-    // Judge sees a plain-text summary of all responses — no cross-model raw content
+    // Judge sees a plain-text summary of all responses �X no cross-model raw content
     if (judgeModel && !this._teamCancel) {
       const judgeMsgs: { role: 'user' | 'assistant'; content: string }[] = [
-        { role: 'user', content: summaryLines.join('\n\n---\n\n') + '\n\n請做出綜合總結。' }
+        { role: 'user', content: summaryLines.join('\n\n---\n\n') + '\n\n�а��X��X�`���C' }
       ];
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'J', round: -1 });
       let statsDJ: { tokens?: number; tps?: number } = {};
@@ -2810,12 +3497,12 @@ export class OllamaChatPanel {
         statsDJ = { tokens: rJ.tokens, tps: rJ.tps };
         judgeSummary = rJ.text || '';
       } catch (e) {
-        const errJ = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        const errJ = '[���~: ' + (e instanceof Error ? e.message : String(e)) + ']';
         if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: errJ });
       }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'J', tokens: statsDJ.tokens, tps: statsDJ.tps });
 
-      // 儲存裁判綜合或摘要到短期記憶
+      // �x�s���P��X�κK�n��u���O��
       if (!this._teamCancel) {
         if (judgeSummary && judgeSummary.trim()) {
           this._chatHistory.push({ role: 'assistant', content: judgeSummary });
@@ -2827,7 +3514,7 @@ export class OllamaChatPanel {
       }
     }
 
-    // 無裁判時：直接將討論摘要存入短期記憶
+    // �L���P�ɡG�����N�Q�׺K�n�s�J�u���O��
     if (!judgeModel && !this._teamCancel && summaryLines.length > 0) {
       this._chatHistory.push({ role: 'assistant', content: summaryLines.join('\n\n---\n\n') });
       this._chatHistories[this._activeSessionId] = this._chatHistory;
@@ -2839,10 +3526,10 @@ export class OllamaChatPanel {
   }
 
   private async fetchTeamModels(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const ollamaUrls = getOllamaUrls(cfg);
     const teamModels: { id: string; label: string; vendor: string; multiplier?: string }[] = [];
-    // Ollama models — all servers
+    // Ollama models �X all servers
     for (const url of ollamaUrls) {
       try {
         const models = await ollamaListModels(url);
@@ -2908,17 +3595,17 @@ export class OllamaChatPanel {
 
       // Orchestrator reviews and decides: approve or give feedback
       this._panel.webview.postMessage({ type: 'teamRoundReviewStart', id });
-      const reviewPrompt = `你是 AI 協調員，正在指導一個工作助手.
+      const reviewPrompt = `�A�O AI ��խ��A���b���ɤ@�Ӥu�@�U��.
 
-【分配的任務】
+�i���t�����ȡj
 ${assignedTask}
 
-【助手第 ${round + 1} 輪的回覆】
+�i�U��� ${round + 1} �����^�Сj
 ${lastResponse}
 
-請單就回覆品質做出判斷：
-- 若已達到最優解或內容足夠完整，就只回覆：[APPROVED]
-- 若需改進，給出一句具體的改進指示（不超過 60 字，繁體中文）：`;
+�г�N�^�Ы~�谵�X�P�_�G
+- �Y�w�F����u�ѩΤ��e��������A�N�u�^�СG[APPROVED]
+- �Y�ݧ�i�A���X�@�y���骺��i���ܡ]���W�L 60 �r�A�c�餤��^�G`;
       let reviewText = '';
       try {
         reviewText = await reviewFn(
@@ -2933,13 +3620,13 @@ ${lastResponse}
       // Feed orchestrator feedback back to worker
       currentPrompt = `${assignedTask}
 
-【你的上一輪回覆】
+�i�A���W�@���^�Сj
 ${lastResponse}
 
-【協調員的改進建議】
+�i��խ�����i��ĳ�j
 ${reviewText.replace('[APPROVED]', '').trim()}
 
-請根據忩迴建議，重新回覆（改進版本）：`;
+�Юھ�?�j��ĳ�A���s�^�С]��i�����^�G`;
     }
     return lastResponse;
   }
@@ -2950,7 +3637,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     onChunk: (chunk: string) => void
   ): Promise<string> {
     const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot', family: modelFamily });
-    if (!model) { throw new Error(`Copilot 模型 "${modelFamily}" 不可用，請確認 GitHub Copilot 已安裝並登入`); }
+    if (!model) { throw new Error(`Copilot �ҫ� "${modelFamily}" ���i�ΡA�нT�{ GitHub Copilot �w�w�˨õn�J`); }
     const cts = new vscode.CancellationTokenSource();
     const cancelInterval = setInterval(() => { if (this._teamCancel) { cts.cancel(); } }, 200);
     try {
@@ -2976,12 +3663,12 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 
   private async handleSend(prompt: string, modelOverride?: string, sessionId?: string): Promise<void> {
     this.switchChatSession(sessionId);
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
     const { url: baseUrl, model } = rawModel.startsWith('copilot') ? { url: urls[0], model: rawModel } : decodeOllamaModel(rawModel, urls);
 
-    // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
+    // ���� Ollama �ҫ��ɥ������¼ҫ��õ��� VRAM ����
     await this.ensureModelReady(baseUrl, model);
 
     // Build a single prompt string from system + history + current message
@@ -3017,7 +3704,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
         const cts0 = new vscode.CancellationTokenSource();
         try {
           const vmMsgs0: vscode.LanguageModelChatMessage[] = [];
-          if (systemContent.trim()) { vmMsgs0.push(vscode.LanguageModelChatMessage.User(`[系統]\n${systemContent}`)); }
+          if (systemContent.trim()) { vmMsgs0.push(vscode.LanguageModelChatMessage.User(`[�t��]\n${systemContent}`)); }
           for (const h of recent) {
             vmMsgs0.push(h.role === 'user' ? vscode.LanguageModelChatMessage.User(h.content ?? '') : vscode.LanguageModelChatMessage.Assistant(h.content ?? ''));
           }
@@ -3056,24 +3743,24 @@ ${reviewText.replace('[APPROVED]', '').trim()}
       this._panel.webview.postMessage({ type: 'consolidateDone', ltm: this.getLongTermMemory(), skipped: true });
       return;
     }
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const rawModel = cfg.get<string>('model') ?? '';
     const { url: baseUrl, model } = rawModel.startsWith('copilot') ? { url: urls[0], model: rawModel } : decodeOllamaModel(rawModel, urls);
     const currentLtm = this.getLongTermMemory();
     const historyText = this._chatHistory.map(m => {
-      const role = m.role === 'user' ? '使用者' : 'AI';
+      const role = m.role === 'user' ? '�ϥΪ�' : 'AI';
       return `[${role}]: ${(m.content ?? '').slice(0, 500)}`;
     }).join('\n\n');
-    const consolidatePrompt = `你是記憶整理助手。請從以下【短期對話記錄】中，提取值得長期保存的重要資訊（使用者習慣、偏好、結論、技術事實、環境設定等），與【現有長期記憶】合併，去掉重複或過時的內容，以簡潔的條列格式（每行一個重點，用 - 開頭）輸出整合後的長期記憶。不要加任何前言或說明，直接輸出條列內容。
+    const consolidatePrompt = `�A�O�O�о�z�U��C�бq�H�U�i�u����ܰO���j���A�����ȱo�����O�s�����n��T�]�ϥΪ̲ߺD�B���n�B���סB�޳N�ƹ�B���ҳ]�w���^�A�P�i�{�������O�Сj�X�֡A�h�����ƩιL�ɪ����e�A�H²�䪺���C�榡�]�C��@�ӭ��I�A�� - �}�Y�^��X��X�᪺�����O�СC���n�[����e���λ����A������X���C���e�C
 
-【現有長期記憶】
-${currentLtm.trim() || '（空）'}
+�i�{�������O�Сj
+${currentLtm.trim() || '�]�š^'}
 
-【短期對話記錄】
+�i�u����ܰO���j
 ${historyText}
 
-整合後的長期記憶：`;
+��X�᪺�����O�СG`;
     this._panel.webview.postMessage({ type: 'consolidateStart' });
     try {
       let newLtm = '';
@@ -3101,48 +3788,48 @@ ${historyText}
   }
 
   private getLongTermMemory(): string {
-    return this._context.globalState.get<string>('amiClaw.longTermMemory') ?? '';
+    return this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
   }
 
   private async saveLongTermMemory(text: string): Promise<void> {
-    await this._context.globalState.update('amiClaw.longTermMemory', text);
+    await this._context.globalState.update('amiAiClaw.longTermMemory', text);
   }
 
   private buildSystemContent(): string {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const persona = cfg.get<string>('systemPrompt') ?? '';
     const ltm = this.getLongTermMemory();
     let content = persona.trim();
     if (ltm.trim()) {
-      content += '\n\n## 長期記憶（關於使用者的重要資訊）\n' + ltm.trim();
+      content += '\n\n## �����O�С]����ϥΪ̪����n��T�^\n' + ltm.trim();
     }
-    content += `\n\n## Atlassian 整合（atlassian.atlascode）
+    content += `\n\n## Atlassian ��X�]atlassian.atlascode�^
 \
-【強制規則—不得違反】
+�i�j��W�h�X���o�H�ϡj
 \
-1. 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
+1. �T�����X�{ [A-Z][A-Z0-9]*-\\d+�]�� UOEM2-3476�BBIOS-123�^�� Jira Issue Key�C
 \
-2. 種類判斷與動作：
+2. �����P�_�P�ʧ@�G
 \
-   - 「幫我分析 / RCA / 查看內容」任何分析許求 → 第一步必須立即呼叫 \`jira_fetch\`，取得內容後才可分析回答。
+   - �u���ڤ��R / RCA / �d�ݤ��e�v������R�\�D �� �Ĥ@�B�����ߧY�I�s \`jira_fetch\`�A���o���e��~�i���R�^���C
 \
-   - 「開啟 / 查看 / 顯示」 → 呼叫 \`jira_open\`（純 UI，不回傳內容）。
+   - �u�}�� / �d�� / ��ܡv �� �I�s \`jira_open\`�]�� UI�A���^�Ǥ��e�^�C
 \
-   - 建立 Issue → jira_create | 轉換狀態 → jira_transition | 開 PR → bb_create_pr | 問 Rovo Dev（AI 分析）→ rovo_ask（回傳回覆）
+   - �إ� Issue �� jira_create | �ഫ���A �� jira_transition | �} PR �� bb_create_pr | �� Rovo Dev�]AI ���R�^�� rovo_ask�]�^�Ǧ^�С^
 \
-3. 【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖的語句而不實際呼叫工具。看到 Jira Key 就直接呼叫工具，立即執行，不詄語。`;
+3. �i����T��j���o���u�ڱN�d�ߡv�u�ڷ|�h���o�v���ŧi�N�Ϫ��y�y�Ӥ���کI�s�u��C�ݨ� Jira Key �N�����I�s�u��A�ߧY����A���ݻy�C`;
     return content;
   }
 
   private async summarizeText(text: string, modelOverride?: string): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const baseUrl = getOllamaUrls(cfg)[0];
     const model = modelOverride ?? cfg.get<string>('model') ?? '';
 
-    const prompt = `請以繁體中文，將下面內容濃縮成三條要點（每條 1 行），簡潔扼要：\n\n${text}`;
+    const prompt = `�ХH�c�餤��A�N�U�����e�@�Y���T���n�I�]�C�� 1 ��^�A²���n�G\n\n${text}`;
     try {
       const result = await ollamaGenerate(baseUrl, model, prompt);
-      this._panel.webview.postMessage({ type: 'assistant', text: `（摘要）\n${result.response}` });
+      this._panel.webview.postMessage({ type: 'assistant', text: `�]�K�n�^\n${result.response}` });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       this._panel.webview.postMessage({ type: 'error', text: msg });
@@ -3151,15 +3838,15 @@ ${historyText}
 
   private async handleInsert(code: string): Promise<void> {
     const editor = vscode.window.activeTextEditor;
-    if (!editor) { vscode.window.showWarningMessage('沒有開啟的編輯器可供插入程式碼'); return; }
+    if (!editor) { vscode.window.showWarningMessage('�S���}�Ҫ��s�边�i�Ѵ��J�{���X'); return; }
     await editor.edit(editBuilder => { editBuilder.insert(editor.selection.active, code); });
-    vscode.window.showInformationMessage('已將程式碼插入到目前游標位置。');
+    vscode.window.showInformationMessage('�w�N�{���X���J��ثe��Ц�m�C');
   }
 
   private async handlePickFile(): Promise<void> {
     const uris = await vscode.window.showOpenDialog({
       canSelectMany: true,
-      openLabel: '附加到對話',
+      openLabel: '���[����',
       filters: { 'All Files': ['*'] }
     });
     if (!uris || uris.length === 0) { return; }
@@ -3168,34 +3855,34 @@ ${historyText}
         const bytes = await vscode.workspace.fs.readFile(uri);
         const raw = Buffer.from(bytes).toString('utf8');
         const name = uri.fsPath.split(/[\\/]/).pop() ?? uri.fsPath;
-        const content = raw.length > 65536 ? raw.slice(0, 65536) + '\n…（已截斷至 64 KB）' : raw;
+        const content = raw.length > 65536 ? raw.slice(0, 65536) + '\n�K�]�w�I�_�� 64 KB�^' : raw;
         this._panel.webview.postMessage({ type: 'fileAttached', name, content });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        this._panel.webview.postMessage({ type: 'error', text: '無法讀取檔案：' + msg });
+        this._panel.webview.postMessage({ type: 'error', text: '�L�kŪ���ɮסG' + msg });
       }
     }
   }
 
   private async startAuto(initialPrompt: string, modelOverride?: string): Promise<void> {
-    if (this._autoRunning) { vscode.window.showInformationMessage('自動執行已在進行中'); return; }
+    if (this._autoRunning) { vscode.window.showInformationMessage('�۰ʰ���w�b�i�椤'); return; }
     this._autoRunning = true;
     this._autoCancel = false;
     this._panel.webview.postMessage({ type: 'autoStatus', running: true });
 
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const baseUrl = getOllamaUrls(cfg)[0];
     const model = modelOverride ?? cfg.get<string>('model') ?? '';
 
-    // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
+    // ���� Ollama �ҫ��ɥ������¼ҫ��õ��� VRAM ����
     await this.ensureModelReady(baseUrl, model);
 
-    let currentPrompt = initialPrompt + "\n\n請開始並持續改進直到完成；若需要存取工作目錄外的檔案，請回傳 'NEEDS_ACCESS: <path>'；完成時回傳 'DONE'.";
+    let currentPrompt = initialPrompt + "\n\n�ж}�l�ë����i���짹���F�Y�ݭn�s���u�@�ؿ��~���ɮסA�Ц^�� 'NEEDS_ACCESS: <path>'�F�����ɦ^�� 'DONE'.";
     let lastResult = '';
 
     for (let i = 0; i < this._autoMaxIterations && !this._autoCancel; i++) {
       try {
-        this._panel.webview.postMessage({ type: 'assistant', text: `（自動輪次 ${i + 1}）執行中…` });
+        this._panel.webview.postMessage({ type: 'assistant', text: `�]�۰ʽ��� ${i + 1}�^���椤�K` });
         const result = await ollamaGenerate(baseUrl, model, currentPrompt);
         lastResult = result.response;
 
@@ -3210,7 +3897,7 @@ ${historyText}
           if (grant === 'Grant Access') {
             const uris = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectMany: false, openLabel: 'Grant Access' });
             if (!uris || uris.length === 0) {
-              vscode.window.showInformationMessage('未授權存取，已停止自動執行。');
+              vscode.window.showInformationMessage('�����v�s���A�w����۰ʰ���C');
               break;
             }
             const grantedPath = uris[0].fsPath;
@@ -3224,7 +3911,7 @@ ${historyText}
           }
         }
 
-        if (/\bDONE\b/i.test(result.response) || /已完成|完成了/i.test(result.response)) {
+        if (/\bDONE\b/i.test(result.response) || /�w����|�����F/i.test(result.response)) {
           this._panel.webview.postMessage({ type: 'assistant', text: result.response, thinking: result.thinking });
           this._panel.webview.postMessage({ type: 'autoStatus', running: false });
           this._autoRunning = false;
@@ -3237,7 +3924,7 @@ ${historyText}
           try { await this.handleInsert(codeMatch[1]); } catch { /* ignore insertion errors */ }
         }
 
-        currentPrompt = `基於你剛才的回應：\n${result.response}\n\n請繼續改進或完成。若需要存取工作目錄外的檔案，請回傳 'NEEDS_ACCESS: <path>'；若已完成請回傳 'DONE'。只回覆必要內容與程式碼區塊。`;
+        currentPrompt = `���A��~���^���G\n${result.response}\n\n���~���i�Χ����C�Y�ݭn�s���u�@�ؿ��~���ɮסA�Ц^�� 'NEEDS_ACCESS: <path>'�F�Y�w�����Ц^�� 'DONE'�C�u�^�Х��n���e�P�{���X�϶��C`;
         await new Promise(r => setTimeout(r, 600));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -3249,10 +3936,10 @@ ${historyText}
     this._autoRunning = false;
     this._autoCancel = false;
     this._panel.webview.postMessage({ type: 'autoStatus', running: false });
-    if (!this._autoCancel) { vscode.window.showInformationMessage('自動執行已結束。'); } else { vscode.window.showInformationMessage('自動執行已被中止。'); }
+    if (!this._autoCancel) { vscode.window.showInformationMessage('�۰ʰ���w�����C'); } else { vscode.window.showInformationMessage('�۰ʰ���w�Q����C'); }
   }
 
-  /** 要求使用者確認敏感操作，回傳是否允許。已在 _alwaysAllow 則直接通過。*/
+  /** �n�D�ϥΪ̽T�{�ӷP�ާ@�A�^�ǬO�_���\�C�w�b _alwaysAllow �h�����q�L�C*/
   private requestPermission(category: string, description: string): Promise<boolean> {
     if (this._alwaysAllow.has(category)) { return Promise.resolve(true); }
     return new Promise<boolean>((resolve) => {
@@ -3262,17 +3949,17 @@ ${historyText}
   }
 
   private async handleAgent(userPrompt: string, modelOverride?: string, recordToShortTerm = true): Promise<void> {
-    if (this._agentRunning) { vscode.window.showInformationMessage('Agent 已在執行中'); return; }
+    if (this._agentRunning) { vscode.window.showInformationMessage('Agent �w�b���椤'); return; }
     this._agentRunning = true;
     this._agentCancel = false;
-    this._panel.webview.postMessage({ type: 'agentStatus', running: true });
+    this._panel.webview.postMessage({ type: 'agentStatus', running: true, summary: this.summarizeWorkItem(userPrompt), current: '��l�� Agent', completed: 0 });
 
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
     const { url: baseUrl, model } = rawModel.startsWith('copilot') ? { url: urls[0], model: rawModel } : decodeOllamaModel(rawModel, urls);
 
-    // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
+    // ���� Ollama �ҫ��ɥ������¼ҫ��õ��� VRAM ����
     await this.ensureModelReady(baseUrl, model);
 
     if (this._agentMessages.length === 0) {
@@ -3282,39 +3969,39 @@ ${historyText}
       const openFiles = vscode.workspace.textDocuments
         .filter(d => !d.isUntitled && d.uri.scheme === 'file')
         .map(d => d.uri.fsPath);
-      const openFilesStr = openFiles.length > 0 ? `\n目前編輯器中開啟的檔案:\n${openFiles.join('\n')}` : '';
-      const activeFileStr = activeFile ? `\n目前作用中的檔案: ${activeFile}` : '';
+      const openFilesStr = openFiles.length > 0 ? `\n�ثe�s�边���}�Ҫ��ɮ�:\n${openFiles.join('\n')}` : '';
+      const activeFileStr = activeFile ? `\n�ثe�@�Τ����ɮ�: ${activeFile}` : '';
       this._agentTodos = [];
       const ltmForAgent = this.getLongTermMemory();
       this._agentMessages.push({
         role: 'system',
-        content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。${activeFileStr}${openFilesStr}
+        content: `�A�O VS Code �{���}�o�U�� Agent�A�i�s�����u�@�ϸ�Ƨ�: ${folderList}�C${activeFileStr}${openFilesStr}
 
-執行必違規則：
-- 不得說「我將」「我會」等宣告意圖而不實際呼叫工具。看到需求就直接呼叫對應工具，立即執行。
-- 不確定時優先查閱本地程式碼，而非假設或憑空生成。
+���楲�H�W�h�G
+- ���o���u�ڱN�v�u�ڷ|�v���ŧi�N�ϦӤ���کI�s�u��C�ݨ�ݨD�N�����I�s�����u��A�ߧY����C
+- ���T�w���u���d�\���a�{���X�A�ӫD���]�ξ̪ťͦ��C
 
-執行策略：
-1. 先用 search_workspace 搜尋工作區中的檔案名稱、函式名稱、類別名稱等
-2. 讀取相關檔案確認實際內容
-3. 根據工作區實際程式碼進行修改或回答
+���浦���G
+1. ���� search_workspace �j�M�u�@�Ϥ����ɮצW�١B�禡�W�١B���O�W�ٵ�
+2. Ū�������ɮ׽T�{��ڤ��e
+3. �ھڤu�@�Ϲ�ڵ{���X�i��ק�Φ^��
 
-## Atlassian 整合（atlassian.atlascode）【強制】
-訊息中出現 [A-Z][A-Z0-9]*-\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
+## Atlassian ��X�]atlassian.atlascode�^�i�j��j
+�T�����X�{ [A-Z][A-Z0-9]*-\d+�]�� UOEM2-3476�BBIOS-123�^�� Jira Issue Key�C
 
-【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖而不實際呼叫工具。
+�i����T��j���o���u�ڱN�d�ߡv�u�ڷ|�h���o�v���ŧi�N�ϦӤ���کI�s�u��C
 
-工具選擇規則：
-- 任何分析 / RCA / 查看內容 → 第一步必須立即呼叫 jira_fetch，取得 Issue 內容後再回答
-- 開啟 VS Code 面板 → jira_open（純 UI，不回傳內容）
-- 建立 Issue → jira_create；轉換狀態 → jira_transition；開 PR → bb_create_pr；問 Rovo Dev（AI 分析，回傳回覆）→ rovo_ask
-${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
+�u���ܳW�h�G
+- ������R / RCA / �d�ݤ��e �� �Ĥ@�B�����ߧY�I�s jira_fetch�A���o Issue ���e��A�^��
+- �}�� VS Code ���O �� jira_open�]�� UI�A���^�Ǥ��e�^
+- �إ� Issue �� jira_create�F�ഫ���A �� jira_transition�F�} PR �� bb_create_pr�F�� Rovo Dev�]AI ���R�A�^�Ǧ^�С^�� rovo_ask
+${ltmForAgent.trim() ? '\n## �����O��\n' + ltmForAgent.trim() : ''}
 
-請使用繁體中文回答，完成後告知使用者結果。`
+�Шϥ��c�餤��^���A������i���ϥΪ̵��G�C`
       });
     }
     this._agentMessages.push({ role: 'user', content: userPrompt });
-    // 同步到短期記憶（若呼叫者需要記錄）
+    // �P�B��u���O�С]�Y�I�s�̻ݭn�O���^
     if (recordToShortTerm) {
       this._chatHistory.push({ role: 'user', content: userPrompt });
       this._chatHistories[this._activeSessionId] = this._chatHistory;
@@ -3332,7 +4019,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           const emsg = e instanceof Error ? e.message : String(e);
           if (/token|limit|context|exceed/i.test(emsg) && this._agentMessages.length > 4) {
             this._trimAgentHistory();
-            this._panel.webview.postMessage({ type: 'agentStep', icon: '✂️', title: '歷史記錄過長，已自動裁剪後重試', fullPath: '' });
+            this._panel.webview.postMessage({ type: 'agentStep', icon: '??', title: '���v�O���L���A�w�۰ʵ��ū᭫��', fullPath: '' });
             resp = model.startsWith('copilot::')
               ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
               : await ollamaChatCall(baseUrl, model, this._agentMessages, AGENT_TOOLS);
@@ -3353,14 +4040,14 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             try {
               result = await this.executeTool(fn.name, args);
             } catch (e) {
-              result = '錯誤：' + (e instanceof Error ? e.message : String(e));
+              result = '���~�G' + (e instanceof Error ? e.message : String(e));
               isError = true;
             }
-            const preview = result.length > 400 ? result.slice(0, 400) + '\n…（已截斷）' : result;
+            const preview = result.length > 400 ? result.slice(0, 400) + '\n�K�]�w�I�_�^' : result;
             this._panel.webview.postMessage({ type: 'agentStepDone', result: preview, isError });
             this._agentMessages.push({ role: 'tool', content: result, tool_call_id: tc.id ?? fn.name });
             if (recordToShortTerm) {
-              // Tool 回傳作為短期記憶的一部分（以 preview 儲存）
+              // Tool �^�ǧ@���u���O�Ъ��@�����]�H preview �x�s�^
               this._chatHistory.push({ role: 'assistant', content: preview });
               this._chatHistories[this._activeSessionId] = this._chatHistory;
               this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
@@ -3380,7 +4067,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this._panel.webview.postMessage({ type: 'error', text: 'Agent 錯誤：' + msg });
+      this._panel.webview.postMessage({ type: 'error', text: 'Agent ���~�G' + msg });
     } finally {
       this._agentRunning = false;
       this._agentCancel = false;
@@ -3388,7 +4075,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     }
   }
 
-  /** 裁剪 _agentMessages：保留 system prompt + 最新 8 則訊息，避免超過 token 上限。 */
+  /** ���� _agentMessages�G�O�d system prompt + �̷s 8 �h�T���A�קK�W�L token �W���C */
   private _trimAgentHistory(): void {
     const sys = this._agentMessages[0];
     const rest = this._agentMessages.slice(1);
@@ -3396,9 +4083,19 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
   }
 
-  /** 從 atlassian.atlascode 擷取 Jira auth (bearer token + baseApiUrl)。
-   *  只支援 Windows，使用 Python (內建模組) + Node.js crypto 解密。
-   *  cache：到期前 5 分鐘更新。
+  private summarizeWorkItem(text: string, maxLen = 88): string {
+    const normalized = text
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/�i[^�j]+�j/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized) { return '�B�z�ϥΪ̥���'; }
+    return normalized.length > maxLen ? normalized.slice(0, maxLen - 1) + '�K' : normalized;
+  }
+
+  /** �q atlassian.atlascode �^�� Jira auth (bearer token + baseApiUrl)�C
+   *  �u�䴩 Windows�A�ϥ� Python (���ؼҲ�) + Node.js crypto �ѱK�C
+   *  cache�G����e 5 ������s�C
    */
   private async getAtlascodeJiraAuth(): Promise<{ baseApiUrl: string; accessToken: string } | null> {
     if (this._atlasJiraCred && this._atlasJiraCred.expiry > Date.now() + 300_000) {
@@ -3410,8 +4107,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       const localStatePath = path.join(appData, 'Code', 'Local State');
       if (!fs.existsSync(localStatePath)) { return null; }
 
-      // Python 腳本：使用內建模組讀 SQLite + DPAPI 解密 master key，輸出 JSON
-      // 路徑用 JSON.stringify 嵌入：Python 解析 "C:\\Users\\..." = C:\Users\... (正確)
+      // Python �}���G�ϥΤ��ؼҲ�Ū SQLite + DPAPI �ѱK master key�A��X JSON
+      // ���|�� JSON.stringify �O�J�GPython �ѪR "C:\\Users\\..." = C:\Users\... (���T)
       const pyScript = [
         'import sqlite3,json,ctypes,base64,os,sys',
         `app=${JSON.stringify(appData)}`,
@@ -3437,8 +4134,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         'print(json.dumps({"mk":mk,"buf":ed["data"],"baseApiUrl":s["baseApiUrl"],"host":s.get("host","")}))',
       ].join('\n');
 
-      // 寫入 temp file 執行，避免 Windows stdin pipe hang 問題
-      // 嘗試 py (Windows Launcher) → python → python3
+      // �g�J temp file ����A�קK Windows stdin pipe hang ���D
+      // ���� py (Windows Launcher) �� python �� python3
       const tmpPy = path.join(appData, 'ami-atlas-auth-tmp.py');
       fs.writeFileSync(tmpPy, pyScript, 'utf-8');
       let raw = '';
@@ -3465,7 +4162,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         return null;
       }
 
-      // AES-256-GCM 解密：v10(3) + nonce(12) + ciphertext + tag(16)
+      // AES-256-GCM �ѱK�Gv10(3) + nonce(12) + ciphertext + tag(16)
       const masterKey = Buffer.from(parsed.mk);
       const buf = Buffer.from(parsed.buf);
       const nonce = buf.slice(3, 15);
@@ -3477,8 +4174,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       const cred = JSON.parse(plain.toString('utf-8')) as { access?: string; refresh?: string };
       if (!cred.access) { return null; }
 
-      // 解析 JWT expiry
-      let expiry = Date.now() + 3_600_000; // 預設 1h
+      // �ѪR JWT expiry
+      let expiry = Date.now() + 3_600_000; // �w�] 1h
       try {
         const payload = JSON.parse(Buffer.from(cred.access.split('.')[1], 'base64').toString('utf-8'));
         if (payload.exp) { expiry = payload.exp * 1000; }
@@ -3492,8 +4189,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     }
   }
 
-  /** 探索 Rovo Dev 本地 HTTP server (127.0.0.1:{port})，優先讀 env var，否則掃描 Windows 程序表。
-   *  正向結果快取 5 分鐘；負向結果快取 30 秒。*/
+  /** ���� Rovo Dev ���a HTTP server (127.0.0.1:{port})�A�u��Ū env var�A�_�h���y Windows �{�Ǫ��C
+   *  ���V���G�֨� 5 �����F�t�V���G�֨� 30 ���C*/
   private async discoverRovoDevUrl(): Promise<{ url: string; token: string } | null> {
     if (this._rovoDevCache && Date.now() < this._rovoDevCache.expiry) {
       return { url: this._rovoDevCache.url, token: this._rovoDevCache.token };
@@ -3544,7 +4241,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     return null;
   }
 
-  /** 用 tasklist + netstat 同步取得 Rovo Dev 監聽 port (Windows)。*/
+  /** �� tasklist + netstat �P�B���o Rovo Dev ��ť port (Windows)�C*/
   private findRovoDevPortWindows(): string | null {
     try {
       const taskOut = execSync('tasklist /FI "IMAGENAME eq atlassian_cli_rovodev.exe" /FO CSV /NH 2>nul',
@@ -3565,24 +4262,24 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     } catch { return null; }
   }
 
-  /** 切換 Ollama 模型時先卸載舊模型（keep_alive=0），然後輪詢 /api/ps 確認卸載完成。
-   *  最長等待 90s；確認消失後立即繼續。Copilot 模型不需此流程。
-   *  注意：只有切換到「相同 Ollama server」時才需要等待 VRAM 釋放；
-   *  若新模型在不同 server，直接繼續即可。*/
+  /** ���� Ollama �ҫ��ɥ������¼ҫ��]keep_alive=0�^�A�M����� /api/ps �T�{���������C
+   *  �̪����� 90s�F�T�{������ߧY�~��CCopilot �ҫ����ݦ��y�{�C
+   *  �`�N�G�u��������u�ۦP Ollama server�v�ɤ~�ݭn���� VRAM ����F
+   *  �Y�s�ҫ��b���P server�A�����~��Y�i�C*/
   private async ensureModelReady(baseUrl: string, model: string): Promise<void> {
     if (model.startsWith('copilot::')) { return; }
     const prevUrl = this._lastOllamaUrl;
     const prev = this._lastOllamaModel;
     this._lastOllamaUrl = baseUrl;
     this._lastOllamaModel = model;
-    // No previous model, same model, or different server → no VRAM wait needed
+    // No previous model, same model, or different server �� no VRAM wait needed
     if (!prev || prev === model) { return; }
     if (prevUrl && prevUrl !== baseUrl) {
-      OllamaChatPanel.log(`Model switch: ${prev}@${prevUrl} -> ${model}@${baseUrl}，不同 server，跳過 VRAM 釋放`);
+      OllamaChatPanel.log(`Model switch: ${prev}@${prevUrl} -> ${model}@${baseUrl}�A���P server�A���L VRAM ����`);
       return;
     }
 
-    OllamaChatPanel.log(`Model switch: ${prev} -> ${model}，正在卸載舊模型並等待 VRAM 釋放`);
+    OllamaChatPanel.log(`Model switch: ${prev} -> ${model}�A���b�����¼ҫ��õ��� VRAM ����`);
     // Await unload request so Ollama receives the keep_alive=0 signal
     await ollamaUnloadModel(baseUrl, prev);
 
@@ -3591,21 +4288,21 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     for (let s = maxWait; s > 0; s--) {
       this._panel.webview.postMessage({
         type: 'assistant',
-        text: `⏳ 模型切換（${prev.split('/').pop()} → ${model.split('/').pop()}），等待 VRAM 釋放… ${s}s`
+        text: `? �ҫ������]${prev.split('/').pop()} �� ${model.split('/').pop()}�^�A���� VRAM ����K ${s}s`
       });
       const running = await ollamaListRunningModels(baseUrl);
       const stillLoaded = running.some(n => n === prev || n.startsWith(prev.split(':')[0]));
       if (!stillLoaded) {
-        OllamaChatPanel.log(`VRAM 已釋放，等待結束（剩 ${s}s）`);
-        this._panel.webview.postMessage({ type: 'assistant', text: `✅ VRAM 釋放完成，正在載入 ${model.split('/').pop()}…` });
+        OllamaChatPanel.log(`VRAM �w����A���ݵ����]�� ${s}s�^`);
+        this._panel.webview.postMessage({ type: 'assistant', text: `? VRAM ���񧹦��A���b���J ${model.split('/').pop()}�K` });
         break;
       }
       await new Promise(r => setTimeout(r, 1000));
     }
   }
 
-  /** 向 Rovo Dev 本地 HTTP server 提問並以 SSE stream 收集文字回覆。
-   *  回傳 AI 回覆文字，若無法連線則回傳 null。*/
+  /** �V Rovo Dev ���a HTTP server ���ݨåH SSE stream ������r�^�СC
+   *  �^�� AI �^�Ф�r�A�Y�L�k�s�u�h�^�� null�C*/
   private async callRovoDevApi(question: string): Promise<string | null> {
     const target = await this.discoverRovoDevUrl();
     if (!target) { return null; }
@@ -3629,7 +4326,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       } catch { resolve(false); }
     });
     if (!step1Ok) {
-      // Auth or connection failed – invalidate cache so we re-discover next time
+      // Auth or connection failed �V invalidate cache so we re-discover next time
       this._rovoDevCache = undefined; this._rovoDevNullUntil = 0;
       return null;
     }
@@ -3699,22 +4396,22 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     switch (name) {
       case 'get_active_file': {
         const editor = vscode.window.activeTextEditor;
-        if (!editor) { return '沒有開啟的檔案'; }
-        return `檔案: ${editor.document.uri.fsPath}\n\n${editor.document.getText()}`;
+        if (!editor) { return '�S���}�Ҫ��ɮ�'; }
+        return `�ɮ�: ${editor.document.uri.fsPath}\n\n${editor.document.getText()}`;
       }
       case 'read_file': {
         const fpath = resolvePath(args.path as string);
         const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
         const text = Buffer.from(bytes).toString('utf8');
-        return text.length > 50000 ? text.slice(0, 50000) + '\n…（已截斷至 50KB）' : text;
+        return text.length > 50000 ? text.slice(0, 50000) + '\n�K�]�w�I�_�� 50KB�^' : text;
       }
       case 'write_file': {
         const fpath = resolvePath(args.path as string);
         const content = (args.content as string) ?? '';
-        const allowed = await this.requestPermission('write', `寫入檔案: ${fpath}（${content.length} 字元）`);
-        if (!allowed) { return '使用者已拒絕寫入操作'; }
+        const allowed = await this.requestPermission('write', `�g�J�ɮ�: ${fpath}�]${content.length} �r���^`);
+        if (!allowed) { return '�ϥΪ̤w�ڵ��g�J�ާ@'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
-        return `已寫入 ${fpath}（${content.length} 字元）`;
+        return `�w�g�J ${fpath}�]${content.length} �r���^`;
       }
       case 'replace_in_file': {
         const fpath = resolvePath(args.path as string);
@@ -3722,11 +4419,11 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const original = Buffer.from(bytes).toString('utf8');
         const oldStr = args.old_str as string;
         const newStr = (args.new_str as string) ?? '';
-        if (!original.includes(oldStr)) { return `錯誤：在 ${fpath} 中找不到指定的字串`; }
-        const allowed = await this.requestPermission('write', `編輯檔案: ${fpath}`);
-        if (!allowed) { return '使用者已拒絕編輯操作'; }
+        if (!original.includes(oldStr)) { return `���~�G�b ${fpath} ���䤣����w���r��`; }
+        const allowed = await this.requestPermission('write', `�s���ɮ�: ${fpath}`);
+        if (!allowed) { return '�ϥΪ̤w�ڵ��s��ާ@'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.replace(oldStr, newStr), 'utf8'));
-        return `已更新 ${fpath}`;
+        return `�w��s ${fpath}`;
       }
       case 'list_dir': {
         const dirArg = (args.path as string) || '';
@@ -3746,17 +4443,17 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       }
       case 'run_terminal': {
         const cmd = args.command as string;
-        const allowed = await this.requestPermission('run', `終端機執行: ${cmd}`);
-        if (!allowed) { return '使用者已拒絕執行操作'; }
+        const allowed = await this.requestPermission('run', `�׺ݾ�����: ${cmd}`);
+        if (!allowed) { return '�ϥΪ̤w�ڵ�����ާ@'; }
         const terminals = vscode.window.terminals;
         const terminal = terminals.length > 0 ? terminals[terminals.length - 1] : vscode.window.createTerminal('Agent');
         terminal.show(true);
         terminal.sendText(cmd);
-        return `已在終端機執行: ${cmd}`;
+        return `�w�b�׺ݾ�����: ${cmd}`;
       }
       case 'search_workspace': {
         const query = ((args.query as string) ?? '').toLowerCase();
-        if (!query) { return '請提供搜尋關鍵字'; }
+        if (!query) { return '�д��ѷj�M����r'; }
         const allUris = await vscode.workspace.findFiles('**/*', '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**}', 200);
         const fileMatches = allUris.map(u => u.fsPath).filter(p => path.basename(p).toLowerCase().includes(query));
         const contentMatches: string[] = [];
@@ -3776,33 +4473,33 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           } catch { /* skip binary */ }
         }
         const parts: string[] = [];
-        if (fileMatches.length > 0) { parts.push(`=== 檔案名稱匹配 (${fileMatches.length}) ===\n${fileMatches.slice(0, 30).join('\n')}`); }
-        if (contentMatches.length > 0) { parts.push(`=== 程式碼內容匹配 (${contentMatches.length}) ===\n${contentMatches.join('\n')}`); }
-        return parts.length > 0 ? parts.join('\n\n') : `找不到符合 "${args.query}" 的結果`;
+        if (fileMatches.length > 0) { parts.push(`=== �ɮצW�٤ǰt (${fileMatches.length}) ===\n${fileMatches.slice(0, 30).join('\n')}`); }
+        if (contentMatches.length > 0) { parts.push(`=== �{���X���e�ǰt (${contentMatches.length}) ===\n${contentMatches.join('\n')}`); }
+        return parts.length > 0 ? parts.join('\n\n') : `�䤣��ŦX "${args.query}" �����G`;
       }
       case 'delete_file': {
         const fpath = resolvePath(args.path as string);
-        const allowed = await this.requestPermission('delete', `刪除: ${fpath}`);
-        if (!allowed) { return '使用者已拒絕刪除操作'; }
+        const allowed = await this.requestPermission('delete', `�R��: ${fpath}`);
+        if (!allowed) { return '�ϥΪ̤w�ڵ��R���ާ@'; }
         await vscode.workspace.fs.delete(vscode.Uri.file(fpath), { recursive: (args.recursive as boolean) ?? false });
-        return `已刪除 ${fpath}`;
+        return `�w�R�� ${fpath}`;
       }
       case 'create_dir': {
         const dpath = resolvePath(args.path as string);
         await vscode.workspace.fs.createDirectory(vscode.Uri.file(dpath));
-        return `已建立目錄 ${dpath}`;
+        return `�w�إߥؿ� ${dpath}`;
       }
       case 'run_command': {
         const cmd = args.command as string;
         const cwd = (args.cwd as string) ? resolvePath(args.cwd as string) : (folders[0]?.uri.fsPath ?? process.cwd());
-        const allowed = await this.requestPermission('run', `執行指令: ${cmd}`);
-        if (!allowed) { return '使用者已拒絕執行操作'; }
+        const allowed = await this.requestPermission('run', `������O: ${cmd}`);
+        if (!allowed) { return '�ϥΪ̤w�ڵ�����ާ@'; }
         return new Promise<string>((resolve) => {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
           const { exec } = require('child_process') as typeof import('child_process');
           exec(cmd, { cwd, timeout: 30000, shell: true as unknown as string }, (_err, stdout, stderr) => {
             const out = (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
-            resolve(out.trim().slice(0, 8000) || '(無輸出)');
+            resolve(out.trim().slice(0, 8000) || '(�L��X)');
           });
         });
       }
@@ -3813,7 +4510,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           let buf = '';
           const req = protocol.get(rawUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (AmiClaw-Agent)' } }, (res) => {
             if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-              resolve(`重導到: ${res.headers.location} (請再呼叫 fetch_url)`);
+              resolve(`���ɨ�: ${res.headers.location} (�ЦA�I�s fetch_url)`);
               return;
             }
             res.setEncoding('utf8');
@@ -3828,41 +4525,41 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
                 .trim();
               resolve(stripped.slice(0, 12000));
             });
-            res.on('error', (e: Error) => resolve(`網路錯誤: ${e.message}`));
+            res.on('error', (e: Error) => resolve(`�������~: ${e.message}`));
           });
-          req.on('error', (e: Error) => resolve(`網路錯誤: ${e.message}`));
-          req.setTimeout(15000, () => { req.destroy(); resolve('超時 (15s)'); });
+          req.on('error', (e: Error) => resolve(`�������~: ${e.message}`));
+          req.setTimeout(15000, () => { req.destroy(); resolve('�W�� (15s)'); });
         });
       }
       case 'open_browser': {
         const url = args.url as string;
         try {
           await vscode.commands.executeCommand('simpleBrowser.api.open', url);
-          return `已在 VS Code 簡易瀏覽器開啟: ${url}`;
+          return `�w�b VS Code ²���s�����}��: ${url}`;
         } catch {
           await vscode.env.openExternal(vscode.Uri.parse(url));
-          return `已在系統瀏覽器開啟: ${url}`;
+          return `�w�b�t���s�����}��: ${url}`;
         }
       }
       case 'manage_todo': {
         const action = (args.action as string) || 'list';
         if (action === 'add') {
           const text = args.text as string;
-          if (!text) { return '請提供 todo 內容 (text 參數)'; }
+          if (!text) { return '�д��� todo ���e (text �Ѽ�)'; }
           this._agentTodos.push({ id: this._agentTodos.length + 1, text, done: false });
-          return `已新增 Todo #${this._agentTodos.length}: ${text}`;
+          return `�w�s�W Todo #${this._agentTodos.length}: ${text}`;
         } else if (action === 'done') {
           const id = Number(args.id);
           const item = this._agentTodos.find(t => t.id === id);
-          if (!item) { return `找不到 Todo #${id}`; }
+          if (!item) { return `�䤣�� Todo #${id}`; }
           item.done = true;
-          return `✅ Todo #${id} 已完成: ${item.text}`;
+          return `? Todo #${id} �w����: ${item.text}`;
         } else if (action === 'clear') {
           this._agentTodos = [];
-          return 'Todo 清單已清空';
+          return 'Todo �M��w�M��';
         } else {
-          if (this._agentTodos.length === 0) { return 'Todo 清單是空的，請先用 add 新增任務'; }
-          return this._agentTodos.map(t => `${t.done ? '✅' : '⏳'} #${t.id}: ${t.text}`).join('\n');
+          if (this._agentTodos.length === 0) { return 'Todo �M��O�Ū��A�Х��� add �s�W����'; }
+          return this._agentTodos.map(t => `${t.done ? '?' : '?'} #${t.id}: ${t.text}`).join('\n');
         }
       }
       case 'vscode_action': {
@@ -3876,41 +4573,41 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             editor.selection = new vscode.Selection(pos, pos);
             editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
           }
-          return `已開啟 ${fpath}${args.line ? ` 第 ${args.line} 行` : ''}`;
+          return `�w�}�� ${fpath}${args.line ? ` �� ${args.line} ��` : ''}`;
         } else if (action === 'get_workspace_info') {
           const wsFolders = vscode.workspace.workspaceFolders ?? [];
           const openDocs = vscode.workspace.textDocuments.filter(d => !d.isUntitled && d.uri.scheme === 'file');
-          return `工作區: ${wsFolders.map(f => f.uri.fsPath).join(', ') || '(none)'}\n開啟中檔案:\n${openDocs.map(d => d.uri.fsPath).join('\n') || '(none)'}`;
+          return `�u�@��: ${wsFolders.map(f => f.uri.fsPath).join(', ') || '(none)'}\n�}�Ҥ��ɮ�:\n${openDocs.map(d => d.uri.fsPath).join('\n') || '(none)'}`;
         } else if (action === 'show_notification') {
           vscode.window.showInformationMessage(String(args.message ?? ''));
-          return '已顯示通知';
+          return '�w��ܳq��';
         } else if (action === 'run_command') {
           await vscode.commands.executeCommand(args.command as string, ...(Array.isArray(args.args) ? args.args : []));
-          return `已執行 VS Code 指令: ${args.command}`;
+          return `�w���� VS Code ���O: ${args.command}`;
         }
-        return `未知 vscode_action: ${action}`;
+        return `���� vscode_action: ${action}`;
       }
       case 'jira_fetch': {
         const fetchKey = (args.issue_key as string || '').trim().toUpperCase();
-        if (!fetchKey) return '請提供 issue_key，例如 BIOS-123';
+        if (!fetchKey) return '�д��� issue_key�A�Ҧp BIOS-123';
 
-        // 決定 auth：優先嘗試 atlascode 已登入憑證，fallback 到手動設定
+        // �M�w auth�G�u������ atlascode �w�n�J���ҡAfallback ���ʳ]�w
         let issueApiUrl: string;
         let authHeader: string;
         const atlasAuth = await this.getAtlascodeJiraAuth();
         if (atlasAuth) {
-          // atlascode auth：baseApiUrl = https://api.atlassian.com/ex/jira/<id>/rest
+          // atlascode auth�GbaseApiUrl = https://api.atlassian.com/ex/jira/<id>/rest
           const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,attachment,created,updated';
           issueApiUrl = `${atlasAuth.baseApiUrl}/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
           authHeader = `Bearer ${atlasAuth.accessToken}`;
         } else {
-          // fallback：手動設定
-          const jiraCfg = vscode.workspace.getConfiguration('amiClaw');
+          // fallback�G��ʳ]�w
+          const jiraCfg = vscode.workspace.getConfiguration('amiAiClaw');
           const jiraBase = (jiraCfg.get<string>('jiraBaseUrl') ?? '').replace(/\/$/, '');
           const jiraEmail = jiraCfg.get<string>('jiraEmail') ?? '';
           const jiraPat = jiraCfg.get<string>('jiraPat') ?? '';
-          if (!jiraBase) return '找不到 atlassian.atlascode 登入資訊，請在 VS Code 設定中填寫 amiClaw.jiraBaseUrl';
-          if (!jiraPat)  return '找不到 atlassian.atlascode 登入資訊，請在 VS Code 設定中填寫 amiClaw.jiraPat';
+          if (!jiraBase) return '�䤣�� atlassian.atlascode �n�J��T�A�Цb VS Code �]�w����g amiClaw.jiraBaseUrl';
+          if (!jiraPat)  return '�䤣�� atlassian.atlascode �n�J��T�A�Цb VS Code �]�w����g amiClaw.jiraPat';
           const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,attachment,created,updated';
           issueApiUrl = `${jiraBase}/rest/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
           authHeader = jiraEmail
@@ -3931,13 +4628,13 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
               res.on('data', (c: Buffer) => { data += c; });
               res.on('end', () => {
                 if (res.statusCode === 401 || res.statusCode === 403) {
-                  // token 可能過期，清除 cache 下次重新取得
+                  // token �i��L���A�M�� cache �U�����s���o
                   this._atlasJiraCred = null;
-                  resolve(`Jira 認證失敗 (HTTP ${res.statusCode})，請確認 atlassian.atlascode 已登入，或在設定中填寫 amiClaw.jiraPat。`);
+                  resolve(`Jira �{�ҥ��� (HTTP ${res.statusCode})�A�нT�{ atlassian.atlascode �w�n�J�A�Φb�]�w����g amiClaw.jiraPat�C`);
                   return;
                 }
-                if (res.statusCode === 404) { resolve(`找不到 Issue ${fetchKey}，請確認 Key 正確或使用者有權限。`); return; }
-                if (res.statusCode !== 200) { resolve(`Jira API 回傳 HTTP ${res.statusCode}: ${data.substring(0, 200)}`); return; }
+                if (res.statusCode === 404) { resolve(`�䤣�� Issue ${fetchKey}�A�нT�{ Key ���T�ΨϥΪ̦��v���C`); return; }
+                if (res.statusCode !== 200) { resolve(`Jira API �^�� HTTP ${res.statusCode}: ${data.substring(0, 200)}`); return; }
                 try {
                   const j = JSON.parse(data);
                   const f = j.fields || {};
@@ -3951,25 +4648,25 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
                     `Status: ${f.status?.name ?? ''}`,
                     `Priority: ${f.priority?.name ?? ''}`,
                     `Reporter: ${f.reporter?.displayName ?? ''}`,
-                    `Assignee: ${f.assignee?.displayName ?? '未指派'}`,
+                    `Assignee: ${f.assignee?.displayName ?? '������'}`,
                     `Labels: ${(f.labels ?? []).join(', ') || '(none)'}`,
                     `Summary: ${f.summary ?? ''}`,
                     `Description:\n${String(f.description ?? '(empty)').substring(0, 2000)}`,
                     comments ? `\nLatest Comments:\n${comments}` : '',
                     attachLines
                   ].filter(Boolean).join('\n'));
-                } catch { resolve(`無法解析 Jira API 回應: ${data.substring(0, 300)}`); }
+                } catch { resolve(`�L�k�ѪR Jira API �^��: ${data.substring(0, 300)}`); }
               });
             });
-            req.on('error', (e: Error) => resolve(`Jira fetch 錯誤: ${e.message}`));
-            req.setTimeout(15000, () => { req.destroy(); resolve('Jira fetch 逾時 (15s)'); });
+            req.on('error', (e: Error) => resolve(`Jira fetch ���~: ${e.message}`));
+            req.setTimeout(15000, () => { req.destroy(); resolve('Jira fetch �O�� (15s)'); });
             req.end();
-          } catch (e) { resolve(`jira_fetch 錯誤: ${e instanceof Error ? e.message : String(e)}`); }
+          } catch (e) { resolve(`jira_fetch ���~: ${e instanceof Error ? e.message : String(e)}`); }
         });
       }
       case 'jira_attachment_download': {
         const attachUrl = (args.url as string || '').trim();
-        if (!attachUrl) return '請提供 url 參數（來自 jira_fetch 附件清單的 url= 欄位）';
+        if (!attachUrl) return '�д��� url �Ѽơ]�Ӧ� jira_fetch ����M�檺 url= ���^';
         let rawFilename = (args.filename as string || '').trim();
         if (!rawFilename) {
           try { rawFilename = decodeURIComponent(path.basename(new URL(attachUrl).pathname)); } catch { rawFilename = 'attachment'; }
@@ -3982,10 +4679,10 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         if (atlasAuth3) {
           dlAuthHeader = `Bearer ${atlasAuth3.accessToken}`;
         } else {
-          const jiraCfg3 = vscode.workspace.getConfiguration('amiClaw');
+          const jiraCfg3 = vscode.workspace.getConfiguration('amiAiClaw');
           const jiraEmail3 = jiraCfg3.get<string>('jiraEmail') ?? '';
           const jiraPat3 = jiraCfg3.get<string>('jiraPat') ?? '';
-          if (!jiraPat3) return '找不到 Jira 認證，請確認 atlassian.atlascode 已登入';
+          if (!jiraPat3) return '�䤣�� Jira �{�ҡA�нT�{ atlassian.atlascode �w�n�J';
           dlAuthHeader = jiraEmail3 ? 'Basic ' + Buffer.from(`${jiraEmail3}:${jiraPat3}`).toString('base64') : 'Bearer ' + jiraPat3;
         }
 
@@ -4009,12 +4706,12 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
               res.on('error', (e: Error) => resolve({ ok: false, err: e.message }));
             });
             req.on('error', (e: Error) => resolve({ ok: false, err: e.message }));
-            req.setTimeout(60000, () => { req.destroy(); resolve({ ok: false, err: '下載逾時 (60s)' }); });
+            req.setTimeout(60000, () => { req.destroy(); resolve({ ok: false, err: '�U���O�� (60s)' }); });
             req.end();
           } catch (e) { resolve({ ok: false, err: e instanceof Error ? e.message : String(e) }); }
         });
 
-        if (!dlResult.ok) return `附件下載失敗: ${dlResult.err}`;
+        if (!dlResult.ok) return `����U������: ${dlResult.err}`;
 
         const ext = path.extname(safeFilename).toLowerCase();
         if (ext === '.zip') {
@@ -4035,9 +4732,9 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
               return entries;
             };
             const files = listFiles(extractDir);
-            const lines: string[] = [`📦 ${safeFilename} 解壓縮完成，共 ${files.length} 個檔案:\n`];
+            const lines: string[] = [`?? ${safeFilename} �����Y�����A�@ ${files.length} ���ɮ�:\n`];
             lines.push(...files.slice(0, 80).map(f => `  ${f}`));
-            if (files.length > 80) lines.push(`  … (共 ${files.length} 個)`);
+            if (files.length > 80) lines.push(`  �K (�@ ${files.length} ��)`);
             // Show contents of small text files
             const textExts = new Set(['.txt', '.log', '.md', '.json', '.xml', '.csv', '.ini', '.cfg', '.py', '.ts', '.js', '.sh', '.bat', '.diff', '.patch']);
             let shown = 0;
@@ -4049,79 +4746,79 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
                 const stat = fs.statSync(full);
                 if (stat.size > 60000) continue;
                 const content = fs.readFileSync(full, 'utf-8');
-                lines.push(`\n--- ${rel} ---\n${content.substring(0, 4000)}${content.length > 4000 ? '\n…（已截斷）' : ''}`);
+                lines.push(`\n--- ${rel} ---\n${content.substring(0, 4000)}${content.length > 4000 ? '\n�K�]�w�I�_�^' : ''}`);
                 shown++;
               } catch { /* ignore */ }
             }
-            lines.push(`\n解壓縮目錄: ${extractDir}`);
+            lines.push(`\n�����Y�ؿ�: ${extractDir}`);
             return lines.join('\n');
           } catch (e) {
-            return `ZIP 解壓縮失敗: ${e instanceof Error ? e.message : String(e)}\n檔案已存至: ${outFile}`;
+            return `ZIP �����Y����: ${e instanceof Error ? e.message : String(e)}\n�ɮפw�s��: ${outFile}`;
           }
         } else {
           // Try reading as UTF-8 text
           try {
             const content = fs.readFileSync(outFile, 'utf-8');
-            return `📄 ${safeFilename}\n\n${content.substring(0, 6000)}${content.length > 6000 ? '\n…（已截斷）' : ''}`;
+            return `?? ${safeFilename}\n\n${content.substring(0, 6000)}${content.length > 6000 ? '\n�K�]�w�I�_�^' : ''}`;
           } catch {
-            return `✅ ${safeFilename} 已下載至 ${outFile}（二進位檔案）`;
+            return `? ${safeFilename} �w�U���� ${outFile}�]�G�i���ɮס^`;
           }
         }
       }
       case 'jira_open': {
         const key = (args.issue_key as string || '').trim().toUpperCase();
-        if (!key) return '請提供 issue_key，例如 BIOS-123';
+        if (!key) return '�д��� issue_key�A�Ҧp BIOS-123';
         try {
           await vscode.commands.executeCommand('atlascode.jira.showIssueForKey', key);
-          return `已開啟 Jira Issue: ${key}`;
-        } catch (e) { return `無法開啟 Jira Issue: ${e instanceof Error ? e.message : String(e)}`; }
+          return `�w�}�� Jira Issue: ${key}`;
+        } catch (e) { return `�L�k�}�� Jira Issue: ${e instanceof Error ? e.message : String(e)}`; }
       }
       case 'jira_create': {
         try {
           await vscode.commands.executeCommand('atlascode.jira.createIssue', args.summary ? { summary: args.summary, description: args.description } : undefined);
-          return '已開啟 Jira 建立 Issue 面板';
-        } catch (e) { return `開啟失敗: ${e instanceof Error ? e.message : String(e)}`; }
+          return '�w�}�� Jira �إ� Issue ���O';
+        } catch (e) { return `�}�ҥ���: ${e instanceof Error ? e.message : String(e)}`; }
       }
       case 'jira_transition': {
         const key = (args.issue_key as string || '').trim().toUpperCase();
-        if (!key) return '請提供 issue_key';
+        if (!key) return '�д��� issue_key';
         try {
           await vscode.commands.executeCommand('atlascode.jira.transitionIssue', { key });
-          return `已開啟 ${key} 狀態轉換面板`;
-        } catch (e) { return `失敗: ${e instanceof Error ? e.message : String(e)}`; }
+          return `�w�}�� ${key} ���A�ഫ���O`;
+        } catch (e) { return `����: ${e instanceof Error ? e.message : String(e)}`; }
       }
       case 'bb_create_pr': {
         try {
           await vscode.commands.executeCommand('atlascode.bb.createPullRequest');
-          return '已開啟 Bitbucket 建立 Pull Request 面板';
-        } catch (e) { return `失敗: ${e instanceof Error ? e.message : String(e)}`; }
+          return '�w�}�� Bitbucket �إ� Pull Request ���O';
+        } catch (e) { return `����: ${e instanceof Error ? e.message : String(e)}`; }
       }
       case 'rovo_ask': {
         const question = (args.question as string || '').trim();
-        if (!question) return '請提供 question 參數';
+        if (!question) return '�д��� question �Ѽ�';
         // Try Rovo Dev local HTTP server first (returns actual AI response)
         try {
           const rovoResp = await this.callRovoDevApi(question);
-          if (rovoResp) { return `[Rovo Dev 回覆]\n${rovoResp}`; }
+          if (rovoResp) { return `[Rovo Dev �^��]\n${rovoResp}`; }
         } catch { /* fall through */ }
         // Fallback: open interactive panel (no return value)
         try {
           await vscode.commands.executeCommand('atlascode.rovodev.askInteractive', question);
-          return `已在 Rovo Dev 面板提問（無法直接取回回覆），請查看 Rovo Dev 面板。`;
-        } catch (e) { return `失敗: ${e instanceof Error ? e.message : String(e)}`; }
+          return `�w�b Rovo Dev ���O���ݡ]�L�k�������^�^�С^�A�Ьd�� Rovo Dev ���O�C`;
+        } catch (e) { return `����: ${e instanceof Error ? e.message : String(e)}`; }
       }
       case 'run_python': {
         const pyCode = (args.code as string || '').trim();
-        if (!pyCode) return '請提供 code 參數';
+        if (!pyCode) return '�д��� code �Ѽ�';
         // Detect destructive operations to ask permission
         const isDestructive = /os\.remove|os\.rmdir|shutil\.rmtree|shutil\.move|open\s*\(.*['"]w['"]|open\s*\(.*['"]a['"]|Path.*\.unlink|Path.*\.rmdir|copyfile|shutil\.copy/i.test(pyCode);
         if (isDestructive) {
           const descLine = (args.description as string || pyCode.split('\n')[0]).slice(0, 120);
-          const allowed = await this.requestPermission('run', `Python（含檔案操作）: ${descLine}`);
-          if (!allowed) return '使用者已拒絕執行操作';
+          const allowed = await this.requestPermission('run', `Python�]�t�ɮ׾ާ@�^: ${descLine}`);
+          if (!allowed) return '�ϥΪ̤w�ڵ�����ާ@';
         }
         const tmpDir = os.tmpdir();
-        const tmpFile = path.join(tmpDir, `amiclaw_py_${Date.now()}.py`);
+        const tmpFile = path.join(tmpDir, `ami_ai_claw_py_${Date.now()}.py`);
         try {
           fs.writeFileSync(tmpFile, pyCode, 'utf-8');
           return await new Promise<string>((resolve) => {
@@ -4130,13 +4827,13 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             const pythonCmds = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
             let tried = 0;
             const tryNext = () => {
-              if (tried >= pythonCmds.length) { resolve('錯誤：找不到 Python 執行環境，請確認已安裝 Python 3'); return; }
+              if (tried >= pythonCmds.length) { resolve('���~�G�䤣�� Python �������ҡA�нT�{�w�w�� Python 3'); return; }
               const cmd = pythonCmds[tried++];
               exec(`${cmd} "${tmpFile}"`, { cwd: wsRoot || process.cwd(), timeout: 30000 }, (_err, stdout, stderr) => {
                 // Exit code non-zero is ok if there's output; only retry on ENOENT
                 if (_err && (_err as NodeJS.ErrnoException).code === 'ENOENT') { tryNext(); return; }
                 const out = (stdout || '') + (stderr ? (stdout ? '\n[stderr]\n' : '[stderr]\n') + stderr : '');
-                resolve((out.trim() || '（無輸出）').slice(0, 8000));
+                resolve((out.trim() || '�]�L��X�^').slice(0, 8000));
               });
             };
             tryNext();
@@ -4146,35 +4843,35 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         }
       }
       default:
-        return `未知工具: ${name}`;
+        return `�����u��: ${name}`;
     }
   }
 
   private async handleApplyToFile(code: string): Promise<void> {
     const editor = vscode.window.activeTextEditor;
-    if (!editor) { vscode.window.showWarningMessage('沒有開啟的編輯器'); return; }
+    if (!editor) { vscode.window.showWarningMessage('�S���}�Ҫ��s�边'); return; }
     const doc = editor.document;
     const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
     const lines = doc.getText().split('\n').length;
     if (lines > 50) {
       const ans = await vscode.window.showWarningMessage(
-        `將替換 ${doc.fileName.split(/[\\/]/).pop()} (${lines} 行) 的全部內容，確定?`,
-        '確定替換', '取消'
+        `�N���� ${doc.fileName.split(/[\\/]/).pop()} (${lines} ��) ���������e�A�T�w?`,
+        '�T�w����', '����'
       );
-      if (ans !== '確定替換') { return; }
+      if (ans !== '�T�w����') { return; }
     }
     await editor.edit(eb => eb.replace(fullRange, code));
-    vscode.window.showInformationMessage('已套用到檔案');
+    vscode.window.showInformationMessage('�w�M�Ψ��ɮ�');
   }
 
   private async fetchModelsFromServer(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const ollamaUrls = getOllamaUrls(cfg);
     OllamaChatPanel.log('fetchModelsFromServer: ' + ollamaUrls.join(', '));
     const liveModels: { id: string; label: string }[] = [];
     let copilotModels: { id: string; name: string; multiplier: string }[] = [];
     let connOk2 = false;
-    let connMsg2 = '連線失敗';
+    let connMsg2 = '�s�u����';
     let connUrl2 = ollamaUrls[0];
     for (const url of ollamaUrls) {
       try {
@@ -4182,7 +4879,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         for (const m of models) {
           liveModels.push({ id: encodeOllamaModelId(url, m, ollamaUrls), label: ollamaDisplayLabel(url, m, ollamaUrls) });
         }
-        if (!connOk2) { connOk2 = true; connMsg2 = ollamaUrls.length > 1 ? `${ollamaUrls.length} 台伺服器已連線` : 'OK'; connUrl2 = url; }
+        if (!connOk2) { connOk2 = true; connMsg2 = ollamaUrls.length > 1 ? `${ollamaUrls.length} �x���A���w�s�u` : 'OK'; connUrl2 = url; }
         OllamaChatPanel.log('fetchModelsFromServer OK from ' + url);
       } catch (e: unknown) {
         const emsg = e instanceof Error ? e.message : String(e);
@@ -4204,8 +4901,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
   }
 
   private async testConnectionStatus(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('amiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const baseUrl = getOllamaUrls(cfg)[0];
     const result = await ollamaCheckConnection(baseUrl);
     this._panel.webview.postMessage({ type: 'connectionStatus', ok: result.ok, url: baseUrl, message: result.message });
   }
@@ -4219,64 +4916,64 @@ interface ChatMessage {
 }
 
 const AGENT_TOOLS = [
-  { type: 'function', function: { name: 'get_active_file', description: '取得目前編輯器開啟的檔案路徑與內容', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'read_file', description: '讀取工作區內的檔案內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '相對或絕對路徑' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'write_file', description: '寫入(建立/覆寫)檔案', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
-  { type: 'function', function: { name: 'replace_in_file', description: '在檔案中替換特定字串', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '要替換的原始字串' }, new_str: { type: 'string', description: '替換後的字串' } }, required: ['path', 'old_str', 'new_str'] } } },
-  { type: 'function', function: { name: 'list_dir', description: '列出目錄內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '目錄路徑，空白表示工作區根目錄' } }, required: [] } } },
-  { type: 'function', function: { name: 'run_terminal', description: '在 VS Code 終端機執行命令（無輸出捕獲）', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
-  { type: 'function', function: { name: 'search_workspace', description: '在工作區中搜尋檔案名稱、函式名稱、類別名稱或程式碼關鍵字。處理任何問題前請優先呼叫此工具確認工作區現有程式碼', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜尋關鍵字（如檔案名稱、函式名稱、類別名稱、變數名稱）' } }, required: ['query'] } } },
-  { type: 'function', function: { name: 'delete_file', description: '刪除檔案或目錄', parameters: { type: 'object', properties: { path: { type: 'string' }, recursive: { type: 'boolean', description: '是否遞迴刪除目錄' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'create_dir', description: '建立目錄（包含中間目錄）', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'run_command', description: '執行指令並回傳輸出結果（stdout+stderr）。適合需要知道執行結果的場合', parameters: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string', description: '執行目錄，空白表示工作區根目錄' } }, required: ['command'] } } },
-  { type: 'function', function: { name: 'fetch_url', description: '下載網頁內容（自動去除 HTML 標籤）。適合查閱文件、API 文件、搜尋網路資料', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' } }, required: ['url'] } } },
-  { type: 'function', function: { name: 'open_browser', description: '在 VS Code 簡易瀏覽器中開啟網址', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
-  { type: 'function', function: { name: 'manage_todo', description: 'Agent 內部任務清單。複雜任務請先建立任務清單，逐一完成後標記为done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=新增, done=完成, list=查看, clear=清空' }, text: { type: 'string', description: '任務內容（action=add 時必須）' }, id: { type: 'number', description: '任務 ID（action=done 時必須）' } }, required: ['action'] } } },
-  { type: 'function', function: { name: 'vscode_action', description: 'VS Code 操作：開啟檔案到指定行、取得工作區信息、顯示通知、執行 VS Code 內建指令', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=開檔, get_workspace_info=工作區信息, show_notification=通知, run_command=執行内建指令' }, path: { type: 'string', description: 'open_file 用' }, line: { type: 'number', description: '開啟到哪一行' }, message: { type: 'string', description: 'show_notification 用' }, command: { type: 'string', description: 'run_command 用，VS Code 指令 ID' }, args: { type: 'array', items: { type: 'string' }, description: '指令參數' } }, required: ['action'] } } },
-  { type: 'function', function: { name: 'jira_fetch', description: '【立即執行】直接呼叫 Jira REST API 取得 Issue 完整詳情（Summary、Description、Status、Assignee、Priority、最近留言、附件清單）供分析。看到 Jira Key 就呼叫，禁止先說「我將查詢」等意圖語句而不行動。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 UOEM2-3476' } }, required: ['issue_key'] } } },
-  { type: 'function', function: { name: 'jira_attachment_download', description: '下載 Jira Issue 附件（URL 來自 jira_fetch 結果的 url= 欄位）。ZIP 檔案自動解壓縮並列出內容及文字檔內容；文字/patch/log 檔直接顯示。', parameters: { type: 'object', properties: { url: { type: 'string', description: '附件下載 URL（來自 jira_fetch 附件清單的 url= 後方網址）' }, filename: { type: 'string', description: '指定儲存檔名（可選，預設從 URL 推斷）' } }, required: ['url'] } } },
-  { type: 'function', function: { name: 'jira_open', description: '在 VS Code 中開啟 Jira Issue UI 面板（不回傳內容，純介面操作）。需要 Issue 內容供分析時請用 jira_fetch 而非此工具。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123 或 PROJ-456' } }, required: ['issue_key'] } } },
-  { type: 'function', function: { name: 'jira_create', description: '開啟 Jira 建立 Issue 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { summary: { type: 'string', description: 'Issue 標題（可選，預填）' }, description: { type: 'string', description: 'Issue 詳細描述（可選，預填）' } } } } },
-  { type: 'function', function: { name: 'jira_transition', description: '開啟 Jira Issue 狀態轉換面板（如 TODO → IN PROGRESS → DONE）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key' } }, required: ['issue_key'] } } },
-  { type: 'function', function: { name: 'bb_create_pr', description: '開啟 Bitbucket 建立 Pull Request 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'rovo_ask', description: '向 Atlassian Rovo Dev AI 提問並回傳回覆（需要 Rovo Dev 本地 server 正在執行）。可查詢 Jira/Confluence 知識庫、RCA 分析等。若 Rovo Dev 未執行則退化為開啟面板。', parameters: { type: 'object', properties: { question: { type: 'string', description: '要問 Rovo Dev 的問題' } }, required: ['question'] } } },
-  { type: 'function', function: { name: 'run_python', description: '執行一段 Python 程式碼並回傳 stdout+stderr。支援所有 Python 標準模組（os、shutil、pathlib 等），可進行檔案刪除、複製、寫入、資料處理、數學計算等。程式碼中使用 print() 輸出結果。若需要寫入或刪除檔案，會先向使用者確認。', parameters: { type: 'object', properties: { code: { type: 'string', description: '要執行的 Python 程式碼（多行字串，支援 import）' }, description: { type: 'string', description: '一行說明這段程式碼的用途（顯示在步驟列）' } }, required: ['code'] } } },
+  { type: 'function', function: { name: 'get_active_file', description: '���o�ثe�s�边�}�Ҫ��ɮ׸��|�P���e', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'read_file', description: 'Ū���u�@�Ϥ����ɮפ��e', parameters: { type: 'object', properties: { path: { type: 'string', description: '�۹�ε�����|' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'write_file', description: '�g�J(�إ�/�мg)�ɮ�', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+  { type: 'function', function: { name: 'replace_in_file', description: '�b�ɮפ������S�w�r��', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '�n��������l�r��' }, new_str: { type: 'string', description: '�����᪺�r��' } }, required: ['path', 'old_str', 'new_str'] } } },
+  { type: 'function', function: { name: 'list_dir', description: '�C�X�ؿ����e', parameters: { type: 'object', properties: { path: { type: 'string', description: '�ؿ����|�A�ťժ��ܤu�@�Ϯڥؿ�' } }, required: [] } } },
+  { type: 'function', function: { name: 'run_terminal', description: '�b VS Code �׺ݾ�����R�O�]�L��X����^', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'search_workspace', description: '�b�u�@�Ϥ��j�M�ɮצW�١B�禡�W�١B���O�W�٩ε{���X����r�C�B�z������D�e���u���I�s���u��T�{�u�@�ϲ{���{���X', parameters: { type: 'object', properties: { query: { type: 'string', description: '�j�M����r�]�p�ɮצW�١B�禡�W�١B���O�W�١B�ܼƦW�١^' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'delete_file', description: '�R���ɮשΥؿ�', parameters: { type: 'object', properties: { path: { type: 'string' }, recursive: { type: 'boolean', description: '�O�_���j�R���ؿ�' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'create_dir', description: '�إߥؿ��]�]�t�����ؿ��^', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'run_command', description: '������O�æ^�ǿ�X���G�]stdout+stderr�^�C�A�X�ݭn���D���浲�G�����X', parameters: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string', description: '����ؿ��A�ťժ��ܤu�@�Ϯڥؿ�' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'fetch_url', description: '�U���������e�]�۰ʥh�� HTML ���ҡ^�C�A�X�d�\���BAPI ���B�j�M�������', parameters: { type: 'object', properties: { url: { type: 'string', description: '���� HTTP/HTTPS URL' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'open_browser', description: '�b VS Code ²���s�������}�Һ��}', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'manage_todo', description: 'Agent �������ȲM��C�������ȽХ��إߥ��ȲM��A�v�@������аO?done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=�s�W, done=����, list=�d��, clear=�M��' }, text: { type: 'string', description: '���Ȥ��e�]action=add �ɥ����^' }, id: { type: 'number', description: '���� ID�]action=done �ɥ����^' } }, required: ['action'] } } },
+  { type: 'function', function: { name: 'vscode_action', description: 'VS Code �ާ@�G�}���ɮר���w��B���o�u�@�ϫH���B��ܳq���B���� VS Code ���ث��O', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=�}��, get_workspace_info=�u�@�ϫH��, show_notification=�q��, run_command=����?�ث��O' }, path: { type: 'string', description: 'open_file ��' }, line: { type: 'number', description: '�}�Ҩ���@��' }, message: { type: 'string', description: 'show_notification ��' }, command: { type: 'string', description: 'run_command �ΡAVS Code ���O ID' }, args: { type: 'array', items: { type: 'string' }, description: '���O�Ѽ�' } }, required: ['action'] } } },
+  { type: 'function', function: { name: 'jira_fetch', description: '�i�ߧY����j�����I�s Jira REST API ���o Issue ����Ա��]Summary�BDescription�BStatus�BAssignee�BPriority�B�̪�d���B����M��^�Ѥ��R�C�ݨ� Jira Key �N�I�s�A�T������u�ڱN�d�ߡv���N�ϻy�y�Ӥ���ʡC', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key�A�Ҧp UOEM2-3476' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_attachment_download', description: '�U�� Jira Issue ����]URL �Ӧ� jira_fetch ���G�� url= ���^�CZIP �ɮצ۰ʸ����Y�æC�X���e�Τ�r�ɤ��e�F��r/patch/log �ɪ�����ܡC', parameters: { type: 'object', properties: { url: { type: 'string', description: '����U�� URL�]�Ӧ� jira_fetch ����M�檺 url= �����}�^' }, filename: { type: 'string', description: '���w�x�s�ɦW�]�i��A�w�]�q URL ���_�^' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'jira_open', description: '�b VS Code ���}�� Jira Issue UI ���O�]���^�Ǥ��e�A�¤����ާ@�^�C�ݭn Issue ���e�Ѥ��R�ɽХ� jira_fetch �ӫD���u��C', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key�A�Ҧp BIOS-123 �� PROJ-456' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_create', description: '�}�� Jira �إ� Issue ���O�]�ݭn�w�� Atlassian ����^', parameters: { type: 'object', properties: { summary: { type: 'string', description: 'Issue ���D�]�i��A�w��^' }, description: { type: 'string', description: 'Issue �ԲӴy�z�]�i��A�w��^' } } } } },
+  { type: 'function', function: { name: 'jira_transition', description: '�}�� Jira Issue ���A�ഫ���O�]�p TODO �� IN PROGRESS �� DONE�^', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'bb_create_pr', description: '�}�� Bitbucket �إ� Pull Request ���O�]�ݭn�w�� Atlassian ����^', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'rovo_ask', description: '�V Atlassian Rovo Dev AI ���ݨæ^�Ǧ^�С]�ݭn Rovo Dev ���a server ���b����^�C�i�d�� Jira/Confluence ���Ѯw�BRCA ���R���C�Y Rovo Dev ������h�h�Ƭ��}�ҭ��O�C', parameters: { type: 'object', properties: { question: { type: 'string', description: '�n�� Rovo Dev �����D' } }, required: ['question'] } } },
+  { type: 'function', function: { name: 'run_python', description: '����@�q Python �{���X�æ^�� stdout+stderr�C�䴩�Ҧ� Python �зǼҲա]os�Bshutil�Bpathlib ���^�A�i�i���ɮקR���B�ƻs�B�g�J�B��ƳB�z�B�ƾǭp�ⵥ�C�{���X���ϥ� print() ��X���G�C�Y�ݭn�g�J�ΧR���ɮסA�|���V�ϥΪ̽T�{�C', parameters: { type: 'object', properties: { code: { type: 'string', description: '�n���檺 Python �{���X�]�h��r��A�䴩 import�^' }, description: { type: 'string', description: '�@�满���o�q�{���X���γ~�]��ܦb�B�J�C�^' } }, required: ['code'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍' };
-  return m[name] ?? '🔧';
+  const m: Record<string, string> = { get_active_file: '??', read_file: '??', write_file: '??', replace_in_file: '??', list_dir: '??', run_terminal: '?', search_workspace: '??', delete_file: '???', create_dir: '??', run_command: '??', fetch_url: '??', open_browser: '??', manage_todo: '??', vscode_action: '??', jira_fetch: '??', jira_open: '??', jira_create: '??', jira_transition: '??', jira_attachment_download: '??', bb_create_pr: '??', rovo_ask: '??', run_python: '??' };
+  return m[name] ?? '??';
 }
 
 function formatToolTitle(name: string, args: Record<string, unknown>): string {
   switch (name) {
-    case 'get_active_file': return '取得目前檔案';
-    case 'read_file': return `讀取檔案: ${args.path}`;
-    case 'write_file': return `寫入檔案: ${args.path}`;
-    case 'replace_in_file': return `編輯檔案: ${args.path}`;
-    case 'list_dir': return `列出目錄: ${args.path || '(根目錄)'}`;
-    case 'run_terminal': return `執行命令: ${args.command}`;
-    case 'search_workspace': return `搜尋工作區: ${args.query}`;
-    case 'delete_file': return `刪除: ${args.path}`;
-    case 'create_dir': return `建立目錄: ${args.path}`;
-    case 'run_command': return `執行並捕獲輸出: ${args.command}`;
-    case 'fetch_url': return `擷取網頁: ${args.url}`;
-    case 'open_browser': return `開啟瀏覽器: ${args.url}`;
+    case 'get_active_file': return '���o�ثe�ɮ�';
+    case 'read_file': return `Ū���ɮ�: ${args.path}`;
+    case 'write_file': return `�g�J�ɮ�: ${args.path}`;
+    case 'replace_in_file': return `�s���ɮ�: ${args.path}`;
+    case 'list_dir': return `�C�X�ؿ�: ${args.path || '(�ڥؿ�)'}`;
+    case 'run_terminal': return `����R�O: ${args.command}`;
+    case 'search_workspace': return `�j�M�u�@��: ${args.query}`;
+    case 'delete_file': return `�R��: ${args.path}`;
+    case 'create_dir': return `�إߥؿ�: ${args.path}`;
+    case 'run_command': return `����î����X: ${args.command}`;
+    case 'fetch_url': return `�^������: ${args.url}`;
+    case 'open_browser': return `�}���s����: ${args.url}`;
     case 'manage_todo': return `Todo (${args.action}${args.text ? ': ' + args.text : args.id ? ' #' + args.id : ''})`;
     case 'vscode_action': return `VS Code (${args.action}${args.path ? ': ' + args.path : args.command ? ': ' + args.command : ''})`;
-    case 'jira_fetch': return `Jira 從 API 取得: ${args.issue_key}`;
-    case 'jira_attachment_download': return `Jira 附件下載: ${(args.filename as string) || path.basename(String(args.url || '')).split('?')[0]}`;
-    case 'jira_open': return `Jira 開啟 Issue: ${args.issue_key}`;
-    case 'jira_create': return `Jira 建立 Issue${args.summary ? ': ' + args.summary : ''}`;
-    case 'jira_transition': return `Jira 轉換狀態: ${args.issue_key}`;
-    case 'bb_create_pr': return 'Bitbucket 建立 PR';
+    case 'jira_fetch': return `Jira �q API ���o: ${args.issue_key}`;
+    case 'jira_attachment_download': return `Jira ����U��: ${(args.filename as string) || path.basename(String(args.url || '')).split('?')[0]}`;
+    case 'jira_open': return `Jira �}�� Issue: ${args.issue_key}`;
+    case 'jira_create': return `Jira �إ� Issue${args.summary ? ': ' + args.summary : ''}`;
+    case 'jira_transition': return `Jira �ഫ���A: ${args.issue_key}`;
+    case 'bb_create_pr': return 'Bitbucket �إ� PR';
     case 'rovo_ask': return `Rovo Dev: ${args.question}`;
     case 'run_python': return `Python: ${(args.description as string) || (args.code as string || '').split('\n')[0].slice(0, 60)}`;
     default: return name;
   }
 }
 
-/** 傳送 keep_alive=0 給 Ollama 要求立即卸載模型（釋放 VRAM）。等待 Ollama 回應後 resolve。*/
+/** �ǰe keep_alive=0 �� Ollama �n�D�ߧY�����ҫ��]���� VRAM�^�C���� Ollama �^���� resolve�C*/
 function ollamaUnloadModel(baseUrl: string, model: string): Promise<void> {
   return new Promise(resolve => {
     try {
@@ -4297,7 +4994,7 @@ function ollamaUnloadModel(baseUrl: string, model: string): Promise<void> {
   });
 }
 
-/** GET /api/ps → 傳回目前 Ollama 正在執行（已載入）的模型名稱清單。*/
+/** GET /api/ps �� �Ǧ^�ثe Ollama ���b����]�w���J�^���ҫ��W�ٲM��C*/
 function ollamaListRunningModels(baseUrl: string): Promise<string[]> {
   return new Promise(resolve => {
     try {
@@ -4344,13 +5041,13 @@ function ollamaChatCall(baseUrl: string, model: string, messages: ChatMessage[],
         res.on('data', (chunk: Buffer) => { data += chunk; });
         res.on('end', () => {
           if (res.statusCode !== 200) {
-            reject(new Error(`Ollama /api/chat 回傳 HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
+            reject(new Error(`Ollama /api/chat �^�� HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
             return;
           }
           try {
             const json = JSON.parse(data);
             resolve(json.message as ChatMessage);
-          } catch { reject(new Error('無法解析 /api/chat 回應')); }
+          } catch { reject(new Error('�L�k�ѪR /api/chat �^��')); }
         });
       });
       req.on('error', (e: NodeJS.ErrnoException) => reject(ollamaConnectError(new URL(baseUrl).hostname, e)));
@@ -4379,7 +5076,7 @@ async function copilotStreamText(
 ): Promise<string> {
   const lms = await vscode.lm.selectChatModels({ id: modelId });
   const lm = lms[0];
-  if (!lm) { throw new Error(`Copilot 找不到模型: ${modelId}`); }
+  if (!lm) { throw new Error(`Copilot �䤣��ҫ�: ${modelId}`); }
   const response = await lm.sendRequest(messages, {}, token);
   let full = '';
   for await (const chunk of response.text) { full += chunk; onChunk(chunk); }
@@ -4393,7 +5090,7 @@ async function copilotChatCallWithCts(
 ): Promise<ChatMessage> {
   const lms = await vscode.lm.selectChatModels({ id: modelId });
   const lm = lms[0];
-  if (!lm) { throw new Error(`Copilot 找不到模型: ${modelId}`); }
+  if (!lm) { throw new Error(`Copilot �䤣��ҫ�: ${modelId}`); }
   const vmMsgs = messages.map(m => {
     const content = m.content ?? '';
     if (m.role === 'assistant') { return vscode.LanguageModelChatMessage.Assistant(content); }
@@ -4477,14 +5174,14 @@ function ollamaGenerate(baseUrl: string, model: string, prompt: string): Promise
           }
         });
       });
-      req.on('error', (e) => reject(new Error(`無法連線到 Ollama (${baseUrl})：${e.message}`)));
+      req.on('error', (e) => reject(new Error(`�L�k�s�u�� Ollama (${baseUrl})�G${e.message}`)));
       req.write(body);
       req.end();
     } catch (e) { reject(e); }
   });
 }
 
-const OLLAMA_RETRY_ERRORS = ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'socket hang up', '超時', 'timeout'];
+const OLLAMA_RETRY_ERRORS = ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'socket hang up', '�W��', 'timeout'];
 function isRetryableOllamaError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
   return OLLAMA_RETRY_ERRORS.some(s => msg.toLowerCase().includes(s.toLowerCase()));
@@ -4567,7 +5264,7 @@ function ollamaGenerateStream(
           res.setEncoding('utf8');
           res.on('data', (d: string) => { errBody += d; });
           res.on('end', () => {
-            try { const j = JSON.parse(errBody); reject(new Error('Ollama 錯誤：' + (j.error ?? 'HTTP ' + res.statusCode))); }
+            try { const j = JSON.parse(errBody); reject(new Error('Ollama ���~�G' + (j.error ?? 'HTTP ' + res.statusCode))); }
             catch { reject(new Error('Ollama HTTP ' + res.statusCode)); }
           });
           return;
@@ -4594,11 +5291,11 @@ function ollamaGenerateStream(
           }
         });
         res.on('end', () => {
-          if (streamError) { reject(new Error('Ollama 錯誤：' + streamError)); return; }
+          if (streamError) { reject(new Error('Ollama ���~�G' + streamError)); return; }
           resolve(fullResponse);
         });
       });
-      req.on('error', (e) => reject(new Error(`無法連線到 Ollama (${baseUrl})：${e.message}`)));
+      req.on('error', (e) => reject(new Error(`�L�k�s�u�� Ollama (${baseUrl})�G${e.message}`)));
       req.write(body);
       req.end();
     } catch (e) { reject(e); }
@@ -4653,7 +5350,7 @@ function ollamaChatStream(
           res.setEncoding('utf8');
           res.on('data', (d: string) => { errBody += d; });
           res.on('end', () => {
-            try { const j = JSON.parse(errBody); reject(new Error('Ollama 錯誤：' + (j.error ?? 'HTTP ' + res.statusCode))); }
+            try { const j = JSON.parse(errBody); reject(new Error('Ollama ���~�G' + (j.error ?? 'HTTP ' + res.statusCode))); }
             catch { reject(new Error('Ollama HTTP ' + res.statusCode)); }
           });
           return;
@@ -4679,42 +5376,42 @@ function ollamaChatStream(
           }
         });
         res.on('end', () => {
-          if (streamError) { reject(new Error('Ollama 錯誤：' + streamError)); return; }
+          if (streamError) { reject(new Error('Ollama ���~�G' + streamError)); return; }
           resolve(fullResponse);
         });
       });
-      req.on('error', (e) => reject(new Error(`無法連線到 Ollama (${baseUrl})：${e.message}`)));
+      req.on('error', (e) => reject(new Error(`�L�k�s�u�� Ollama (${baseUrl})�G${e.message}`)));
       req.write(body); req.end();
     } catch (e) { reject(e); }
   });
 }
 
-/** 讀取所有設定的 Ollama 伺服器 URL。優先使用 amiClaw.urls，fallback 到 amiClaw.url。 */
+/** Ū���Ҧ��]�w�� Ollama ���A�� URL�]amiAiClaw.urls�^�C���ƥX�{�� URL �������ΡC */
 function getOllamaUrls(cfg: vscode.WorkspaceConfiguration): string[] {
   const arr = (cfg.get<string[]>('urls') ?? []).filter((u: string) => u.trim());
   if (arr.length > 0) {
-    // 重複出現的 URL 視為停用：只保留恰好出現一次的 URL
+    // ���ƥX�{�� URL �������ΡG�u�O�d��n�X�{�@���� URL
     const count = new Map<string, number>();
     for (const u of arr) count.set(u, (count.get(u) ?? 0) + 1);
     const enabled = arr.filter(u => count.get(u) === 1);
-    return enabled.length > 0 ? enabled : [];
+    return enabled.length > 0 ? enabled : ['http://localhost:11434'];
   }
-  return [cfg.get<string>('url') ?? 'http://localhost:11434'];
+  return ['http://localhost:11434'];
 }
 
-/** 解碼 Ollama model ID：多伺服器格式為 "http://host:port||modelname"，單伺服器為 "modelname"。 */
+/** �ѽX Ollama model ID�G�h���A���榡�� "http://host:port||modelname"�A����A���� "modelname"�C */
 function decodeOllamaModel(modelId: string, fallbackUrls: string[]): { url: string; model: string } {
   const sep = modelId.indexOf('||');
   if (sep !== -1) return { url: modelId.slice(0, sep), model: modelId.slice(sep + 2) };
   return { url: fallbackUrls[0] ?? 'http://localhost:11434', model: modelId };
 }
 
-/** 編碼 Ollama model ID：多伺服器時加 URL 前綴，單伺服器時返回原始 model 名稱（向後相容）。 */
+/** �s�X Ollama model ID�G�h���A���ɥ[ URL �e��A����A���ɪ�^��l model �W�١]�V��ۮe�^�C */
 function encodeOllamaModelId(url: string, model: string, allUrls: string[]): string {
   return allUrls.length > 1 ? `${url}||${model}` : model;
 }
 
-/** 顯示標籤：多伺服器時加上 [hostname:port] 前綴。 */
+/** ��ܼ��ҡG�h���A���ɥ[�W [hostname:port] �e��C */
 function ollamaDisplayLabel(url: string, model: string, allUrls: string[]): string {
   if (allUrls.length <= 1) return model;
   try { const u = new URL(url); return `[${u.hostname}:${u.port || '11434'}] ${model}`; } catch { return model; }
@@ -4773,7 +5470,7 @@ function ollamaCheckConnection(baseUrl: string): Promise<{ ok: boolean; message:
         if (!settled) { settled = true; resolve({ ok: false, message: ollamaConnectError(url.hostname, e).message }); }
       });
       req.setTimeout(8000, () => {
-        if (!settled) { settled = true; req.destroy(); resolve({ ok: false, message: '連線逾時 (8s)，請確認主機 ' + url.hostname + ' 可達' }); }
+        if (!settled) { settled = true; req.destroy(); resolve({ ok: false, message: '�s�u�O�� (8s)�A�нT�{�D�� ' + url.hostname + ' �i�F' }); }
       });
       req.end();
     } catch (e) { resolve({ ok: false, message: e instanceof Error ? e.message : String(e) }); }
@@ -4782,16 +5479,16 @@ function ollamaCheckConnection(baseUrl: string): Promise<{ ok: boolean; message:
 
 function ollamaConnectError(hostname: string, e: NodeJS.ErrnoException): Error {
   if (e.code === 'ENOTFOUND') {
-    return new Error('主機名稱 \'' + hostname + '\' 無法解析（DNS），請確認 /etc/hosts 或 DNS 設定');
+    return new Error('�D���W�� \'' + hostname + '\' �L�k�ѪR�]DNS�^�A�нT�{ /etc/hosts �� DNS �]�w');
   }
   if (e.code === 'ECONNREFUSED') {
-    return new Error('連線被拒絕（port 未開放），請確認 Ollama 伺服器已啟動：' + hostname + ':11434');
+    return new Error('�s�u�Q�ڵ��]port ���}��^�A�нT�{ Ollama ���A���w�ҰʡG' + hostname + ':11434');
   }
   if (e.code === 'ETIMEDOUT' || e.message === 'ETIMEDOUT') {
-    return new Error('連線逾時，請確認防火牆設定或主機 \'' + hostname + '\' 可達');
+    return new Error('�s�u�O�ɡA�нT�{������]�w�ΥD�� \'' + hostname + '\' �i�F');
   }
   if (e.code === 'EHOSTUNREACH') {
-    return new Error('無法到達主機 \'' + hostname + '\'，請確認網路路由設定');
+    return new Error('�L�k��F�D�� \'' + hostname + '\'�A�нT�{�������ѳ]�w');
   }
   return new Error((e.code ? e.code + ': ' : '') + e.message);
 }
