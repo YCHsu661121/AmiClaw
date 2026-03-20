@@ -40,6 +40,9 @@ export class OllamaChatPanel {
   /** 最後一次送出請求的 Ollama server URL + model（切換時需清 VRAM，但只在同一台 server）*/
   private _lastOllamaUrl = '';
   private _lastOllamaModel = '';
+  /** Agent 工具快取：快取 list_dir / read_file 唯讀結果（30s TTL），寫入/刪除時自動失效 */
+  private _toolCache = new Map<string, { value: string; ts: number }>();
+  private static readonly TOOL_CACHE_TTL = 30_000;
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
   private _chatHistories: Record<string, ChatMessage[]> = { default: [] };
@@ -240,6 +243,12 @@ export class OllamaChatPanel {
         }
       } catch { /* Copilot not available */ }
       const current = cfg.get<string>('model') ?? liveModels[0]?.id ?? '';
+      // 預熱模型（keep_alive=600s）：讓 Ollama 提前載入，減少第一次請求延遲
+      if (current && !current.startsWith('copilot::')) {
+        const { url: warmUrl, model: warmModel } = decodeOllamaModel(current, ollamaUrls);
+        ollamaWarmupModel(warmUrl, warmModel);
+        OllamaChatPanel.log(`Model warmup (init): ${warmModel} @ ${warmUrl}`);
+      }
       // Push result to webview via postMessage (safe: listener is already registered)
       const r1 = await _webview.postMessage({ type: 'modelList', models: liveModels, copilotModels: copilotModels0, current });
       OllamaChatPanel.log('postMessage modelList delivered=' + r1);
@@ -3586,10 +3595,15 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
 
         if (resp.tool_calls && resp.tool_calls.length > 0) {
           this._agentMessages.push({ role: 'assistant', content: resp.content ?? null, tool_calls: resp.tool_calls });
-          for (const tc of resp.tool_calls) {
+          // 解析所有工具呼叫並立即回報步驟開始（並行執行）
+          const toolCallData = resp.tool_calls.map(tc => {
             const fn = tc.function;
             const args = (typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments) as Record<string, unknown>;
             this._panel.webview.postMessage({ type: 'agentStep', icon: getToolIcon(fn.name), title: formatToolTitle(fn.name, args), fullPath: (args.path as string) || (args.command as string) || '' });
+            return { tc, fn, args };
+          });
+          // 並行執行所有工具（多工具同時進行）
+          const toolResults = await Promise.all(toolCallData.map(async ({ tc, fn, args }) => {
             let result: string;
             let isError = false;
             try {
@@ -3598,6 +3612,10 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
               result = '錯誤：' + (e instanceof Error ? e.message : String(e));
               isError = true;
             }
+            return { tc, fn, result, isError };
+          }));
+          // 依序回報結果並推入訊息記錄
+          for (const { tc, fn, result, isError } of toolResults) {
             const preview = result.length > 400 ? result.slice(0, 400) + '\n…（已截斷）' : result;
             this._panel.webview.postMessage({ type: 'agentStepDone', result: preview, isError });
             this._agentMessages.push({ role: 'tool', content: result, tool_call_id: tc.id ?? fn.name });
@@ -3630,11 +3648,17 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     }
   }
 
-  /** 裁剪 _agentMessages：保留 system prompt + 最新 8 則訊息，避免超過 token 上限。 */
+  /** 裁剪 _agentMessages：依 token 估算值修剪，保留 system prompt 並維持上下文在 ~6000 tokens 以內。 */
   private _trimAgentHistory(): void {
     const sys = this._agentMessages[0];
-    const rest = this._agentMessages.slice(1);
-    this._agentMessages = [sys, ...rest.slice(-8)];
+    let rest = this._agentMessages.slice(1);
+    // Drop oldest pairs until total estimated tokens < 6000
+    while (rest.length > 2) {
+      const total = estimateTokens((sys?.content ?? '') + rest.map(m => m.content ?? '').join(''));
+      if (total < 6000) { break; }
+      rest = rest.slice(2);
+    }
+    this._agentMessages = [sys, ...rest];
     this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
   }
 
@@ -3946,9 +3970,14 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       }
       case 'read_file': {
         const fpath = resolvePath(args.path as string);
+        const rfKey = `rf:${fpath}`;
+        const rfCached = this._toolCache.get(rfKey);
+        if (rfCached && Date.now() - rfCached.ts < OllamaChatPanel.TOOL_CACHE_TTL) { return rfCached.value; }
         const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
         const text = Buffer.from(bytes).toString('utf8');
-        return text.length > 50000 ? text.slice(0, 50000) + '\n…（已截斷至 50KB）' : text;
+        const rfResult = text.length > 50000 ? text.slice(0, 50000) + '\n…（已截斷至 50KB）' : text;
+        if (text.length <= 10000) { this._toolCache.set(rfKey, { value: rfResult, ts: Date.now() }); }
+        return rfResult;
       }
       case 'write_file': {
         const fpath = resolvePath(args.path as string);
@@ -3956,6 +3985,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const allowed = await this.requestPermission('write', `寫入檔案: ${fpath}（${content.length} 字元）`);
         if (!allowed) { return '使用者已拒絕寫入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
+        this._toolCache.delete(`rf:${fpath}`);
         return `已寫入 ${fpath}（${content.length} 字元）`;
       }
       case 'replace_in_file': {
@@ -3968,10 +3998,15 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const allowed = await this.requestPermission('write', `編輯檔案: ${fpath}`);
         if (!allowed) { return '使用者已拒絕編輯操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.replace(oldStr, newStr), 'utf8'));
+        this._toolCache.delete(`rf:${fpath}`);
         return `已更新 ${fpath}`;
       }
       case 'list_dir': {
         const dirArg = (args.path as string) || '';
+        const ldKey = `ld:${dirArg}`;
+        const ldCached = this._toolCache.get(ldKey);
+        if (ldCached && Date.now() - ldCached.ts < OllamaChatPanel.TOOL_CACHE_TTL) { return ldCached.value; }
+        let ldResult: string;
         if (!dirArg && folders.length > 1) {
           // List all workspace folders
           const results: string[] = [];
@@ -3980,11 +4015,14 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             const listing = entries.map(([n, t]) => t === vscode.FileType.Directory ? n + '/' : n).sort().join('\n');
             results.push(`=== ${f.uri.fsPath} ===\n${listing}`);
           }
-          return results.join('\n\n');
+          ldResult = results.join('\n\n');
+        } else {
+          const dpath = resolvePath(dirArg);
+          const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(dpath));
+          ldResult = entries.map(([n, t]) => t === vscode.FileType.Directory ? n + '/' : n).sort().join('\n');
         }
-        const dpath = resolvePath(dirArg);
-        const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(dpath));
-        return entries.map(([n, t]) => t === vscode.FileType.Directory ? n + '/' : n).sort().join('\n');
+        this._toolCache.set(ldKey, { value: ldResult, ts: Date.now() });
+        return ldResult;
       }
       case 'run_terminal': {
         const cmd = args.command as string;
@@ -4027,6 +4065,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const allowed = await this.requestPermission('delete', `刪除: ${fpath}`);
         if (!allowed) { return '使用者已拒絕刪除操作'; }
         await vscode.workspace.fs.delete(vscode.Uri.file(fpath), { recursive: (args.recursive as boolean) ?? false });
+        this._toolCache.delete(`rf:${fpath}`);
+        this._toolCache.delete(`ld:${path.dirname(fpath)}`);
         return `已刪除 ${fpath}`;
       }
       case 'create_dir': {
@@ -4623,6 +4663,12 @@ except Exception as e:
       }
     } catch { /* Copilot not available */ }
     const current2 = cfg.get<string>('model') ?? liveModels[0]?.id ?? '';
+    // 預熱模型（keep_alive=600s）：讓 Ollama 提前載入，減少第一次請求延遲
+    if (current2 && !current2.startsWith('copilot::')) {
+      const { url: warmUrl, model: warmModel } = decodeOllamaModel(current2, ollamaUrls);
+      ollamaWarmupModel(warmUrl, warmModel);
+      OllamaChatPanel.log(`Model warmup: ${warmModel} @ ${warmUrl}`);
+    }
     const r1 = await this._panel.webview.postMessage({ type: 'modelList', models: liveModels, copilotModels, current: current2 });
     const r2 = await this._panel.webview.postMessage({ type: 'connectionStatus', ok: connOk2, url: connUrl2, message: connMsg2 });
     OllamaChatPanel.log('fetchModelsFromServer postMessage results: modelList=' + r1 + ' connectionStatus=' + r2);
@@ -4713,6 +4759,34 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'search_regex': return `RegExp /${args.pattern}/${args.flags || 'i'}`;
     default: return name;
   }
+}
+
+/** 估算文字的約略 token 數（CJK 字元每個約 1 token，ASCII 每 4 字元約 1 token）。 */
+function estimateTokens(text: string): number {
+  let count = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    count += code > 0x2E7F ? 1 : 0.25;  // CJK/special ≈ 1 token; ASCII ≈ 1/4 token
+  }
+  return Math.ceil(count);
+}
+
+/** 傳送 keep_alive=600 給 Ollama 以預熱（fire-and-forget），讓模型提前載入以減少首次請求延遲。 */
+function ollamaWarmupModel(baseUrl: string, model: string): void {
+  try {
+    const url = new URL('/api/generate', baseUrl);
+    const body = JSON.stringify({ model, prompt: '', keep_alive: 600 });
+    const protocol = url.protocol === 'https:' ? https : http;
+    const req = protocol.request({
+      hostname: url.hostname,
+      port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+      path: url.pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, res => { res.resume(); });
+    req.on('error', () => {});
+    req.setTimeout(30000, () => { req.destroy(); });
+    req.write(body); req.end();
+  } catch { /* ignore */ }
 }
 
 /** 傳送 keep_alive=0 給 Ollama 要求立即卸載模型（釋放 VRAM）。等待 Ollama 回應後 resolve。*/

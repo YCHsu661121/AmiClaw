@@ -42,10 +42,10 @@
 ## 🚀 中優先級（Medium Priority）
 
 ### 6. 效能優化
-- [ ] **Token 計數優化**：使用更精確的 tokenizer（tiktoken）
-- [ ] **快取機制**：快取常用工具回應（如 list_dir）
-- [ ] **並行請求**：Agent 多工具同時執行（需模型支援）
-- [ ] **模型預熱**：啟動時預載入常用模型（Ollama keep_alive）
+- [x] **Token 計數優化**：使用更精確的 tokenizer（tiktoken）
+- [x] **快取機制**：快取常用工具回應（如 list_dir）
+- [x] **並行請求**：Agent 多工具同時執行（需模型支援）
+- [x] **模型預熱**：啟動時預載入常用模型（Ollama keep_alive）
 
 ### 7. UI/UX 改進
 - [ ] **Markdown 渲染增強**：支援表格、任務清單、LaTeX 數學公式
