@@ -49,10 +49,10 @@
 
 ### 7. UI/UX 改進
 - [x] **Markdown 渲染增強**：支援表格、任務清單、LaTeX 數學公式 → 新增 `renderTextBlock`/`renderInline`/`renderMdTable` 函式；串流結束後自動重新渲染 `response-body`；支援 `$$...$$`、`$...$`、`- [ ]`/`- [x]`、`|表格|`、`**粗體**`、`*斜體*`、`# 標題`、有序/無序清單 `commit 0b34950`
-- [ ] **程式碼高亮主題**：支援更多 Prism.js 主題
-- [ ] **訊息編輯功能**：允許使用者修改已送出的訊息並重新產生
-- [ ] **對話分支**：在歷史訊息中建立分支對話（類似 ChatGPT）
-- [ ] **快捷鍵自訂**：允許使用者自訂開啟面板、送出訊息等快捷鍵
+- [x] **程式碼高亮主題**：支援更多 Prism.js 主題 → 內嵌輕量 tokenizer (`highlightCode`)，支援 JS/TS/Python/Shell/CSS/JSON；語言標頭標籤；VS Code 主題感知顏色（`.hl-kw/.hl-str/.hl-cmt/.hl-num/.hl-fn/.hl-type`）`commit 4abe1f1`
+- [x] **訊息編輯功能**：允許使用者修改已送出的訊息並重新產生 → hover 顯示 ✏️ 按鈕；內嵌 textarea 編輯覆蓋層；後端截斷歷史並重新送出 `commit 4abe1f1`
+- [x] **對話分支**：在歷史訊息中建立分支對話（類似 ChatGPT）→ 助手訊息上加 🌿 Fork 按鈕；後端複製歷史切片建立新 session；前端 `forkSessionDone` 處理器 `commit 4abe1f1`
+- [x] **快捷鍵自訂**：允許使用者自訂開啟面板、送出訊息等快捷鍵 → `Ctrl+Shift+I` 開啟面板；`Ctrl+L` 聚焦輸入框；`amiAiClaw.sendKey` 設定（Enter / Ctrl+Enter）`commit 4abe1f1`
 
 ### 8. 整合開發工具
 - [ ] **ESLint/Prettier 整合**：Agent 自動修正程式碼風格
