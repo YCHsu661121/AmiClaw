@@ -1929,7 +1929,7 @@ export class OllamaChatPanel {
         d.rawBuf = (d.rawBuf || '') + chunk;
         var boardMatch = d.rawBuf.match(/\[BOARD\]([\s\S]*?)\[\/BOARD\]/);
         if (boardMatch && d.boardNode) {
-          d.boardNode.textContent = boardMatch[1].replace(/^\n/, '').replace(/\n$/, '');
+          d.boardNode.textContent = boardMatch[1].replace(/^\\n/, '').replace(/\\n$/, '');
           d.boardNode.style.display = '';
         }
         d.body.textContent = d.rawBuf.replace(/\[BOARD\][\s\S]*?\[\/BOARD\]/g, '').replace(/\[BOARD\][\s\S]*$/, '').trim();
