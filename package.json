@@ -209,6 +209,16 @@
             "type": "string",
             "default": "ubuntu:24.04",
             "description": "沙箱 Docker 影像名稱。run_terminal/run_command 使用此影像的 sh；run_python 若此影像不含 'python' 一詞則自動改用 python:3.12-slim。建議先執行: docker pull ubuntu:24.04"
+          },
+          "amiAiClaw.autoSummarizeHistory": {
+            "type": "boolean",
+            "default": true,
+            "description": "Agent 模式對話歷史超過 token 閾值時，自動呼叫 AI 摘要舊訊息以釋放上下文視窗。關閉時改用直接裁剪（丟棄舊訊息對）。"
+          },
+          "amiAiClaw.autoSummarizeThreshold": {
+            "type": "number",
+            "default": 8000,
+            "description": "自動摘要觸發 token 閾值（預設 8000）。Agent 歷史估算 token 數超過此值時啟動摘要壓縮。建議設為模型 context window 的 50%-70%。"
           }
         }
       }

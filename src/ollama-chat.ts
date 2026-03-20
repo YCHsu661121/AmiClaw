@@ -4290,6 +4290,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       for (let step = 0; step < 20 && !this._agentCancel; step++) {
         let resp: ChatMessage | undefined;
         const isOllama = !model.startsWith('copilot::');
+        // 主動摘要：每步開始前檢查進行上下文大小，超過閾値就自動壓縮
+        await this._autoSummarizeHistory(model, baseUrl);
         // Ollama: stream each call so thinking appears in real-time
         if (isOllama) { this._panel.webview.postMessage({ type: 'streamStart' }); }
         const onThinkCb = isOllama ? (c: string) => { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: c }); } : undefined;
@@ -4308,8 +4310,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             break;
           }
           if (/token|limit|context|exceed/i.test(emsg) && this._agentMessages.length > 4) {
-            this._trimAgentHistory();
-            this._panel.webview.postMessage({ type: 'agentStep', icon: '✂️', title: '歷史記錄過長，已自動裁剪後重試', fullPath: '' });
+            await this._autoSummarizeHistory(model, baseUrl);
             if (isOllama) { this._panel.webview.postMessage({ type: 'streamStart' }); }
             resp = model.startsWith('copilot::')
               ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
@@ -4392,18 +4393,61 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     }
   }
 
-  /** 裁剪 _agentMessages：依 token 估算值修剪，保留 system prompt 並維持上下文在 ~6000 tokens 以內。 */
-  private _trimAgentHistory(): void {
+  /** 自動摘要 _agentMessages：token 超過閾值時以 AI 壓縮舊訊息，保留最近 4 則 + system prompt。
+   *  若設定關閉或摘要失敗則降級為直接丟棄舊訊息對。
+   */
+  private async _autoSummarizeHistory(model: string, baseUrl: string): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const enabled = cfg.get<boolean>('autoSummarizeHistory', true);
+    const threshold = cfg.get<number>('autoSummarizeThreshold', 8000);
     const sys = this._agentMessages[0];
-    let rest = this._agentMessages.slice(1);
-    // Drop oldest pairs until total estimated tokens < 6000
-    while (rest.length > 2) {
-      const total = estimateTokens((sys?.content ?? '') + rest.map(m => m.content ?? '').join(''));
-      if (total < 6000) { break; }
-      rest = rest.slice(2);
+    const rest = this._agentMessages.slice(1);
+    const total = estimateTokens((sys?.content ?? '') + rest.map(m => m.content ?? '').join(''));
+    if (total < threshold) { return; }
+
+    const dropFallback = (r: ChatMessage[]) => {
+      let trimmed = r;
+      while (trimmed.length > 2 && estimateTokens((sys?.content ?? '') + trimmed.map(m => m.content ?? '').join('')) >= threshold) {
+        trimmed = trimmed.slice(2);
+      }
+      this._agentMessages = [sys, ...trimmed];
+      this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+    };
+
+    if (!enabled) { dropFallback(rest); return; }
+
+    // 保留最近4 則不壓縮，將其餘小結與 AI
+    const keepTail = rest.slice(-4);
+    const toSummarize = rest.slice(0, Math.max(rest.length - 4, 0));
+    if (toSummarize.length < 2) { return; }
+
+    this._panel.webview.postMessage({ type: 'agentStep', icon: '📝', title: `對話歷史過長（≈${total} tokens），自動摘要舊訊息中…`, fullPath: '' });
+    const summaryMsgs: ChatMessage[] = [
+      { role: 'system', content: '你是對話摘要助手。請將以下對話記錄濃縮成一段繁體中文摘要，保留重要的決策、已完成的操作、重要的程式碼路徑或資訊，省略冗餘問答。摘要長度不超過 600 字，直接輸出摘要內容不需要前言。' },
+      { role: 'user', content: '請摘要以下對話記錄：\n\n' + toSummarize.map(m => `[${m.role}]: ${(m.content ?? '').slice(0, 800)}`).join('\n\n').slice(0, 12000) }
+    ];
+    let summary = '';
+    try {
+      const sResp = model.startsWith('copilot::')
+        ? await copilotChatCallWithCts(model.slice('copilot::'.length), summaryMsgs, [])
+        : await ollamaChatCallStream(baseUrl, model, summaryMsgs, []);
+      summary = (sResp?.content ?? '').trim();
+    } catch { /* 摘要失敗，降級主動丟棄 */ }
+
+    if (!summary) {
+      dropFallback(rest);
+      this._panel.webview.postMessage({ type: 'agentStep', icon: '⚠️', title: '摘要失敗，改用裁剪模式', fullPath: '' });
+      return;
     }
-    this._agentMessages = [sys, ...rest];
+
+    this._agentMessages = [
+      sys,
+      { role: 'user', content: `[自動摘要 — 先前 ${toSummarize.length} 則對話重點]\n${summary}` },
+      { role: 'assistant', content: '已了解先前對話的進度與重要資訊，繼續執行任務。' },
+      ...keepTail
+    ];
     this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+    this._panel.webview.postMessage({ type: 'agentStep', icon: '✅', title: `摘要完成：${toSummarize.length} 則壓縮為 1 則摘要，釋出≈${total - estimateTokens(summary)} tokens`, fullPath: '' });
   }
 
   /** 從 atlassian.atlascode 擷取 Jira auth (bearer token + baseApiUrl)。
