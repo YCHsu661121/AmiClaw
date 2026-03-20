@@ -638,8 +638,11 @@ export class OllamaChatPanel {
       <div id="topBar">
         <select id="chatSessionSelect" aria-label="選擇聊天"></select>
         <button class="icon-btn" id="newChat" title="新增聊天">➕</button>
-        <button class="icon-btn" id="renameChat" title="設定聊天標題">🏷️</button>
-        <select id="modelSelect" aria-label="選擇模型">${optionsHtml}</select><span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
+        <button class="icon-btn" id="renameChat" title="&#x8A2D;&#x5B9A;&#x8173;&#x5929;&#x6A19;&#x984C;">&#x1F3F7;&#xFE0F;</button>
+        <button class="icon-btn" id="exportChat" title="&#x532F;&#x51FA;&#x5C0D;&#x8A71;">&#x1F4E4;</button>
+        <button class="icon-btn" id="importChat" title="&#x532F;&#x5165;&#x5C0D;&#x8A71;">&#x1F4E5;</button>
+        <button class="icon-btn" id="searchChatBtn" title="&#x641C;&#x5C0B;&#x6240;&#x6709;&#x5C0D;&#x8A71;">&#x1F50D;</button>
+        <select id="modelSelect" aria-label="&#x9078;&#x64C7;&#x6A21;&#x578B;">${optionsHtml}</select><span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
         <button class="icon-btn" id="refreshModels" title="重整模型 / 測試連線">🔄</button>
         <button class="icon-btn" id="pickFile" title="附加檔案">📎</button>
         <button class="icon-btn" id="toggleStream" title="切換串流模式">⚡</button>
@@ -658,12 +661,6 @@ export class OllamaChatPanel {
         <input id="chatSearchInput" type="text" placeholder="&#x641C;&#x5C0B;&#x6240;&#x6709;&#x5C0D;&#x8A71;&#x2026;">
         <button class="team-pick-mini-btn" id="chatSearchGo">&#x641C;&#x5C0B;</button>
         <button class="team-pick-mini-btn" id="chatSearchClose">&#x2715;</button>
-      </div>
-      <div id="chatSearchResults"></div>
-      <div id="chatSearchBar">
-        <input id="chatSearchInput" type="text" placeholder="搜尋所有對話…">
-        <button class="team-pick-mini-btn" id="chatSearchGo">搜尋</button>
-        <button class="team-pick-mini-btn" id="chatSearchClose">✕</button>
       </div>
       <div id="chatSearchResults"></div>
       <div id="teamPicker">
