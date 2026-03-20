@@ -450,6 +450,8 @@ export class OllamaChatPanel {
       .team-pick-row{display:flex;align-items:center;gap:5px;padding:1px 2px}
       .team-pick-row label{font-size:12px;cursor:pointer;user-select:none}
       .tpl-copilot{color:#f7cc65}.tpl-ollama{color:#4fc1ff}
+      .role-badge{font-size:10px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:5px;vertical-align:middle;white-space:nowrap}
+      .role-badge-manager{background:#f7cc65;color:#1e1e1e}.role-badge-member{background:#4fc1ff;color:#1e1e1e}
       .team-pick-mini-btn{font-size:11px;padding:1px 7px;border-radius:3px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.3);color:inherit;cursor:pointer}
       #teamPickerCount{font-size:11px;opacity:0.7}
       /* 記憶管理 Modal */
@@ -515,6 +517,7 @@ export class OllamaChatPanel {
               <option value="task" selected>&#x1F9E9; 任務分解</option>
               <option value="discussion">&#x1F4AC; 討論模式</option>
               <option value="agent">&#x1F916; Agent 模式</option>
+              <option value="manager">&#x1F3E2; 主管模式</option>
             </select>
             <label style="font-size:11px;margin-left:6px">回合：</label>
             <select id="teamRoundsSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
@@ -908,7 +911,7 @@ export class OllamaChatPanel {
             var roundsVal = roundsEl ? roundsEl.value : '20';
             var teamModeEl = document.getElementById('teamModeSelect');
             var teamExecMode = teamModeEl ? teamModeEl.value : 'task';
-            var tModeLabel = teamExecMode === 'discussion' ? '\u{1F4AC} \u8a0e\u8ad6\u4e2d\u2026' : teamExecMode === 'agent' ? '\u{1F916} Agent \u57f7\u884c\u4e2d\u2026' : '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
+            var tModeLabel = teamExecMode === 'discussion' ? '\u{1F4AC} \u8a0e\u8ad6\u4e2d\u2026' : teamExecMode === 'agent' ? '\u{1F916} Agent \u57f7\u884c\u4e2d\u2026' : teamExecMode === 'manager' ? '\u{1F3E2} \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
             vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, rounds: roundsVal, teamExecMode: teamExecMode, sessionId: _activeChatSessionId });
             prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
             if (statusBar) statusBar.textContent = tModeLabel;
@@ -979,6 +982,8 @@ export class OllamaChatPanel {
       });
       var tpr = document.getElementById('teamPickerRefresh');
       if (tpr) tpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
+      var tmodeEl = document.getElementById('teamModeSelect');
+      if (tmodeEl) tmodeEl.addEventListener('change', function() { updateTeamRoleLabels(); });
 
       var debateModeBtn = document.getElementById('debateMode');
       if (debateModeBtn) debateModeBtn.addEventListener('click', function() {
@@ -1471,6 +1476,34 @@ export class OllamaChatPanel {
         var n = 0; cbs.forEach(function(c) { if (c.checked) n++; });
         var el = document.getElementById('teamPickerCount'); if (el) el.textContent = n + '/5 \u5df2\u9078';
         cbs.forEach(function(c) { if (!c.checked) c.disabled = n >= 5; });
+        updateTeamRoleLabels();
+      }
+      function updateTeamRoleLabels() {
+        var modeEl = document.getElementById('teamModeSelect');
+        var isManager = modeEl && modeEl.value === 'manager';
+        var memberIdx = 0;
+        document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
+          var cb = row.querySelector('input[type=checkbox]');
+          var lbl = row.querySelector('label');
+          if (!cb || !lbl) return;
+          var badge = lbl.querySelector('.role-badge');
+          if (!isManager) {
+            if (badge) badge.remove();
+            return;
+          }
+          if (!badge) { badge = document.createElement('span'); badge.className = 'role-badge'; lbl.appendChild(badge); }
+          if (cb.checked) {
+            if (memberIdx === 0) {
+              badge.textContent = '\uD83C\uDFE2 \u4e3b\u7ba1'; badge.className = 'role-badge role-badge-manager';
+            } else {
+              badge.textContent = '\uD83D\uDC68\u200D\uD83D\uDCBB \u7d44\u54e1 #' + memberIdx; badge.className = 'role-badge role-badge-member';
+            }
+            badge.style.display = '';
+            memberIdx++;
+          } else {
+            badge.style.display = 'none';
+          }
+        });
       }
       function getSelectedTeamModels() {
         var r = [];
@@ -1809,6 +1842,9 @@ export class OllamaChatPanel {
     // ── Agent 模式：每個成員用 handleAgent（含工具）各自獨立完成任務 ──────
     if (teamExecMode === 'agent') {
       return this._handleTeamAgent(prompt, allModels);
+    }
+    if (teamExecMode === 'manager') {
+      return this._handleTeamManager(prompt, allModels, roundsNum);
     }
 
     let finalDebateSummary = '';
@@ -2267,6 +2303,260 @@ export class OllamaChatPanel {
     }
 
     // restore a clean agent context
+    this._agentMessages = [];
+    this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+    this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
+    this._panel.webview.postMessage({ type: 'agentStatus', running: false });
+  }
+
+  // ── Team 主管模式 ────────────────────────────────────────────────────────
+  /**
+   * 主管模式流程：
+   * Phase-0 主管架構分析 → Phase-1 組員提案 → Phase-2 主管審核（循環直到 [APPROVED]）
+   * → Phase-3 Agent 執行 → Phase-4 全員 Review
+   * 人格與記憶分離：每個模型擁有自己獨立的系統提示詞與對話歷史。
+   */
+  private async _handleTeamManager(prompt: string, allModels: string[], maxRounds: number): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const urls = getOllamaUrls(cfg);
+    const COLORS = ['#f7cc65', '#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa'];
+    const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
+    const getDisplay = (m: string) => {
+      if (m.startsWith('copilot::')) return '🐙 ' + m.slice('copilot::'.length);
+      const { url, model } = decodeOllamaModel(m, urls);
+      try { const u = new URL(url); return `[${u.hostname}:${u.port || '11434'}] ${model}`; } catch { return model; }
+    };
+    if (allModels.length < 1) {
+      this._panel.webview.postMessage({ type: 'error', text: '主管模式至少需要 1 個 AI 模型（第一個為主管）' });
+      return;
+    }
+
+    const managerModel   = allModels[0];
+    const memberModels   = allModels.slice(1);
+    const managerDisplay = '🏢 主管 (' + getDisplay(managerModel) + ')';
+    const memberDisplays = memberModels.map((m, i) => `👨‍💻 工程師 #${i + 1} (${getDisplay(m)})`);
+
+    // ─ 人格設定（分離）
+    const managerPersona =
+      `你是資深技術主管兼架構師。職責：\n` +
+      `1. 分析技術需求與架構\n` +
+      `2. 指派任務給工程師\n` +
+      `3. 審查提案並給出具體改進意見\n` +
+      `4. 確認方案無誤後才核准（回覆末尾輸出 [APPROVED]）\n` +
+      `5. 對執行結果進行最終 Review\n` +
+      `風格：嚴謹簡潔，繁體中文回答。`;
+    const memberPersona = (i: number) =>
+      `你是工程師 #${i + 1}。職責：根據主管指示提出具體實作方案與程式碼修改建議。\n` +
+      `重要：你只看得到自己的對話歷史，不知道其他工程師的內容。繁體中文回答。`;
+
+    // ─ 記憶分離：各自獨立的對話歷史
+    const managerHist: { role: 'user' | 'assistant'; content: string }[] = [];
+    const memberHists: { role: 'user' | 'assistant'; content: string }[][] = memberModels.map(() => []);
+
+    // Helper：用各自 persona + 獨立 history 呼叫模型
+    const callModel = async (
+      model: string,
+      persona: string,
+      hist: { role: 'user' | 'assistant'; content: string }[],
+      userMsg: string,
+      onChunk: (c: string) => void,
+      onThink?: (c: string) => void
+    ): Promise<string> => {
+      if (model.startsWith('copilot::')) {
+        const family = model.slice('copilot::'.length);
+        const messages: vscode.LanguageModelChatMessage[] = [
+          vscode.LanguageModelChatMessage.User(persona),
+          ...hist.map(h => h.role === 'user'
+            ? vscode.LanguageModelChatMessage.User(h.content)
+            : vscode.LanguageModelChatMessage.Assistant(h.content)),
+          vscode.LanguageModelChatMessage.User(userMsg)
+        ];
+        const cts = new vscode.CancellationTokenSource();
+        const cancelTimer = setInterval(() => { if (this._teamCancel) { cts.cancel(); } }, 200);
+        try {
+          const [lm] = await vscode.lm.selectChatModels({ vendor: 'copilot', family });
+          if (!lm) { throw new Error(`Copilot 模型 "${family}" 不可用`); }
+          const resp = await lm.sendRequest(messages, {}, cts.token);
+          let full = '';
+          for await (const part of resp.stream) {
+            if (this._teamCancel) { break; }
+            if (part instanceof vscode.LanguageModelTextPart) { full += part.value; onChunk(part.value); }
+          }
+          return full;
+        } finally { clearInterval(cancelTimer); cts.dispose(); }
+      } else {
+        const { url, model: mName } = decodeOllamaModel(model, urls);
+        let thinkBuf = '';
+        let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushThink = () => { if (thinkBuf && onThink) { onThink(thinkBuf); thinkBuf = ''; } thinkTimer = null; };
+        const messages: ChatMessage[] = [
+          { role: 'system', content: persona },
+          ...hist.map(h => ({ role: h.role as 'user' | 'assistant', content: h.content })),
+          { role: 'user', content: userMsg }
+        ];
+        const text = await ollamaChatStream(url, mName, messages, onChunk,
+          (tc) => { thinkBuf += tc; if (!thinkTimer) { thinkTimer = setTimeout(flushThink, 80); } });
+        if (thinkTimer) { clearTimeout(thinkTimer); } flushThink();
+        return text;
+      }
+    };
+
+    this._teamCancel = false;
+
+    // ── Phase-0  主管架構分析 ────────────────────────────────────────────────
+    this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: managerDisplay });
+    const p0 = `【任務需求】\n${prompt}\n\n請進行架構分析：\n` +
+      `1. 分析問題範圍與技術要點\n` +
+      `2. 列出需要完成的子任務` +
+      (memberModels.length > 0
+        ? `\n3. 為 ${memberModels.length} 位工程師分配具體工作項目\n4. 說明技術限制與注意事項`
+        : '');
+    let managerAnalysis = '';
+    try {
+      managerAnalysis = await callModel(managerModel, managerPersona, managerHist, p0,
+        (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); } },
+        (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); } });
+    } catch (e) {
+      managerAnalysis = '[主管分析失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
+      this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: managerAnalysis });
+    }
+    managerHist.push({ role: 'user', content: p0 });
+    managerHist.push({ role: 'assistant', content: managerAnalysis });
+    this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // ── Phase-1/2  組員提案 ↔ 主管審核（循環）────────────────────────────────
+    const roundsLimit = isFinite(maxRounds) ? Math.min(maxRounds, 10) : 5;
+    let approved = false;
+    let managerFeedback = '';
+    let memberProposals: string[] = [];
+
+    for (let round = 0; round < roundsLimit && !this._teamCancel && !approved; round++) {
+      memberProposals = [];
+      // 組員各自提案（序列執行避免 Ollama 衝突）
+      for (let mi = 0; mi < memberModels.length && !this._teamCancel; mi++) {
+        const id = `mgr_r${round}_m${mi}`;
+        const color = COLORS[(mi + 1) % COLORS.length];
+        const taskMsg = round === 0
+          ? `【主管架構分析與任務分配】\n${managerAnalysis}\n\n你是工程師 #${mi + 1}，請根據主管分配給你的工作項目，提出詳細的實作方案（含程式碼或步驟）：`
+          : `【主管第 ${round} 輪審核意見】\n${managerFeedback}\n\n請根據主管意見修改並改進你的方案：`;
+        this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: memberDisplays[mi], color, task: `第 ${round + 1} 輪提案` });
+        let proposal = '';
+        try {
+          proposal = await callModel(memberModels[mi], memberPersona(mi), memberHists[mi], taskMsg,
+            (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); } },
+            (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: t }); } });
+        } catch (e) {
+          proposal = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: proposal });
+        }
+        memberHists[mi].push({ role: 'user', content: taskMsg });
+        memberHists[mi].push({ role: 'assistant', content: proposal });
+        memberProposals.push(proposal);
+        this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+      }
+      if (this._teamCancel) { break; }
+
+      // 主管審核
+      const reviewContent = memberModels.length > 0
+        ? memberProposals.map((p, i) => `【工程師 #${i + 1} 第 ${round + 1} 輪提案】\n${p}`).join('\n\n---\n\n')
+        : `（無組員，自行審查）\n${managerAnalysis}`;
+      const reviewMsg =
+        `${reviewContent}\n\n` +
+        `請審核以上方案：\n` +
+        `- 若方案完整可執行，請在回覆最後輸出：[APPROVED]\n` +
+        `- 若需改進，請指出具體問題要求修改（不要輸出 [APPROVED]）`;
+      this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${managerDisplay} — 審核第 ${round + 1} 輪` });
+      let reviewResp = '';
+      try {
+        reviewResp = await callModel(managerModel, managerPersona, managerHist, reviewMsg,
+          (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); } },
+          (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); } });
+      } catch (e) {
+        reviewResp = '[審核失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: reviewResp });
+      }
+      managerHist.push({ role: 'user', content: reviewMsg });
+      managerHist.push({ role: 'assistant', content: reviewResp });
+      this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+      approved = reviewResp.includes('[APPROVED]');
+      if (!approved) { managerFeedback = reviewResp; }
+    }
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // ── Phase-3  主管批准後執行 ──────────────────────────────────────────────
+    let execResult = '';
+    if (approved) {
+      const approvedId = 'mgr_exec_hdr';
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id: approvedId, model: managerDisplay, color: COLORS[0], task: '✅ 方案已核准，開始執行' });
+      this._panel.webview.postMessage({ type: 'teamResponseChunk', id: approvedId, chunk: '✅ 主管已核准方案，交由 Agent 執行...' });
+      this._panel.webview.postMessage({ type: 'teamMemberEnd', id: approvedId });
+      const agentModel = allModels.find(m => isOllamaModel(m) || m.startsWith('copilot::')) ?? allModels[0];
+      if (agentModel) {
+        const execPrompt =
+          `主管已核准以下工程師方案，請立即執行必要操作來完成任務。\n\n` +
+          `【原始任務】\n${prompt}\n\n` +
+          `【已核准方案】\n` +
+          (memberProposals.length > 0
+            ? memberProposals.map((p, i) => `工程師 #${i + 1}:\n${p}`).join('\n\n')
+            : managerAnalysis) +
+          `\n\n請逐步執行，不得僅宣告意圖而不行動。`;
+        this._panel.webview.postMessage({ type: 'teamAgentStart', model: agentModel });
+        this._agentMessages = [];
+        this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+        await this.handleAgent(execPrompt, agentModel, false);
+        execResult = '已執行完畢，請查看上方 Agent 執行記錄。';
+      }
+    } else {
+      const skipId = 'mgr_skip';
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id: skipId, model: managerDisplay, color: COLORS[0], task: '⚠️ 未獲批准' });
+      this._panel.webview.postMessage({ type: 'teamResponseChunk', id: skipId, chunk: '⚠️ 方案未在回合限制內獲得批准，跳過執行。' });
+      this._panel.webview.postMessage({ type: 'teamMemberEnd', id: skipId });
+      execResult = '方案未獲批准，未執行。';
+    }
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // ── Phase-4  全員 Review（人格與記憶分離）──────────────────────────────────
+    const rvHdrId = 'mgr_rv_hdr';
+    this._panel.webview.postMessage({ type: 'teamMemberStart', id: rvHdrId, model: '📋 全員 Review', color: '#aaaaaa', task: '各成員獨立審查執行結果' });
+    this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvHdrId, chunk: '主管與工程師將各自獨立進行 Review（記憶分離，互不影響）...' });
+    this._panel.webview.postMessage({ type: 'teamMemberEnd', id: rvHdrId });
+
+    const rvPrompt =
+      `【原始任務】\n${prompt}\n\n【執行狀態】\n${execResult}\n\n` +
+      `請以你的專業角色對執行結果進行 Review：\n` +
+      `1. 是否符合需求？\n2. 有哪些潛在問題或風險？\n3. 建議的改進方向？`;
+
+    const rvPersonas = [managerPersona, ...memberModels.map((_, i) => memberPersona(i))];
+    const rvHists: { role: 'user' | 'assistant'; content: string }[][] = [managerHist, ...memberHists];
+    const reviewResults: string[] = [];
+
+    for (let ri = 0; ri < allModels.length && !this._teamCancel; ri++) {
+      const rvId = `mgr_rv_${ri}`;
+      const color = COLORS[ri % COLORS.length];
+      const display = ri === 0 ? managerDisplay : memberDisplays[ri - 1];
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id: rvId, model: `🔍 ${display}`, color, task: 'Review' });
+      let rvResp = '';
+      try {
+        rvResp = await callModel(allModels[ri], rvPersonas[ri], rvHists[ri], rvPrompt,
+          (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvId, chunk: c }); } },
+          (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id: rvId, color, chunk: t }); } });
+      } catch (e) {
+        rvResp = '[Review 失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvId, chunk: rvResp });
+      }
+      rvHists[ri].push({ role: 'user', content: rvPrompt });
+      rvHists[ri].push({ role: 'assistant', content: rvResp });
+      reviewResults.push(`【${display} Review】\n${rvResp}`);
+      this._panel.webview.postMessage({ type: 'teamMemberEnd', id: rvId });
+    }
+
+    const finalSummary = reviewResults.join('\n\n---\n\n');
+    if (finalSummary.trim()) {
+      this._chatHistory.push({ role: 'assistant', content: finalSummary });
+      this._chatHistories[this._activeSessionId] = this._chatHistory;
+      this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+    }
     this._agentMessages = [];
     this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
     this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
