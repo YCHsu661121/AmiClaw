@@ -97,8 +97,8 @@ if exist "%HOSTROOT%\dist" rd /s /q "%HOSTROOT%\dist"
 echo Building docker image and extracting dist...
 call docker build -f "%HOSTROOT%\Dockerfile" -t ollama-chat-builder --output "type=local,dest=%HOSTROOT%\dist" "%HOSTROOT%"
 IF ERRORLEVEL 1 GOTO fail
-if exist "%HOSTROOT%\dist\ami-claw.vsix" (
-  echo Docker build succeeded. Artifact: %HOSTROOT%\dist\ami-claw.vsix
+if exist "%HOSTROOT%\dist\ami-ai-claw.vsix" (
+  echo Docker build succeeded. Artifact: %HOSTROOT%\dist\ami-ai-claw.vsix
   GOTO done
 ) else (
   echo Build finished but vsix not found in dist\.
