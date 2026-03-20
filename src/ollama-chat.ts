@@ -3645,6 +3645,41 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           return `已在 Rovo Dev 面板提問（無法直接取回回覆），請查看 Rovo Dev 面板。`;
         } catch (e) { return `失敗: ${e instanceof Error ? e.message : String(e)}`; }
       }
+      case 'run_python': {
+        const pyCode = (args.code as string || '').trim();
+        if (!pyCode) return '請提供 code 參數';
+        // Detect destructive operations to ask permission
+        const isDestructive = /os\.remove|os\.rmdir|shutil\.rmtree|shutil\.move|open\s*\(.*['"]w['"]|open\s*\(.*['"]a['"]|Path.*\.unlink|Path.*\.rmdir|copyfile|shutil\.copy/i.test(pyCode);
+        if (isDestructive) {
+          const descLine = (args.description as string || pyCode.split('\n')[0]).slice(0, 120);
+          const allowed = await this.requestPermission('run', `Python（含檔案操作）: ${descLine}`);
+          if (!allowed) return '使用者已拒絕執行操作';
+        }
+        const tmpDir = os.tmpdir();
+        const tmpFile = path.join(tmpDir, `amiclaw_py_${Date.now()}.py`);
+        try {
+          fs.writeFileSync(tmpFile, pyCode, 'utf-8');
+          return await new Promise<string>((resolve) => {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { exec } = require('child_process') as typeof import('child_process');
+            const pythonCmds = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+            let tried = 0;
+            const tryNext = () => {
+              if (tried >= pythonCmds.length) { resolve('錯誤：找不到 Python 執行環境，請確認已安裝 Python 3'); return; }
+              const cmd = pythonCmds[tried++];
+              exec(`${cmd} "${tmpFile}"`, { cwd: wsRoot || process.cwd(), timeout: 30000 }, (_err, stdout, stderr) => {
+                // Exit code non-zero is ok if there's output; only retry on ENOENT
+                if (_err && (_err as NodeJS.ErrnoException).code === 'ENOENT') { tryNext(); return; }
+                const out = (stdout || '') + (stderr ? (stdout ? '\n[stderr]\n' : '[stderr]\n') + stderr : '');
+                resolve((out.trim() || '（無輸出）').slice(0, 8000));
+              });
+            };
+            tryNext();
+          });
+        } finally {
+          try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+        }
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -3740,10 +3775,11 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'jira_transition', description: '開啟 Jira Issue 狀態轉換面板（如 TODO → IN PROGRESS → DONE）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'bb_create_pr', description: '開啟 Bitbucket 建立 Pull Request 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'rovo_ask', description: '向 Atlassian Rovo Dev AI 提問並回傳回覆（需要 Rovo Dev 本地 server 正在執行）。可查詢 Jira/Confluence 知識庫、RCA 分析等。若 Rovo Dev 未執行則退化為開啟面板。', parameters: { type: 'object', properties: { question: { type: 'string', description: '要問 Rovo Dev 的問題' } }, required: ['question'] } } },
+  { type: 'function', function: { name: 'run_python', description: '執行一段 Python 程式碼並回傳 stdout+stderr。支援所有 Python 標準模組（os、shutil、pathlib 等），可進行檔案刪除、複製、寫入、資料處理、數學計算等。程式碼中使用 print() 輸出結果。若需要寫入或刪除檔案，會先向使用者確認。', parameters: { type: 'object', properties: { code: { type: 'string', description: '要執行的 Python 程式碼（多行字串，支援 import）' }, description: { type: 'string', description: '一行說明這段程式碼的用途（顯示在步驟列）' } }, required: ['code'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍' };
   return m[name] ?? '🔧';
 }
 
@@ -3770,6 +3806,7 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'jira_transition': return `Jira 轉換狀態: ${args.issue_key}`;
     case 'bb_create_pr': return 'Bitbucket 建立 PR';
     case 'rovo_ask': return `Rovo Dev: ${args.question}`;
+    case 'run_python': return `Python: ${(args.description as string) || (args.code as string || '').split('\n')[0].slice(0, 60)}`;
     default: return name;
   }
 }
