@@ -69,7 +69,7 @@
 ### 10. 安全性增強
 - [x] **敏感資訊過濾**：自動偵測並遮蔽 API key、密碼等 → `filterSensitiveInfo()` 函式過濾 JWT/AWS/GitHub/OpenAI/PEM/Bearer/通用憑證模式；可透過 `amiAiClaw.filterSensitiveInfo` 設定關閉 `commit 7855767`
 - [x] **工具權限管理**：允許使用者設定哪些工具需要確認才執行 → `amiAiClaw.toolAlwaysAllow`（預核准工具列表）與 `amiAiClaw.toolAlwaysConfirm`（強制每次詢問）設定；`toolAlwaysConfirm` 工具會隱藏「永遠允許」按鈕 `commit 7855767`
-- [x] **沙箱執行環境**（選配）：瀏覽器工具支援 Docker 模式 → `amiAiClaw.browserUseDocker` 設定啟用後，`browser_navigate`/`browser_screenshot`/`browser_script` 均透過 `docker run --rm -i mcr.microsoft.com/playwright/python` 容器執行，截圖以 base64 JSON stdout 傳回不需挰載卓影約；可透過 `amiAiClaw.browserDockerImage` 客製影像 `commit 瀏覽器 Docker commit`
+- [x] **沙箱執行環境**（選配）：瀏覽器工具支援 Docker 模式 → `amiAiClaw.browserUseDocker` 設定啟用後，`browser_navigate`/`browser_screenshot`/`browser_script` 均透過 `docker run --rm -i mcr.microsoft.com/playwright/python` 容器執行，截圖以 base64 JSON stdout 傳回不需掛載卷影約；可透過 `amiAiClaw.browserDockerImage` 客製影像 `commit 8f68175`
 - [x] **稽核日誌**：記錄所有工具呼叫和檔案變更 → `_auditLog` 記憶體快取（200 筆）+ globalState 持久化（500 筆）；`amiAiClaw.showAuditLog` 指令開啟 QuickPick 歷程清單 `commit 7855767`
 
 ---
