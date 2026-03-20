@@ -472,6 +472,26 @@ export class OllamaChatPanel {
       .mem-btn:hover{background:rgba(128,128,128,0.25)}
       .mem-btn.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border-color:transparent}
       .mem-btn.primary:hover{opacity:0.88}
+      /* LTM 條目編輯器 */
+      .ltm-tabs{display:flex;gap:2px;margin-bottom:0}
+      .ltm-tab-btn{font-size:11px;padding:3px 12px;border-radius:4px 4px 0 0;background:rgba(128,128,128,0.1);border:1px solid rgba(128,128,128,0.25);cursor:pointer;color:inherit;opacity:0.65}
+      .ltm-tab-btn.active{background:var(--vscode-editor-background);border-bottom:1px solid var(--vscode-editor-background);opacity:1;font-weight:700}
+      .ltm-tag-filter{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;min-height:20px}
+      .ltm-tag-chip{font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(79,193,255,0.12);border:1px solid rgba(79,193,255,0.3);cursor:pointer;color:#4fc1ff;white-space:nowrap;opacity:0.75}
+      .ltm-tag-chip.all{background:rgba(128,128,128,0.12);border-color:rgba(128,128,128,0.3);color:inherit}
+      .ltm-tag-chip.active{opacity:1;font-weight:700}
+      .ltm-entry-list{display:flex;flex-direction:column;gap:2px;max-height:160px;overflow-y:auto;margin-bottom:4px;border:1px solid rgba(128,128,128,0.15);border-radius:4px;padding:3px 4px}
+      .ltm-entry{display:flex;align-items:flex-start;gap:5px;padding:2px 3px;border-radius:3px}
+      .ltm-entry:hover{background:rgba(128,128,128,0.08)}
+      .ltm-entry-tag{font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(79,193,255,0.18);color:#4fc1ff;white-space:nowrap;cursor:pointer;flex-shrink:0;border:none;font-family:inherit;line-height:1.6}
+      .ltm-entry-tag.no-tag{background:rgba(128,128,128,0.15);color:inherit;cursor:default}
+      .ltm-entry-text{flex:1;font-size:12px;line-height:1.45;word-break:break-word;cursor:pointer}
+      .ltm-entry-text:hover{text-decoration:underline;text-decoration-style:dotted}
+      .ltm-entry-del{background:none;border:none;cursor:pointer;color:inherit;opacity:0.35;padding:0 2px;font-size:13px;line-height:1;flex-shrink:0}
+      .ltm-entry-del:hover{opacity:1;color:#f87070}
+      .ltm-add-row{display:flex;gap:4px;align-items:center;margin-top:3px}
+      .ltm-add-tag{width:80px;font-size:11px;padding:3px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));outline:none}
+      .ltm-add-text{flex:1;font-size:11px;padding:3px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));outline:none}
       /* Permission dialog */
       #permissionBar{display:none;padding:8px 10px;background:rgba(247,150,50,0.12);border:1px solid rgba(247,150,50,0.5);border-radius:6px;margin:4px 0;gap:8px;flex-direction:column}
       #permissionBar.visible{display:flex}
@@ -575,14 +595,29 @@ export class OllamaChatPanel {
         <div class="mem-section">
           <p class="mem-section-title">&#x1F5C2; 長期記憶（跨對話持續保存）</p>
           <p class="mem-section-desc">每次對話都會套用此記憶為背景知識。可寫入專案偏好、環境、重要事實等。</p>
-          <input id="ltmSearch" type="text" placeholder="&#x1F50D; 搜尋關鍵字…" style="width:100%;box-sizing:border-box;font-size:11px;padding:3px 8px;margin-bottom:4px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));outline:none">
-          <textarea id="ltmArea" rows="5" placeholder="例如：- 用 Windows 11 + WSL2&#10;- 此專案用 TypeScript strict mode，將染色器用 VS Code，编譯器用 GCC 13，板子是 AMI Aptio V，它是基於 x64 UEFI。"></textarea>
+          <div class="ltm-tabs">
+            <button class="ltm-tab-btn active" id="ltmTabEntry">&#x1F4CB; 條目</button>
+            <button class="ltm-tab-btn" id="ltmTabRaw">&#x1F4C4; 原始文字</button>
+          </div>
+          <div id="ltmEntryView">
+            <div id="ltmTagFilter" class="ltm-tag-filter"></div>
+            <div id="ltmEntryList" class="ltm-entry-list"><span style="font-size:11px;opacity:0.5">載入中…</span></div>
+            <div class="ltm-add-row">
+              <input type="text" class="ltm-add-tag" id="ltmAddTag" placeholder="#標籤（選填）" maxlength="24">
+              <input type="text" class="ltm-add-text" id="ltmAddText" placeholder="新增記憶條目…（Enter 送出）">
+              <button class="mem-btn primary" id="ltmAddBtn">&#xFF0B;</button>
+            </div>
+          </div>
+          <div id="ltmRawView" style="display:none">
+            <input id="ltmSearch" type="text" placeholder="&#x1F50D; 搜尋關鍵字…" style="width:100%;box-sizing:border-box;font-size:11px;padding:3px 8px;margin-bottom:4px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));outline:none">
+            <textarea id="ltmArea" rows="7" placeholder="#標籤 條目內容&#10;例如：&#10;#環境 用 Windows 11 + WSL2&#10;#專案 此專案用 TypeScript strict mode&#10;- 無標籤的一般備忘（- 開頭）"></textarea>
+          </div>
           <div class="mem-row">
             <button class="mem-btn primary" id="saveLtmBtn">&#x1F4BE; 儲存長期記憶</button>
-            <button class="mem-btn" id="clearLtmBtn">&#x1F5D1; 清除長期記憶</button>
-            <button class="mem-btn" id="exportLtmBtn">&#x1F4E4; 匯出 JSON</button>
+            <button class="mem-btn" id="clearLtmBtn">&#x1F5D1; 清除</button>
+            <button class="mem-btn" id="exportLtmBtn">&#x1F4E4; 匯出</button>
             <input type="file" id="importLtmInput" accept=".json" style="display:none">
-            <button class="mem-btn" id="importLtmBtn">&#x1F4E5; 匯入 JSON</button>
+            <button class="mem-btn" id="importLtmBtn">&#x1F4E5; 匯入</button>
           </div>
         </div>
         <div class="mem-section">
@@ -676,7 +711,7 @@ export class OllamaChatPanel {
             var cs3 = document.getElementById('consolidateStatus');
             if (msg.error) { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u274c \u6574\u7406\u5931\u6557\uff1a' + msg.error; } }
             else if (msg.skipped) { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u26a0\ufe0f \u5c0d\u8a71\u6b77\u53f2\u70ba\u7a7a\uff0c\u7121\u9700\u6574\u7406'; } }
-            else { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u2713 \u5df2\u6574\u7406\u4e26\u5132\u5b58\u5230\u9577\u671f\u8a18\u61b6'; } var a2 = document.getElementById('ltmArea'); if (a2) a2.value = msg.ltm || ''; chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null; saveActiveSessionSnapshot(); var hp2 = document.getElementById('historyPreview'); if (hp2) hp2.value = '（已整理並清除）'; var hii2 = document.getElementById('historyInfo'); if (hii2) hii2.textContent = '對話歷史：0 條訊息'; }
+            else { if (cs3) { cs3.style.display = ''; cs3.textContent = '\u2713 \u5df2\u6574\u7406\u4e26\u5132\u5b58\u5230\u9577\u671f\u8a18\u61b6'; } var a2 = document.getElementById('ltmArea'); if (a2) a2.value = msg.ltm || ''; renderLtmEntries(); chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null; saveActiveSessionSnapshot(); var hp2 = document.getElementById('historyPreview'); if (hp2) hp2.value = '（已整理並清除）'; var hii2 = document.getElementById('historyInfo'); if (hii2) hii2.textContent = '對話歷史：0 條訊息'; }
           }
           // --- Messages FROM extension host (sidebar commands) ---
           else if (msg.type === 'newChatSession') { createNewSession(); }
@@ -1709,6 +1744,7 @@ export class OllamaChatPanel {
         if (msg.sessionId && msg.sessionId !== _activeChatSessionId) return;
         var area = document.getElementById('ltmArea');
         if (area) area.value = msg.ltm || '';
+        renderLtmEntries();
         var pp = document.getElementById('personaPreview');
         if (pp) pp.value = msg.persona || '(\u672a\u8a2d\u5b9a)';
         var hii = document.getElementById('historyInfo');
@@ -1738,6 +1774,7 @@ export class OllamaChatPanel {
       if (clearLtmBtn) clearLtmBtn.addEventListener('click', function() {
         var area = document.getElementById('ltmArea');
         if (area) area.value = '';
+        renderLtmEntries();
         vscode.postMessage({ type: 'memorySave', ltm: '' });
       });
       var ltmSearch = document.getElementById('ltmSearch');
@@ -1775,6 +1812,7 @@ export class OllamaChatPanel {
               var ltmText = typeof obj.ltm === 'string' ? obj.ltm : JSON.stringify(obj, null, 2);
               var area = document.getElementById('ltmArea');
               if (area) area.value = ltmText;
+              renderLtmEntries();
               importLtmBtn.textContent = '\u2713 \u5df2\u532f\u5165';
               setTimeout(function() { importLtmBtn.textContent = '\uD83D\uDCE5 \u532f\u5165 JSON'; }, 2000);
             } catch(ex) {
@@ -1785,6 +1823,100 @@ export class OllamaChatPanel {
           reader.readAsText(file); importLtmInput.value = '';
         });
       }
+      // ── LTM 條目編輯器 與 分類標籤 ──────────────────────────────────────────
+      var _ltmFilterTag = '';
+      function parseLtmToEntries(text) {
+        var lines = (text || '').split('\n'), entries = [];
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i].trim(); if (!line) continue;
+          var m = line.match(/^#(\S+)\s+([\s\S]*)$/);
+          if (m) { entries.push({ tag: m[1], text: m[2] }); }
+          else { entries.push({ tag: '', text: line }); }
+        }
+        return entries;
+      }
+      function entriesToLtm(entries) {
+        return entries.map(function(e) { return e.tag ? '#' + e.tag + ' ' + e.text : e.text; }).join('\n');
+      }
+      function renderLtmEntries() {
+        var area = document.getElementById('ltmArea');
+        var entries = parseLtmToEntries(area ? area.value : '');
+        var tagCounts = {};
+        entries.forEach(function(e) { if (e.tag) tagCounts[e.tag] = (tagCounts[e.tag] || 0) + 1; });
+        var filterDiv = document.getElementById('ltmTagFilter');
+        if (filterDiv) {
+          filterDiv.innerHTML = '';
+          var allChip = document.createElement('span'); allChip.className = 'ltm-tag-chip all' + (_ltmFilterTag === '' ? ' active' : '');
+          allChip.textContent = '\u5168\u90e8 (' + entries.length + ')';
+          allChip.addEventListener('click', function() { _ltmFilterTag = ''; renderLtmEntries(); }); filterDiv.appendChild(allChip);
+          Object.keys(tagCounts).sort().forEach(function(tag) {
+            var chip = document.createElement('span'); chip.className = 'ltm-tag-chip' + (_ltmFilterTag === tag ? ' active' : '');
+            chip.textContent = '#' + tag + ' (' + tagCounts[tag] + ')';
+            (function(t) { chip.addEventListener('click', function() { _ltmFilterTag = t; renderLtmEntries(); }); })(tag);
+            filterDiv.appendChild(chip);
+          });
+        }
+        var list = document.getElementById('ltmEntryList'); if (!list) return;
+        var filtered = _ltmFilterTag ? entries.filter(function(e) { return e.tag === _ltmFilterTag; }) : entries;
+        list.innerHTML = '';
+        if (!filtered.length) { list.innerHTML = '<span style="font-size:11px;opacity:0.5;padding:4px">' + (entries.length ? '\u7121\u7b26\u5408\u6a19\u7c64\u7684\u689d\u76ee' : '\u5c1a\u7121\u8a18\u61b6\u689d\u76ee') + '</span>'; return; }
+        filtered.forEach(function(entry) {
+          var actualIdx = entries.indexOf(entry);
+          var row = document.createElement('div'); row.className = 'ltm-entry';
+          var tagEl = document.createElement('button'); tagEl.className = 'ltm-entry-tag' + (entry.tag ? '' : ' no-tag');
+          tagEl.textContent = entry.tag ? '#' + entry.tag : '\u2014';
+          if (entry.tag) { (function(t) { tagEl.title = '\u7be9\u9078 #' + t; tagEl.addEventListener('click', function() { _ltmFilterTag = t; renderLtmEntries(); }); })(entry.tag); }
+          var textEl = document.createElement('span'); textEl.className = 'ltm-entry-text'; textEl.textContent = entry.text; textEl.title = '\u9ede\u64ca\u7de8\u8f2f';
+          (function(idx, e) { textEl.addEventListener('click', function() {
+            var inp = prompt('\u7de8\u8f2f\u689d\u76ee\uff1a', e.text);
+            if (inp !== null && inp.trim() !== '') {
+              var all = parseLtmToEntries(document.getElementById('ltmArea') ? document.getElementById('ltmArea').value : '');
+              all[idx].text = inp.trim();
+              var ar = document.getElementById('ltmArea'); if (ar) ar.value = entriesToLtm(all);
+              renderLtmEntries();
+            }
+          }); })(actualIdx, entry);
+          var del = document.createElement('button'); del.className = 'ltm-entry-del'; del.textContent = '\u2715'; del.title = '\u522a\u9664';
+          (function(idx) { del.addEventListener('click', function() {
+            var all = parseLtmToEntries(document.getElementById('ltmArea') ? document.getElementById('ltmArea').value : '');
+            all.splice(idx, 1);
+            var ar = document.getElementById('ltmArea'); if (ar) ar.value = entriesToLtm(all);
+            renderLtmEntries();
+          }); })(actualIdx);
+          row.appendChild(tagEl); row.appendChild(textEl); row.appendChild(del); list.appendChild(row);
+        });
+      }
+      function switchLtmTab(mode) {
+        var ev = document.getElementById('ltmEntryView'); var rv = document.getElementById('ltmRawView');
+        var te = document.getElementById('ltmTabEntry'); var tr = document.getElementById('ltmTabRaw');
+        if (mode === 'entry') {
+          if (ev) ev.style.display = ''; if (rv) rv.style.display = 'none';
+          if (te) te.classList.add('active'); if (tr) tr.classList.remove('active');
+          renderLtmEntries();
+        } else {
+          if (ev) ev.style.display = 'none'; if (rv) rv.style.display = '';
+          if (te) te.classList.remove('active'); if (tr) tr.classList.add('active');
+        }
+      }
+      var ltmTabEntryBtn = document.getElementById('ltmTabEntry');
+      if (ltmTabEntryBtn) ltmTabEntryBtn.addEventListener('click', function() { switchLtmTab('entry'); });
+      var ltmTabRawBtn = document.getElementById('ltmTabRaw');
+      if (ltmTabRawBtn) ltmTabRawBtn.addEventListener('click', function() { switchLtmTab('raw'); });
+      var ltmAddBtn = document.getElementById('ltmAddBtn');
+      if (ltmAddBtn) ltmAddBtn.addEventListener('click', function() {
+        var tagInp = document.getElementById('ltmAddTag'); var textInp = document.getElementById('ltmAddText');
+        var tag = tagInp ? tagInp.value.trim().replace(/^#+/, '').replace(/\s+/g, '_') : '';
+        var text = textInp ? textInp.value.trim() : '';
+        if (!text) { if (textInp) textInp.focus(); return; }
+        var area = document.getElementById('ltmArea');
+        var all = parseLtmToEntries(area ? area.value : '');
+        all.push({ tag: tag, text: text });
+        if (area) area.value = entriesToLtm(all);
+        if (tagInp) tagInp.value = ''; if (textInp) textInp.value = '';
+        renderLtmEntries();
+      });
+      var ltmAddTextEl = document.getElementById('ltmAddText');
+      if (ltmAddTextEl) ltmAddTextEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') { var b = document.getElementById('ltmAddBtn'); if (b) b.click(); } });
       var clearHistoryBtn2 = document.getElementById('clearHistoryBtn2');
       if (clearHistoryBtn2) clearHistoryBtn2.addEventListener('click', function() {
         chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
