@@ -105,6 +105,11 @@
 
 ## 🐛 已知問題修正
 
+- [x] **無法連線 Ollama**：`/^\n/` 與 `/\n$/` regex 寫在 template literal 內造成 JS SyntaxError，webview 卡在「檢查中…」→ 已改用跳脫字元 `commit 8c8e5f9`
+- [x] **Agent 模式 HTTP 400「不支援工具呼叫」**：deepseek-r1 等模型呼叫 tools API 回傳 400 → 已偵測錯誤並顯示友善提示，建議改用支援 tools 的模型 `commit 4a6bddd`
+- [x] **Agent 模式使用錯誤模型**：`handleAgent` 回退到 `cfg.get('model')` 讀到舊的 `'llama3'` → 已在切換模型時同步寫入 `cfg.update()` `commit 560b90b`
+- [x] **Thinking 視窗不顯示**：`supportsThinking` 未涵蓋 `hf.co/` 模型；串流 thinkChunk 有 80ms 延遲導致 think block 在回應後才出現 → 已改為即時發送、think block 插入 bubble 最前面、擴充模型偵測模式 `commit 3efc77d`
+- [x] **Ask 模式沒有 token 數字**：`streamEnd` 備份路徑因 `_lastStreamTokens=0` 的 falsy 判斷失敗 → 已改為必定建立 badge，無 eval_count 時從文字長度估算；同時更新至 statusBar `commit ca88419`
 - [ ] **Copilot 模型切換延遲**：快速切換模型時偶爾出現舊模型回應
 - [ ] **大型檔案讀取崩潰**：`read_file` 讀取 >10MB 檔案時 webview 凍結 → 限制檔案大小或分段讀取
 - [ ] **終端機輸出截斷**：`run_terminal` 執行超過 5 秒的命令輸出可能不完整

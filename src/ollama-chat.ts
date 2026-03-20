@@ -822,14 +822,35 @@ export class OllamaChatPanel {
           const msg = event.data;
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
           if (debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
-          if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); }
+          if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); if (statusBar && msg.tokens) { var _aML = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F'); statusBar.textContent = _aML + '\u2003\u2014\u2003~' + msg.tokens + ' tokens'; } }
           else if (msg.type === 'streamStart')   { clearPendingBubble(); _streamNode = null; }
           else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk); }
           else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
           else if (msg.type === 'streamEnd')     { _agentStepNode = null; setSendEnabled(true);
-            // 补上 token badge（若 streamStats 先到）
             var _sbE = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null;
-            if (_sbE && _lastStreamTokens) { var _tb = _sbE.querySelector('.stream-token-badge'); if (!_tb) { _tb = document.createElement('span'); _tb.className = 'stream-token-badge'; _tb.style.cssText = 'font-size:10px;opacity:0.5;margin-top:3px;display:block'; _sbE.appendChild(_tb); } _tb.textContent = '~' + _lastStreamTokens + ' tokens  ' + _lastStreamTps.toFixed(1) + ' t/s'; }
+            if (_sbE) {
+              var _tb = _sbE.querySelector('.stream-token-badge');
+              if (!_tb) { _tb = document.createElement('span'); _tb.className = 'stream-token-badge'; _tb.style.cssText = 'font-size:10px;opacity:0.5;margin-top:3px;display:block'; _sbE.appendChild(_tb); }
+              if (_lastStreamTokens) {
+                _tb.textContent = '~' + _lastStreamTokens + ' tokens  ' + _lastStreamTps.toFixed(1) + ' t/s';
+              } else {
+                // eval_count 未回傳時，從文字長度估算（~ 4 chars/token）
+                var _rb = _sbE.querySelector('.response-body');
+                var _est = _rb ? Math.max(1, Math.round((_rb.textContent || '').length / 4)) : 0;
+                if (_est) _tb.textContent = '≈' + _est + ' tokens (估算)';
+              }
+            }
+            // 更新 statusBar 顯示 token 資訊
+            if (statusBar) {
+              var _modeLabel = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F');
+              if (_lastStreamTokens) {
+                statusBar.textContent = _modeLabel + '\u2003\u2014\u2003~' + _lastStreamTokens + ' tokens  ' + _lastStreamTps.toFixed(1) + ' t/s';
+              } else if (_sbE) {
+                var _rbStat = _sbE.querySelector('.response-body');
+                var _estStat = _rbStat ? Math.max(1, Math.round((_rbStat.textContent || '').length / 4)) : 0;
+                if (_estStat) statusBar.textContent = _modeLabel + '\u2003\u2014\u2003\u2248' + _estStat + ' tokens (\u4f30\u7b97)';
+              }
+            }
             _streamNode = null; _lastStreamTokens = 0; _lastStreamTps = 0;
           }
           else if (msg.type === 'streamStats')   {
@@ -1467,7 +1488,9 @@ export class OllamaChatPanel {
           const label = document.createElement('span'); label.className = 'think-label'; label.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
           s.appendChild(icon); s.appendChild(label);
           const p = document.createElement('pre'); p.className = 'think-stream';
-          d.appendChild(s); d.appendChild(p); bubble.appendChild(d);
+          d.appendChild(s); d.appendChild(p); 
+          // 插入到 bubble 最前面，讓思考區塊出現在回應內容之前
+          if (bubble.firstChild) { bubble.insertBefore(d, bubble.firstChild); } else { bubble.appendChild(d); }
           d._charCount = 0;
           d._thinkStart = Date.now();
           d._thinkTimer = setInterval(function() {
@@ -3591,12 +3614,6 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     this._panel.webview.postMessage({ type: 'streamStart' });
     let fullResponse = '';
     try {
-      let thinkBuf = '';
-      let thinkTimer: ReturnType<typeof setTimeout> | null = null;
-      const flushThink = () => {
-        if (thinkBuf) { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkBuf }); thinkBuf = ''; }
-        thinkTimer = null;
-      };
       if (model.startsWith('copilot::')) {
         const copilotId = model.slice('copilot::'.length);
         const cts0 = new vscode.CancellationTokenSource();
@@ -3616,15 +3633,12 @@ ${reviewText.replace('[APPROVED]', '').trim()}
           baseUrl, model, fullPrompt,
           (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); },
           (thinkChunk) => {
-            OllamaChatPanel.log('thinkChunk: ' + thinkChunk.substring(0, 50));
-            thinkBuf += thinkChunk;
-            if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80);
+            // 即時發送，不緩衝，確保 think block 在回應內容前顯示
+            this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkChunk });
           },
           (tokens, tps) => { this._panel.webview.postMessage({ type: 'streamStats', tokens, tps }); this.trackUsage(model, tokens); }
         );
       }
-      if (thinkTimer) { clearTimeout(thinkTimer); }
-      flushThink();
       // Save assistant response to short-term memory
       this._chatHistory.push({ role: 'assistant', content: fullResponse });
       this._panel.webview.postMessage({ type: 'streamEnd' });
@@ -5297,11 +5311,13 @@ async function copilotChatCallWithCts(
 }
 
 function supportsThinking(model: string): boolean {
+  if (model.toLowerCase().includes('hf.co/')) return true; // HuggingFace 模型通常是現代模型
   const m = model.toLowerCase().replace(/.*\//, ''); // strip hf.co/user/ prefix
   return m.startsWith('deepseek-r1') || m.startsWith('deepseek-r2') ||
     m.startsWith('qwq') || m.startsWith('qwen3') ||
     m.includes(':thinking') || m.includes('-thinking') ||
-    m.includes('think');
+    m.includes('think') || m.includes('-r1') || m.includes(':r1') ||
+    m.includes('r1-') || /^r1[:.-]/.test(m);
 }
 
 function ollamaGenerate(baseUrl: string, model: string, prompt: string): Promise<{ response: string; thinking?: string }> {
