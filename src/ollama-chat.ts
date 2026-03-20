@@ -451,7 +451,7 @@ export class OllamaChatPanel {
       .team-pick-row label{font-size:12px;cursor:pointer;user-select:none}
       .tpl-copilot{color:#f7cc65}.tpl-ollama{color:#4fc1ff}
       .role-badge{font-size:10px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:5px;vertical-align:middle;white-space:nowrap}
-      .role-badge-manager{background:#f7cc65;color:#1e1e1e}.role-badge-member{background:#4fc1ff;color:#1e1e1e}
+      .role-badge-manager{background:#f7cc65;color:#1e1e1e}.role-badge-member{background:#4fc1ff;color:#1e1e1e}.role-badge-coordinator{background:#4ec9b0;color:#1e1e1e}.role-badge-discussor{background:#c586c0;color:#fff}.role-badge-agent{background:#ce9178;color:#1e1e1e}
       .team-pick-mini-btn{font-size:11px;padding:1px 7px;border-radius:3px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.3);color:inherit;cursor:pointer}
       #teamPickerCount{font-size:11px;opacity:0.7}
       /* 記憶管理 Modal */
@@ -1480,23 +1480,33 @@ export class OllamaChatPanel {
       }
       function updateTeamRoleLabels() {
         var modeEl = document.getElementById('teamModeSelect');
-        var isManager = modeEl && modeEl.value === 'manager';
+        var mode = modeEl ? modeEl.value : 'task';
         var memberIdx = 0;
         document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
           var cb = row.querySelector('input[type=checkbox]');
           var lbl = row.querySelector('label');
           if (!cb || !lbl) return;
           var badge = lbl.querySelector('.role-badge');
-          if (!isManager) {
-            if (badge) badge.remove();
-            return;
-          }
           if (!badge) { badge = document.createElement('span'); badge.className = 'role-badge'; lbl.appendChild(badge); }
           if (cb.checked) {
-            if (memberIdx === 0) {
-              badge.textContent = '\uD83C\uDFE2 \u4e3b\u7ba1'; badge.className = 'role-badge role-badge-manager';
+            if (mode === 'manager') {
+              if (memberIdx === 0) {
+                badge.textContent = '\uD83C\uDFE2 \u4e3b\u7ba1'; badge.className = 'role-badge role-badge-manager';
+              } else {
+                badge.textContent = '\uD83D\uDC68\u200D\uD83D\uDCBB \u7d44\u54e1 #' + memberIdx; badge.className = 'role-badge role-badge-member';
+              }
+            } else if (mode === 'task') {
+              if (memberIdx === 0) {
+                badge.textContent = '\uD83C\uDFAF \u5354\u8abf\u54e1'; badge.className = 'role-badge role-badge-coordinator';
+              } else {
+                badge.textContent = '\uD83D\uDC68\u200D\uD83D\uDCBB \u7d44\u54e1 #' + memberIdx; badge.className = 'role-badge role-badge-member';
+              }
+            } else if (mode === 'discussion') {
+              badge.textContent = '\uD83D\uDCAC \u8a0e\u8ad6\u8005 #' + (memberIdx + 1); badge.className = 'role-badge role-badge-discussor';
+            } else if (mode === 'agent') {
+              badge.textContent = '\uD83E\uDD16 Agent #' + (memberIdx + 1); badge.className = 'role-badge role-badge-agent';
             } else {
-              badge.textContent = '\uD83D\uDC68\u200D\uD83D\uDCBB \u7d44\u54e1 #' + memberIdx; badge.className = 'role-badge role-badge-member';
+              badge.textContent = '\uD83D\uDC64 \u6210\u54e1 #' + (memberIdx + 1); badge.className = 'role-badge role-badge-member';
             }
             badge.style.display = '';
             memberIdx++;
