@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 YCHsu. All rights reserved.
+// Copyright (c) 2026 YCHsu. All rights reserved.
 // Licensed under the MIT License.
 import * as vscode from 'vscode';
 import * as http from 'http';
@@ -261,7 +261,9 @@ export class OllamaChatPanel {
       return;
     }
 
-    const panel = vscode.window. $args[0].Value -replace "'AmiClaw'", "'AMI-AiClaw'" ,
+    const panel = vscode.window.createWebviewPanel(
+      OllamaChatPanel.viewType,
+      'AMI-AiClaw',
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
       { enableScripts: true, retainContextWhenHidden: true }
     );
@@ -4687,7 +4689,7 @@ function ollamaChatStream(
   });
 }
 
-/** 讀取所有設定的 Ollama 伺服器 URL。使用 amiAiClaw.urls。 */
+/** 讀取所有設定的 Ollama 伺服器 URL（amiAiClaw.urls）。 */
 function getOllamaUrls(cfg: vscode.WorkspaceConfiguration): string[] {
   const arr = (cfg.get<string[]>('urls') ?? []).filter((u: string) => u.trim());
   if (arr.length > 0) {

@@ -1,4 +1,4 @@
-﻿import * as vscode from 'vscode';
+import * as vscode from 'vscode';
 import { OllamaChatPanel } from './ollama-chat';
 
 interface ChatSessionInfo { id: string; title: string; }
@@ -15,17 +15,17 @@ class ChatSessionsProvider implements vscode.TreeDataProvider<ChatSessionInfo> {
     const activeId = this.context.globalState.get<string>('amiAiClaw.activeSessionId', 'default');
     const isActive = session.id === activeId;
     const item = new vscode.TreeItem(session.title, vscode.TreeItemCollapsibleState.None);
-    item.command = { command: 'amiAiClaw.switchChatSession', title: '???唳迨?予', arguments: [session.id] };
+    item.command = { command: 'amiAiClaw.switchChatSession', title: '切換到此聊天', arguments: [session.id] };
     item.iconPath = new vscode.ThemeIcon(isActive ? 'comment-discussion' : 'comment');
     item.contextValue = 'chatSession';
     item.tooltip = session.title;
-    if (isActive) { item.description = '??瘣餉?'; }
+    if (isActive) { item.description = '▶ 活躍'; }
     return item;
   }
 
   getChildren(): vscode.ProviderResult<ChatSessionInfo[]> {
     const sessions = this.context.globalState.get<ChatSessionInfo[]>('amiAiClaw.sessions', []);
-    return sessions.length > 0 ? sessions : [{ id: 'default', title: '?予 1' }];
+    return sessions.length > 0 ? sessions : [{ id: 'default', title: '聊天 1' }];
   }
 }
 
@@ -55,14 +55,14 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // ??New chat (view title button)
+  // ➕ New chat (view title button)
   context.subscriptions.push(
     vscode.commands.registerCommand('amiAiClaw.newChatSession', () => {
       openAndSend(context, { type: 'newChatSession' });
     })
   );
 
-  // Click on a tree item ??switch to that session
+  // Click on a tree item → switch to that session
   context.subscriptions.push(
     vscode.commands.registerCommand('amiAiClaw.switchChatSession', (sessionId: string) => {
       openAndSend(context, { type: 'switchChatSessionFromHost', sessionId });
@@ -72,7 +72,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Rename (context menu)
   context.subscriptions.push(
     vscode.commands.registerCommand('amiAiClaw.renameChatSession', async (session: ChatSessionInfo) => {
-      const title = await vscode.window.showInputBox({ prompt: '隢撓?亥?憭拇?憿?, value: session?.title || '' });
+      const title = await vscode.window.showInputBox({ prompt: '請輸入聊天標題', value: session?.title || '' });
       if (!title || !title.trim()) { return; }
       OllamaChatPanel.currentPanel?.postMessageToWebview({ type: 'renameChatSessionFromHost', sessionId: session.id, title: title.trim() });
     })
@@ -82,15 +82,15 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('amiAiClaw.deleteChatSession', async (session: ChatSessionInfo) => {
       const confirm = await vscode.window.showWarningMessage(
-        `?芷??{session?.title || '?予'}??甇文?雿瘜儔?,
-        { modal: true }, '?芷'
+        `刪除「${session?.title || '聊天'}」？此動作無法復原。`,
+        { modal: true }, '刪除'
       );
-      if (confirm !== '?芷') { return; }
+      if (confirm !== '刪除') { return; }
       OllamaChatPanel.currentPanel?.postMessageToWebview({ type: 'deleteChatSessionFromHost', sessionId: session.id });
     })
   );
 
-  // Right-click on file/folder in Explorer or Editor ??send to chat
+  // Right-click on file/folder in Explorer or Editor → send to chat
   context.subscriptions.push(
     vscode.commands.registerCommand('amiAiClaw.sendToChat', async (uri: vscode.Uri, allUris?: vscode.Uri[]) => {
       OllamaChatPanel.createOrShow(context);
