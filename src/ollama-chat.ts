@@ -3947,9 +3947,9 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         } else {
           const rawText = resp.content ?? '';
           // 提取 <think>...</think> 區塊供思考視窗顯示
-          const thinkMatch = rawText.match(/^<think>([\s\S]*?)<\/think>\s*/);
-          const thinkContent = thinkMatch ? thinkMatch[1].trim() : '';
-          const text = thinkMatch ? rawText.slice(thinkMatch[0].length) : rawText;
+          const thinkContent = resp.thinking ||
+            (() => { const m = rawText.match(/^<think>([\s\S]*?)<\/think>\s*/); return m ? m[1].trim() : ''; })();
+          const text = thinkContent ? rawText.replace(/^<think>[\s\S]*?<\/think>\s*/, '') : rawText;
           const tokenEst = Math.ceil(estimateTokens(rawText));
           this._agentMessages.push({ role: 'assistant', content: rawText });
           if (recordToShortTerm) {
@@ -5008,6 +5008,7 @@ except Exception as e:
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | null;
+  thinking?: string;
   tool_calls?: Array<{ id?: string; function: { name: string; arguments: Record<string, unknown> | string } }>;
   tool_call_id?: string;
 }
@@ -5166,7 +5167,7 @@ function ollamaChatCall(baseUrl: string, model: string, messages: ChatMessage[],
   return new Promise((resolve, reject) => {
     try {
       const url = new URL('/api/chat', baseUrl);
-      const body = JSON.stringify({ model, messages, tools, stream: false });
+      const body = JSON.stringify({ model, messages, tools, stream: false, think: true });
       const protocol = url.protocol === 'https:' ? https : http;
       const options: http.RequestOptions = {
         hostname: url.hostname,
@@ -5185,7 +5186,13 @@ function ollamaChatCall(baseUrl: string, model: string, messages: ChatMessage[],
           }
           try {
             const json = JSON.parse(data);
-            resolve(json.message as ChatMessage);
+            const msg = json.message as ChatMessage & { thinking?: string };
+            // Also extract <think>...</think> from content if no dedicated thinking field
+            if (!msg.thinking && msg.content) {
+              const m = (msg.content as string).match(/^<think>([\s\S]*?)<\/think>\s*/);
+              if (m) { msg.thinking = m[1].trim(); msg.content = (msg.content as string).slice(m[0].length); }
+            }
+            resolve(msg);
           } catch { reject(new Error('無法解析 /api/chat 回應')); }
         });
       });
@@ -5275,8 +5282,10 @@ async function copilotChatCallWithCts(
 }
 
 function supportsThinking(model: string): boolean {
-  const m = model.toLowerCase();
-  return m.startsWith('deepseek-r1') || m.startsWith('qwq') || m.includes('think');
+  // Always send think:true — models that don't support it simply ignore the param.
+  // This allows any model that outputs <think> tags (Ollama native thinking field or
+  // embedded tags) to have thinking captured without explicitly listing model names.
+  return true;
 }
 
 function ollamaGenerate(baseUrl: string, model: string, prompt: string): Promise<{ response: string; thinking?: string }> {
