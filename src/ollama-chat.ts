@@ -1540,12 +1540,12 @@ export class OllamaChatPanel {
         return h+'</tbody></table>';
       }
       function renderTextBlock(raw) {
-        var lines=raw.split('\n'), html='', i=0, mathBuf='', inMath=false;
+        var lines=raw.split('\\n'), html='', i=0, mathBuf='', inMath=false;
         while(i<lines.length){
           var ln=lines[i];
           // $$ 區塊
           if(ln.trim()==='$$'){ if(!inMath){inMath=true;mathBuf='';i++;continue;}else{inMath=false;html+='<code class="math-block">'+escHtml(mathBuf.trim())+'</code>';mathBuf='';i++;continue;} }
-          if(inMath){mathBuf+=ln+'\n';i++;continue;}
+          if(inMath){mathBuf+=ln+'\\n';i++;continue;}
           // 表格
           if(ln.includes('|')&&i+1<lines.length&&/^\\|?[\\s:|-]+\\|/.test(lines[i+1])){
             var tl=[ln],j=i+1; while(j<lines.length&&lines[j].includes('|')){tl.push(lines[j]);j++;}
