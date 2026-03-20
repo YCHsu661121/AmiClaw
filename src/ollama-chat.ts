@@ -869,7 +869,19 @@ export class OllamaChatPanel {
       </div>
     </div>
     <script nonce="${nonce}">
-      window.onerror = function(msg, src, line, col) { var ep = document.getElementById('debugPanel'); if (ep) ep.textContent += 'ERR:' + msg + ' L' + line + ':' + col + '\\n'; };
+      // Pre-create debugPanel so errors from the main script are visible
+      (function(){
+        var dp = document.createElement('pre');
+        dp.id = 'debugPanel';
+        dp.style.cssText = 'display:block;position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.9);color:#f44;font-size:11px;padding:6px 10px;white-space:pre-wrap;font-family:Consolas,monospace;max-height:200px;overflow:auto;border-bottom:2px solid #f44;';
+        dp.textContent = 'Loading...';
+        document.body.appendChild(dp);
+        window._debugLog = [];
+        window.onerror = function(msg, src, line, col, err) {
+          dp.style.display = 'block';
+          dp.textContent += '\\nERR:' + msg + ' L' + line + ':' + col + (err && err.stack ? '\\n' + err.stack : '');
+        };
+      })();
     </script>
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
