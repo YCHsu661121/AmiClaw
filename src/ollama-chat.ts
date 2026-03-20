@@ -5416,6 +5416,153 @@ except Exception as e:
           });
         });
       }
+      case 'browser_navigate': {
+        const bnUrl = (args.url as string || '').trim();
+        if (!bnUrl) return '請提供 url 參數';
+        const bnWaitFor = (args.wait_for as string) || 'networkidle';
+        const bnSelector = (args.selector as string) || '';
+        const bnTimeout = Math.min(Number(args.timeout_ms || 20000), 60000);
+        const bnAllowed = await this.requestPermission('run', `瀏覽器訪問: ${bnUrl}`, 'browser_navigate');
+        if (!bnAllowed) return '使用者已拒絕瀏覽器操作';
+        const bnPy = [
+          'import asyncio, json, sys',
+          'try:',
+          '    from playwright.async_api import async_playwright',
+          'except ImportError:',
+          '    print(json.dumps({"error": "找不到 playwright，請執行: pip install playwright && playwright install chromium"}))',
+          '    sys.exit(0)',
+          'async def main():',
+          '    async with async_playwright() as p:',
+          '        browser = await p.chromium.launch(headless=True)',
+          '        page = await browser.new_page()',
+          '        page.set_default_timeout(' + bnTimeout + ')',
+          '        try:',
+          '            await page.goto(' + JSON.stringify(bnUrl) + ', wait_until=' + JSON.stringify(bnWaitFor) + ', timeout=' + bnTimeout + ')',
+          ...(bnSelector ? ['            await page.wait_for_selector(' + JSON.stringify(bnSelector) + ', timeout=10000)'] : []),
+          '            title = await page.title()',
+          '            current_url = page.url',
+          '            try:',
+          '                text = await page.inner_text("body")',
+          '            except Exception:',
+          '                text = await page.content()',
+          '            links = await page.eval_on_selector_all("a[href]", "els => els.slice(0,20).map(e => ({text: e.innerText.trim(), href: e.href}))")',
+          '            print(json.dumps({"title": title, "url": current_url, "text": text[:8000], "links": links}, ensure_ascii=False))',
+          '        except Exception as e:',
+          '            print(json.dumps({"error": str(e)}))',
+          '        finally:',
+          '            await browser.close()',
+          'asyncio.run(main())',
+        ].join('\n');
+        const bnTmp = path.join(os.tmpdir(), `ami_browser_nav_${Date.now()}.py`);
+        try {
+          fs.writeFileSync(bnTmp, bnPy, 'utf-8');
+          return await new Promise<string>(res => {
+            const { exec } = require('child_process') as typeof import('child_process');
+            const cmds = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+            let tried = 0;
+            const tryNext = () => {
+              if (tried >= cmds.length) { res('錯誤：找不到 Python'); return; }
+              const pc = cmds[tried++];
+              exec(`${pc} "${bnTmp}"`, { cwd: wsRoot || process.cwd(), timeout: bnTimeout + 10000 }, (_e, o, e) => {
+                if (_e && (_e as NodeJS.ErrnoException).code === 'ENOENT') { tryNext(); return; }
+                const raw = (o || e || '').trim();
+                try {
+                  const j = JSON.parse(raw) as { error?: string; title?: string; url?: string; text?: string; links?: Array<{ text: string; href: string }> };
+                  if (j.error) { res(`瀏覽器錯誤: ${j.error}`); return; }
+                  const linksStr = j.links && j.links.length > 0 ? '\n\n=== 連結 ===\n' + j.links.map(l => `[${l.text || '(no text)'}] ${l.href}`).join('\n') : '';
+                  res(`標題: ${j.title}\n網址: ${j.url}\n\n=== 頁面文字 ===\n${j.text}${linksStr}`);
+                } catch { res(raw.slice(0, 8000) || '(無輸出)'); }
+              });
+            };
+            tryNext();
+          });
+        } finally { try { fs.unlinkSync(bnTmp); } catch { /* ignore */ } }
+      }
+      case 'browser_screenshot': {
+        const bsUrl = (args.url as string || '').trim();
+        if (!bsUrl) return '請提供 url 參數';
+        const bsOutRaw = (args.path as string || `screenshot_${Date.now()}.png`);
+        const bsOut = path.isAbsolute(bsOutRaw) ? bsOutRaw : path.join(folders[0]?.uri.fsPath ?? process.cwd(), bsOutRaw);
+        const bsSelector = (args.selector as string) || '';
+        const bsAllowed = await this.requestPermission('write', `瀏覽器截圖: ${bsUrl} → ${bsOut}`, 'browser_screenshot');
+        if (!bsAllowed) return '使用者已拒絕截圖操作';
+        const bsPy = [
+          'import asyncio, json, sys',
+          'try:',
+          '    from playwright.async_api import async_playwright',
+          'except ImportError:',
+          '    print(json.dumps({"error": "找不到 playwright，請執行: pip install playwright && playwright install chromium"}))',
+          '    sys.exit(0)',
+          'async def main():',
+          '    async with async_playwright() as p:',
+          '        browser = await p.chromium.launch(headless=True)',
+          '        page = await browser.new_page(viewport={"width": 1280, "height": 800})',
+          '        try:',
+          '            await page.goto(' + JSON.stringify(bsUrl) + ', wait_until="networkidle", timeout=20000)',
+          ...(bsSelector ? ['            await page.wait_for_selector(' + JSON.stringify(bsSelector) + ', timeout=10000)'] : []),
+          '            target = page if not ' + JSON.stringify(bsSelector) + ' else await page.query_selector(' + JSON.stringify(bsSelector || 'body') + ')',
+          '            out_path = ' + JSON.stringify(bsOut),
+          '            await target.screenshot(path=out_path, full_page=True)',
+          '            print(json.dumps({"ok": True, "path": out_path}))',
+          '        except Exception as e:',
+          '            print(json.dumps({"error": str(e)}))',
+          '        finally:',
+          '            await browser.close()',
+          'asyncio.run(main())',
+        ].join('\n');
+        const bsTmp = path.join(os.tmpdir(), `ami_browser_ss_${Date.now()}.py`);
+        try {
+          fs.writeFileSync(bsTmp, bsPy, 'utf-8');
+          return await new Promise<string>(res => {
+            const { exec } = require('child_process') as typeof import('child_process');
+            const cmds = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+            let tried = 0;
+            const tryNext = () => {
+              if (tried >= cmds.length) { res('錯誤：找不到 Python'); return; }
+              const pc = cmds[tried++];
+              exec(`${pc} "${bsTmp}"`, { cwd: wsRoot || process.cwd(), timeout: 35000 }, (_e, o, e) => {
+                if (_e && (_e as NodeJS.ErrnoException).code === 'ENOENT') { tryNext(); return; }
+                const raw = (o || e || '').trim();
+                try {
+                  const j = JSON.parse(raw) as { ok?: boolean; path?: string; error?: string };
+                  if (j.error) { res(`截圖錯誤: ${j.error}`); return; }
+                  res(`截圖已儲存: ${j.path}`);
+                } catch { res(raw || '(無輸出)'); }
+              });
+            };
+            tryNext();
+          });
+        } finally { try { fs.unlinkSync(bsTmp); } catch { /* ignore */ } }
+      }
+      case 'browser_script': {
+        const bscCode = (args.script as string || '').trim();
+        if (!bscCode) return '請提供 script 參數（Python playwright 程式碼）';
+        const bscDesc = (args.description as string || bscCode.split('\n')[0]).slice(0, 120);
+        const bscAllowed = await this.requestPermission('run', `瀏覽器腳本: ${bscDesc}`, 'browser_script');
+        if (!bscAllowed) return '使用者已拒絕瀏覽器腳本執行';
+        // Prepend playwright import guard if not present
+        const bscFull = bscCode.includes('playwright') ? bscCode
+          : 'from playwright.sync_api import sync_playwright\n' + bscCode;
+        const bscTmp = path.join(os.tmpdir(), `ami_browser_script_${Date.now()}.py`);
+        try {
+          fs.writeFileSync(bscTmp, bscFull, 'utf-8');
+          return await new Promise<string>(res => {
+            const { exec } = require('child_process') as typeof import('child_process');
+            const cmds = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+            let tried = 0;
+            const tryNext = () => {
+              if (tried >= cmds.length) { res('錯誤：找不到 Python'); return; }
+              const pc = cmds[tried++];
+              exec(`${pc} "${bscTmp}"`, { cwd: wsRoot || process.cwd(), timeout: 120000 }, (_e, o, e) => {
+                if (_e && (_e as NodeJS.ErrnoException).code === 'ENOENT') { tryNext(); return; }
+                const out = ((o || '') + (e ? '\n[stderr]\n' + e : '')).trim();
+                res(out.slice(0, 10000) || '(無輸出)');
+              });
+            };
+            tryNext();
+          });
+        } finally { try { fs.unlinkSync(bscTmp); } catch { /* ignore */ } }
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -5528,10 +5675,13 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'search_regex', description: '使用正規表達式在工作區搜尋檔案內容。支援 glob 檔案樣式、大小寫、multiline 等 flag。', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'JavaScript 正規表達式字串（不包括 //）' }, include: { type: 'string', description: 'glob 檔案樣式（預設 **/*），如 **/*.ts' }, flags: { type: 'string', description: 'regex flags（預設 i，可用 g/i/m）' } }, required: ['pattern'] } } },
   { type: 'function', function: { name: 'lint_fix', description: '對指定路徑的檔案或目錄執行 ESLint --fix 和/或 Prettier --write 修正程式碼風格問題', parameters: { type: 'object', properties: { path: { type: 'string', description: '要格式化的檔案或目錄路徑（可選，預設工作區根目錄）' }, tool: { type: 'string', enum: ['eslint', 'prettier', 'both'], description: '要執行的工具（預設 both）' } }, required: [] } } },
   { type: 'function', function: { name: 'run_tests', description: '執行專案測試套件（自動偵測 jest/vitest/mocha/pytest），回傳測試結果輸出', parameters: { type: 'object', properties: { path: { type: 'string', description: '測試目錄路徑（可選，預設工作區根目錄）' }, filter: { type: 'string', description: '測試名稱過濾（-t / -k pattern，可選）' } }, required: [] } } },
+  { type: 'function', function: { name: 'browser_navigate', description: '使用 Playwright 無頭瀏覽器訪問網頁，回傳頁面標題、文字內容與連結清單。適合需要執行 JavaScript 的 SPA 或動態頁面（靜態頁面請用 fetch_url）。需要 Python playwright：pip install playwright && playwright install chromium', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, selector: { type: 'string', description: '等待此 CSS selector 出現後再擷取內容（可選）' }, wait_for: { type: 'string', enum: ['load', 'networkidle', 'domcontentloaded'], description: '等待頁面事件（預設 networkidle）' }, timeout_ms: { type: 'number', description: '超時毫秒（預設 20000，最大 60000）' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'browser_screenshot', description: '使用 Playwright 無頭瀏覽器截取網頁截圖並儲存為 PNG 檔案。需要 Python playwright。', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, path: { type: 'string', description: '輸出 PNG 檔案路徑（預設 screenshot_<ts>.png 存於工作區根目錄）' }, selector: { type: 'string', description: '只截取此 CSS selector 元素（可選，預設整頁）' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'browser_script', description: '執行 Python Playwright 自動化腳本（適合表單填寫、點擊、多步驟操作等複雜流程）。腳本中用 print() 輸出結果。需要 Python playwright。', parameters: { type: 'object', properties: { script: { type: 'string', description: 'Python playwright 腳本（sync_api），包含完整邏輯，用 print() 輸出結果' }, description: { type: 'string', description: '一行說明腳本用途（顯示在步驟列）' } }, required: ['script'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭' };
   return m[name] ?? '🔧';
 }
 
@@ -5568,6 +5718,9 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'search_regex': return `RegExp /${args.pattern}/${args.flags || 'i'}`;
     case 'lint_fix': return `程式碼格式化: ${args.path || '.'} (${args.tool || 'both'})`;
     case 'run_tests': return `執行測試${args.filter ? ': ' + args.filter : args.path ? ' @ ' + args.path : ''}`;
+    case 'browser_navigate': return `瀏覽器訪問: ${args.url}`;
+    case 'browser_screenshot': return `瀏覽器截圖: ${args.url}${args.path ? ' → ' + args.path : ''}`;
+    case 'browser_script': return `Playwright: ${(args.description as string) || (args.script as string || '').split('\n')[0].slice(0, 60)}`;
     default: return name;
   }
 }

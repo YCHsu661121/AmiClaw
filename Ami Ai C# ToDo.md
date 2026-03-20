@@ -23,7 +23,7 @@
 - [x] **資料庫查詢工具**（選配）：支援 SQLite（`db_query` 工具，透過 Python sqlite3）
 - [x] **網路請求工具**：GET/POST HTTP API 呼叫（需使用者授權）
 - [x] **正規表達式搜尋**：`search_regex` 工具，支援 glob 檔案樣式、flags
-- [ ] **瀏覽器自動化**（選配）：Playwright/Puppeteer 整合
+- [x] **瀏覽器自動化**（選配）：Playwright 整合 → `browser_navigate`（訪問頁面回傳文字/連結）、`browser_screenshot`（截圖存 PNG）、`browser_script`（執行完整 Python playwright 脿本）；自動偵測 Python playwright，未安裝自動提示 `pip install playwright && playwright install chromium` `commit 瀏覽器 commit`
 
 ### 4. Team 模式優化
 - [x] **動態角色分配**：協調員依任務類型加入可用助手名稱，自動指派 `preferred_model`
@@ -34,7 +34,7 @@
 ### 5. Debate 模式增強
 - [x] **多回合延長**：允許使用者設定超過 4 輪的辯論
 - [x] **即時切換模型**：辯論中途更換 A/B/裁判模型
-- [x] **棋類遊戲擴充**：支援更多棋類（黑白棋、跳棋、橋牌）
+- [x] **安全性增強**：支援更多棋類（黑白棋、跳棋、橋牌）
 - [x] **遊戲視覺化**：為棋盤類遊戲提供 ASCII 或 SVG 棋盤渲染
 
 ---
