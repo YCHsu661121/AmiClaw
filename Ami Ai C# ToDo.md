@@ -13,13 +13,13 @@
 
 ### 2. 長期記憶（LTM）增強
 - [ ] 提供 LTM 編輯 UI（目前只能透過對話新增）
-- [ ] 支援匯入/匯出 LTM 為 JSON 檔案
-- [ ] LTM 搜尋功能（關鍵字過濾）
+- [x] 支援匯入/匯出 LTM 為 JSON 檔案
+- [x] LTM 搜尋功能（關鍵字過濾）
 - [ ] LTM 分類標籤系統
 
 ### 3. Agent 工具擴充
-- [ ] **檔案搜尋工具**：支援正規表達式、全工作區搜尋
-- [ ] **Git 整合**：commit、branch、merge、diff 操作
+- [x] **檔案搜尋工具**：支援正規表達式、全工作區搜尋
+- [x] **Git 整合**：commit、branch、merge、diff 操作
 - [ ] **資料庫查詢工具**（選配）：支援 SQLite、PostgreSQL
 - [ ] **網路請求工具**：GET/POST HTTP API 呼叫（需使用者授權）
 - [ ] **瀏覽器自動化**（選配）：Playwright/Puppeteer 整合

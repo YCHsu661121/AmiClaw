@@ -575,10 +575,14 @@ export class OllamaChatPanel {
         <div class="mem-section">
           <p class="mem-section-title">&#x1F5C2; 長期記憶（跨對話持續保存）</p>
           <p class="mem-section-desc">每次對話都會套用此記憶為背景知識。可寫入專案偏好、環境、重要事實等。</p>
+          <input id="ltmSearch" type="text" placeholder="&#x1F50D; 搜尋關鍵字…" style="width:100%;box-sizing:border-box;font-size:11px;padding:3px 8px;margin-bottom:4px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));outline:none">
           <textarea id="ltmArea" rows="5" placeholder="例如：- 用 Windows 11 + WSL2&#10;- 此專案用 TypeScript strict mode，將染色器用 VS Code，编譯器用 GCC 13，板子是 AMI Aptio V，它是基於 x64 UEFI。"></textarea>
           <div class="mem-row">
             <button class="mem-btn primary" id="saveLtmBtn">&#x1F4BE; 儲存長期記憶</button>
             <button class="mem-btn" id="clearLtmBtn">&#x1F5D1; 清除長期記憶</button>
+            <button class="mem-btn" id="exportLtmBtn">&#x1F4E4; 匯出 JSON</button>
+            <input type="file" id="importLtmInput" accept=".json" style="display:none">
+            <button class="mem-btn" id="importLtmBtn">&#x1F4E5; 匯入 JSON</button>
           </div>
         </div>
         <div class="mem-section">
@@ -1736,6 +1740,51 @@ export class OllamaChatPanel {
         if (area) area.value = '';
         vscode.postMessage({ type: 'memorySave', ltm: '' });
       });
+      var ltmSearch = document.getElementById('ltmSearch');
+      if (ltmSearch) ltmSearch.addEventListener('input', function() {
+        var q = ltmSearch.value.trim().toLowerCase();
+        if (!q) { ltmSearch.style.color = ''; ltmSearch.title = ''; return; }
+        var area = document.getElementById('ltmArea');
+        var lines = area ? area.value.split('\n') : [];
+        var matched = lines.filter(function(l) { return l.toLowerCase().indexOf(q) >= 0; });
+        ltmSearch.style.color = matched.length > 0 ? '' : 'var(--vscode-inputValidation-errorBorder,#f48771)';
+        ltmSearch.title = matched.length > 0 ? matched.length + ' \u884c\u7b26\u5408' : '\u7121\u7b26\u5408\u7d50\u679c';
+      });
+      var exportLtmBtn = document.getElementById('exportLtmBtn');
+      if (exportLtmBtn) exportLtmBtn.addEventListener('click', function() {
+        var area = document.getElementById('ltmArea');
+        var content = area ? area.value : '';
+        var d = new Date();
+        var ds = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+        var data = JSON.stringify({ version: 1, exportedAt: d.toISOString(), ltm: content }, null, 2);
+        var blob = new Blob([data], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a'); a.href = url; a.download = 'ltm-backup-' + ds + '.json'; a.click(); URL.revokeObjectURL(url);
+      });
+      var importLtmBtn = document.getElementById('importLtmBtn');
+      var importLtmInput = document.getElementById('importLtmInput');
+      if (importLtmBtn && importLtmInput) {
+        importLtmBtn.addEventListener('click', function() { importLtmInput.click(); });
+        importLtmInput.addEventListener('change', function() {
+          var file = importLtmInput.files && importLtmInput.files[0];
+          if (!file) return;
+          var reader = new FileReader();
+          reader.onload = function(e) {
+            try {
+              var obj = JSON.parse(e.target.result);
+              var ltmText = typeof obj.ltm === 'string' ? obj.ltm : JSON.stringify(obj, null, 2);
+              var area = document.getElementById('ltmArea');
+              if (area) area.value = ltmText;
+              importLtmBtn.textContent = '\u2713 \u5df2\u532f\u5165';
+              setTimeout(function() { importLtmBtn.textContent = '\uD83D\uDCE5 \u532f\u5165 JSON'; }, 2000);
+            } catch(ex) {
+              importLtmBtn.textContent = '\u274C \u683c\u5f0f\u932f\u8aa4';
+              setTimeout(function() { importLtmBtn.textContent = '\uD83D\uDCE5 \u532f\u5165 JSON'; }, 2000);
+            }
+          };
+          reader.readAsText(file); importLtmInput.value = '';
+        });
+      }
       var clearHistoryBtn2 = document.getElementById('clearHistoryBtn2');
       if (clearHistoryBtn2) clearHistoryBtn2.addEventListener('click', function() {
         chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
@@ -4155,6 +4204,61 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
         }
       }
+      case 'git_status': {
+        const gitRoot = (args.path as string) ? resolvePath(args.path as string) : (wsRoot || process.cwd());
+        return await new Promise<string>((resolve) => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { exec } = require('child_process') as typeof import('child_process');
+          exec('git status', { cwd: gitRoot, timeout: 10000 }, (_err, stdout, stderr) => {
+            resolve((stdout || stderr || '（無輸出）').trim().slice(0, 8000));
+          });
+        });
+      }
+      case 'git_diff': {
+        const gitRoot2 = wsRoot || process.cwd();
+        const diffFile = (args.file as string) || '';
+        const diffStaged = (args.staged as boolean) ? '--cached ' : '';
+        const diffCmd = ('git diff ' + diffStaged + diffFile).trim();
+        return await new Promise<string>((resolve) => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { exec } = require('child_process') as typeof import('child_process');
+          exec(diffCmd, { cwd: gitRoot2, timeout: 15000 }, (_err, stdout, stderr) => {
+            const out = (stdout || stderr || '').trim();
+            resolve((out || '（無變更）').slice(0, 16000));
+          });
+        });
+      }
+      case 'git_log': {
+        const gitRoot3 = wsRoot || process.cwd();
+        const logCount = Math.min(Number(args.count || 20), 100);
+        const logFile = (args.file as string) ? ('-- ' + args.file) : '';
+        const logCmd = ('git log --oneline -' + logCount + ' ' + logFile).trim();
+        return await new Promise<string>((resolve) => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { exec } = require('child_process') as typeof import('child_process');
+          exec(logCmd, { cwd: gitRoot3, timeout: 10000 }, (_err, stdout, stderr) => {
+            resolve((stdout || stderr || '（無歷史）').trim().slice(0, 8000));
+          });
+        });
+      }
+      case 'git_commit': {
+        const gitRoot4 = wsRoot || process.cwd();
+        const commitMsg = ((args.message as string) || '').trim();
+        if (!commitMsg) return '請提供 commit message';
+        const addAll = (args.add_all as boolean) !== false;
+        const allowed = await this.requestPermission('run', `Git Commit: ${commitMsg}`);
+        if (!allowed) return '使用者已拒絕 git commit 操作';
+        const safeMsg = commitMsg.replace(/"/g, '\\"');
+        const commitCmd = addAll ? `git add -A && git commit -m "${safeMsg}"` : `git commit -m "${safeMsg}"`;
+        return await new Promise<string>((resolve) => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { exec } = require('child_process') as typeof import('child_process');
+          exec(commitCmd, { cwd: gitRoot4, timeout: 30000, shell: true as unknown as string }, (_err, stdout, stderr) => {
+            const out = (stdout || '') + (stderr ? (stdout ? '\n[stderr]\n' : '[stderr]\n') + stderr : '');
+            resolve((out.trim() || '（無輸出）').slice(0, 4000));
+          });
+        });
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -4251,10 +4355,14 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'bb_create_pr', description: '開啟 Bitbucket 建立 Pull Request 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'rovo_ask', description: '向 Atlassian Rovo Dev AI 提問並回傳回覆（需要 Rovo Dev 本地 server 正在執行）。可查詢 Jira/Confluence 知識庫、RCA 分析等。若 Rovo Dev 未執行則退化為開啟面板。', parameters: { type: 'object', properties: { question: { type: 'string', description: '要問 Rovo Dev 的問題' } }, required: ['question'] } } },
   { type: 'function', function: { name: 'run_python', description: '執行一段 Python 程式碼並回傳 stdout+stderr。支援所有 Python 標準模組（os、shutil、pathlib 等），可進行檔案刪除、複製、寫入、資料處理、數學計算等。程式碼中使用 print() 輸出結果。若需要寫入或刪除檔案，會先向使用者確認。', parameters: { type: 'object', properties: { code: { type: 'string', description: '要執行的 Python 程式碼（多行字串，支援 import）' }, description: { type: 'string', description: '一行說明這段程式碼的用途（顯示在步驟列）' } }, required: ['code'] } } },
+  { type: 'function', function: { name: 'git_status', description: '取得工作區 Git 狀態（modified/staged/untracked 檔案列表）', parameters: { type: 'object', properties: { path: { type: 'string', description: '工作區路徑（可選，預設工作區根目錄）' } }, required: [] } } },
+  { type: 'function', function: { name: 'git_diff', description: '取得 Git diff（工作區變更或 staged 變更）', parameters: { type: 'object', properties: { file: { type: 'string', description: '指定檔案路徑（可選，空白表示全部）' }, staged: { type: 'boolean', description: '是否顯示 staged diff（預設 false）' } }, required: [] } } },
+  { type: 'function', function: { name: 'git_log', description: '取得 Git commit 歷史（oneline 格式）', parameters: { type: 'object', properties: { count: { type: 'number', description: '回傳筆數（預設 20，最多 100）' }, file: { type: 'string', description: '指定檔案的 commit 歷史（可選）' } }, required: [] } } },
+  { type: 'function', function: { name: 'git_commit', description: '建立 Git commit（預設 git add -A 後 commit，需使用者確認）', parameters: { type: 'object', properties: { message: { type: 'string', description: 'Commit 訊息' }, add_all: { type: 'boolean', description: '是否 git add -A（預設 true）' } }, required: ['message'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅' };
   return m[name] ?? '🔧';
 }
 
@@ -4282,6 +4390,10 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'bb_create_pr': return 'Bitbucket 建立 PR';
     case 'rovo_ask': return `Rovo Dev: ${args.question}`;
     case 'run_python': return `Python: ${(args.description as string) || (args.code as string || '').split('\n')[0].slice(0, 60)}`;
+    case 'git_status': return `Git Status${args.path ? ': ' + args.path : ''}`;
+    case 'git_diff': return `Git Diff${args.file ? ': ' + args.file : (args.staged ? ' (staged)' : '')}`;
+    case 'git_log': return `Git Log (最近 ${args.count || 20} 筆${args.file ? ', ' + args.file : ''})`;
+    case 'git_commit': return `Git Commit: ${args.message}`;
     default: return name;
   }
 }
