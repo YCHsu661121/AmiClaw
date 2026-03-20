@@ -108,6 +108,32 @@ export function activate(context: vscode.ExtensionContext) {
       OllamaChatPanel.currentPanel?.postMessageToWebview({ type: 'focusInput' });
     })
   );
+
+  // 顯示 Agent 工具呼叫稽核日誌
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.showAuditLog', () => {
+      if (OllamaChatPanel.currentPanel) {
+        OllamaChatPanel.currentPanel.showAuditLog();
+      } else {
+        // 未開啟面板時，直接從 globalState 讀取
+        type AuditEntry = { ts: number; session: string; tool: string; argsSnippet: string; error: boolean };
+        const entries = context.globalState.get<AuditEntry[]>('amiAiClaw.auditLog') ?? [];
+        if (entries.length === 0) {
+          vscode.window.showInformationMessage('稽核日誌為空 — 尚未有 Agent 工具呼叫記錄');
+          return;
+        }
+        const items = entries.slice().reverse().slice(0, 200).map(e => ({
+          label: `${e.error ? '❌' : '✅'} ${e.tool}`,
+          description: new Date(e.ts).toLocaleString('zh-TW'),
+          detail: e.argsSnippet,
+        }));
+        void vscode.window.showQuickPick(items, {
+          title: `稽核日誌（共 ${entries.length} 筆工具呼叫）`,
+          placeHolder: '工具呼叫歷程…',
+        });
+      }
+    })
+  );
 }
 
 export function deactivate() {}

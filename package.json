@@ -70,6 +70,10 @@
       {
         "command": "amiAiClaw.focusInput",
         "title": "AMI-AiClaw: 聚焦輸入框"
+      },
+      {
+        "command": "amiAiClaw.showAuditLog",
+        "title": "AMI-AiClaw: 顯示稽核日誌"
       }
     ],
     "keybindings": [
@@ -168,6 +172,23 @@
             "enumDescriptions": ["按 Enter 送出訊息（Ctrl+Enter 換行）", "按 Ctrl+Enter 送出（Enter 換行）"],
             "default": "Enter",
             "description": "聊天輸入框的送出鍵設定"
+          },
+          "amiAiClaw.filterSensitiveInfo": {
+            "type": "boolean",
+            "default": true,
+            "description": "啟用敏感資訊過濾：自動偵測並遮蔽工具回傳中的 API key、JWT token、密碼等敏感內容，避免模型學習或外洩。"
+          },
+          "amiAiClaw.toolAlwaysAllow": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "永遠自動允許的工具類別或工具名稱（不提示確認）。類別：write、run、delete；工具名稱：run_command、lint_fix 等。例：[\"read_file\", \"run_command\"]"
+          },
+          "amiAiClaw.toolAlwaysConfirm": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "永遠要求確認的工具名稱（即使 session 中按過「永遠允許」仍每次詢問）。例：[\"run_terminal\", \"delete_file\", \"git_commit\"]"
           }
         }
       }

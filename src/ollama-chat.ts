@@ -35,6 +35,8 @@ export class OllamaChatPanel {
   private _rovoDevNullUntil = 0;
   /** 寫入/刪除/執行 永遠允許集合（session 內持續）*/
   private _alwaysAllow = new Set<string>();
+  /** 稽核日誌：記錄所有 Agent 工具呼叫（記憶體內最近 200 筆）*/
+  private _auditLog: Array<{ ts: number; session: string; tool: string; argsSnippet: string; error: boolean }> = [];
   /** 等待使用者確認的 pending promise resolve */
   private _pendingPermission: ((allow: boolean) => void) | null = null;
   /** Ask / Copilot 串流的取消 token source，新請求送出時先 cancel 前一個以避免舊回應混入 */
@@ -410,6 +412,25 @@ export class OllamaChatPanel {
   /** Send any message to the webview from outside the class (e.g. from extension.ts commands) */
   public postMessageToWebview(msg: object): void {
     this._panel.webview.postMessage(msg);
+  }
+
+  /** 顯示稽核日誌（Quick Pick 清單）—列出最近 200 筆 Agent 工具呼叫紀錄 */
+  public showAuditLog(): void {
+    type AuditEntry = { ts: number; session: string; tool: string; argsSnippet: string; error: boolean };
+    const entries = this._context.globalState.get<AuditEntry[]>('amiAiClaw.auditLog') ?? [];
+    if (entries.length === 0) {
+      vscode.window.showInformationMessage('稽核日誌為空 — 尚未有 Agent 工具呼叫記錄');
+      return;
+    }
+    const items = entries.slice().reverse().slice(0, 200).map(e => ({
+      label: `${e.error ? '❌' : '✅'} ${e.tool}`,
+      description: new Date(e.ts).toLocaleString('zh-TW'),
+      detail: e.argsSnippet,
+    }));
+    void vscode.window.showQuickPick(items, {
+      title: `稽核日誌（共 ${entries.length} 筆工具呼叫）`,
+      placeHolder: '工具呼叫歷程…',
+    });
   }
 
   public static createOrShow(context: vscode.ExtensionContext) {
@@ -998,7 +1019,7 @@ export class OllamaChatPanel {
           }
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
-          else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description); }
+          else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm); }
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
@@ -2621,7 +2642,7 @@ export class OllamaChatPanel {
       // JS-side safety net: if connectionStatus never arrives in 5s, ask again
       // ── Permission dialog ───────────────────────────────────────────────
       var _currentPermCategory = '';
-      function showPermissionBar(category, description) {
+      function showPermissionBar(category, description, forceConfirm) {
         _currentPermCategory = category || '';
         var bar = document.getElementById('permissionBar');
         var desc = document.getElementById('permissionDesc');
@@ -2629,6 +2650,8 @@ export class OllamaChatPanel {
         var catLabel = { write: '\u{1F4BE} \u5beb\u5165\u6a94\u6848', delete: '\u{1F5D1} \u522a\u9664\u6a94\u6848', run: '\u{25B6}\uFE0F \u57f7\u884c\u6307\u4ee4' }[category] || '\u26A0\uFE0F \u654f\u611f\u64cd\u4f5c';
         desc.textContent = catLabel + '\uff1a' + description;
         bar.classList.add('visible');
+        var permAlwaysEl = document.getElementById('permAlways');
+        if (permAlwaysEl) { permAlwaysEl.style.display = forceConfirm ? 'none' : ''; }
       }
       function hidePermissionBar() {
         var bar = document.getElementById('permissionBar');
@@ -4183,12 +4206,23 @@ ${historyText}
     if (!this._autoCancel) { vscode.window.showInformationMessage('自動執行已結束。'); } else { vscode.window.showInformationMessage('自動執行已被中止。'); }
   }
 
-  /** 要求使用者確認敏感操作，回傳是否允許。已在 _alwaysAllow 則直接通過。*/
-  private requestPermission(category: string, description: string): Promise<boolean> {
-    if (this._alwaysAllow.has(category)) { return Promise.resolve(true); }
+  /** 要求使用者確認敏感操作，回傳是否允許。
+   *  - toolName: 工具名稱（可選），用於 settings toolAlwaysAllow/toolAlwaysConfirm 比對。
+   *  - 設定 toolAlwaysAllow：含 category 或 toolName 則自動允許（不彈確認對話框）。
+   *  - 設定 toolAlwaysConfirm：含 toolName 則每次必問（不能被 session 永遠允許覆蓋）。
+   */
+  private requestPermission(category: string, description: string, toolName = ''): Promise<boolean> {
+    const pcfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const alwaysAllowList = pcfg.get<string[]>('toolAlwaysAllow') ?? [];
+    const alwaysConfirmList = pcfg.get<string[]>('toolAlwaysConfirm') ?? [];
+    if ((toolName && alwaysAllowList.includes(toolName)) || alwaysAllowList.includes(category)) {
+      return Promise.resolve(true);
+    }
+    const forceConfirm = toolName ? alwaysConfirmList.includes(toolName) : false;
+    if (!forceConfirm && this._alwaysAllow.has(category)) { return Promise.resolve(true); }
     return new Promise<boolean>((resolve) => {
       this._pendingPermission = resolve;
-      this._panel.webview.postMessage({ type: 'permissionRequest', category, description });
+      this._panel.webview.postMessage({ type: 'permissionRequest', category, description, forceConfirm });
     });
   }
 
@@ -4303,6 +4337,18 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
               result = '錯誤：' + (e instanceof Error ? e.message : String(e));
               isError = true;
             }
+            // 敏感資訊過濾（預設啟用，可由 amiAiClaw.filterSensitiveInfo 設定關閉）
+            if (vscode.workspace.getConfiguration('amiAiClaw').get<boolean>('filterSensitiveInfo', true)) {
+              result = filterSensitiveInfo(result);
+            }
+            // 稽核日誌：記錄工具呼叫與結果
+            const _auditEntry = { ts: Date.now(), session: this._activeSessionId, tool: fn.name, argsSnippet: JSON.stringify(args).slice(0, 120), error: isError };
+            this._auditLog.push(_auditEntry);
+            if (this._auditLog.length > 200) { this._auditLog.shift(); }
+            const _savedAudit = this._context.globalState.get<typeof _auditEntry[]>('amiAiClaw.auditLog') ?? [];
+            _savedAudit.push(_auditEntry);
+            if (_savedAudit.length > 500) { _savedAudit.splice(0, _savedAudit.length - 500); }
+            void this._context.globalState.update('amiAiClaw.auditLog', _savedAudit);
             const preview = result.length > 400 ? result.slice(0, 400) + '\n…（已截斷）' : result;
             this._panel.webview.postMessage({ type: 'agentStepDone', result: preview, isError });
             this._agentMessages.push({ role: 'tool', content: result, tool_call_id: tc.id ?? fn.name });
@@ -4688,7 +4734,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       case 'write_file': {
         const fpath = resolvePath(args.path as string);
         const content = (args.content as string) ?? '';
-        const allowed = await this.requestPermission('write', `寫入檔案: ${fpath}（${content.length} 字元）`);
+        const allowed = await this.requestPermission('write', `寫入檔案: ${fpath}（${content.length} 字元）`, 'write_file');
         if (!allowed) { return '使用者已拒絕寫入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
         this._toolCache.delete(`rf:${fpath}`);
@@ -4701,7 +4747,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const oldStr = args.old_str as string;
         const newStr = (args.new_str as string) ?? '';
         if (!original.includes(oldStr)) { return `錯誤：在 ${fpath} 中找不到指定的字串`; }
-        const allowed = await this.requestPermission('write', `編輯檔案: ${fpath}`);
+        const allowed = await this.requestPermission('write', `編輯檔案: ${fpath}`, 'replace_in_file');
         if (!allowed) { return '使用者已拒絕編輯操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.replace(oldStr, newStr), 'utf8'));
         this._toolCache.delete(`rf:${fpath}`);
@@ -4733,7 +4779,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       case 'run_terminal': {
         const cmd = args.command as string;
         const cwd = (args.cwd as string) ? resolvePath(args.cwd as string) : (folders[0]?.uri.fsPath ?? process.cwd());
-        const allowed = await this.requestPermission('run', `終端機執行: ${cmd}`);
+        const allowed = await this.requestPermission('run', `終端機執行: ${cmd}`, 'run_terminal');
         if (!allowed) { return '使用者已拒絕執行操作'; }
         // Show in VS Code terminal for user visibility
         const terminals = vscode.window.terminals;
@@ -4778,7 +4824,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       }
       case 'delete_file': {
         const fpath = resolvePath(args.path as string);
-        const allowed = await this.requestPermission('delete', `刪除: ${fpath}`);
+        const allowed = await this.requestPermission('delete', `刪除: ${fpath}`, 'delete_file');
         if (!allowed) { return '使用者已拒絕刪除操作'; }
         await vscode.workspace.fs.delete(vscode.Uri.file(fpath), { recursive: (args.recursive as boolean) ?? false });
         this._toolCache.delete(`rf:${fpath}`);
@@ -4793,7 +4839,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       case 'run_command': {
         const cmd = args.command as string;
         const cwd = (args.cwd as string) ? resolvePath(args.cwd as string) : (folders[0]?.uri.fsPath ?? process.cwd());
-        const allowed = await this.requestPermission('run', `執行指令: ${cmd}`);
+        const allowed = await this.requestPermission('run', `執行指令: ${cmd}`, 'run_command');
         if (!allowed) { return '使用者已拒絕執行操作'; }
         return new Promise<string>((resolve) => {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -5115,7 +5161,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const isDestructive = /os\.remove|os\.rmdir|shutil\.rmtree|shutil\.move|open\s*\(.*['"]w['"]|open\s*\(.*['"]a['"]|Path.*\.unlink|Path.*\.rmdir|copyfile|shutil\.copy/i.test(pyCode);
         if (isDestructive) {
           const descLine = (args.description as string || pyCode.split('\n')[0]).slice(0, 120);
-          const allowed = await this.requestPermission('run', `Python（含檔案操作）: ${descLine}`);
+          const allowed = await this.requestPermission('run', `Python（含檔案操作）: ${descLine}`, 'run_python');
           if (!allowed) return '使用者已拒絕執行操作';
         }
         const tmpDir = os.tmpdir();
@@ -5185,7 +5231,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const commitMsg = ((args.message as string) || '').trim();
         if (!commitMsg) return '請提供 commit message';
         const addAll = (args.add_all as boolean) !== false;
-        const allowed = await this.requestPermission('run', `Git Commit: ${commitMsg}`);
+        const allowed = await this.requestPermission('run', `Git Commit: ${commitMsg}`, 'git_commit');
         if (!allowed) return '使用者已拒絕 git commit 操作';
         const safeMsg = commitMsg.replace(/"/g, '\\"');
         const commitCmd = addAll ? `git add -A && git commit -m "${safeMsg}"` : `git commit -m "${safeMsg}"`;
@@ -5206,7 +5252,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const reqBody = args.body ? String(args.body) : undefined;
         const reqTimeout = Number(args.timeout || 15000);
         if (reqMethod !== 'GET' && reqMethod !== 'HEAD') {
-          const allowed = await this.requestPermission('run', `HTTP ${reqMethod}: ${reqUrl}`);
+          const allowed = await this.requestPermission('run', `HTTP ${reqMethod}: ${reqUrl}`, 'http_request');
           if (!allowed) return '使用者已拒絕 HTTP 請求';
         }
         return new Promise<string>((resolve) => {
@@ -5250,7 +5296,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const sqlParams = args.params ? JSON.stringify(args.params) : '[]';
         const isWriteOp = /^\s*(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|ATTACH|DETACH)/i.test(sqlQuery);
         if (isWriteOp) {
-          const allowed = await this.requestPermission('run', `SQLite 寫入: ${sqlQuery.slice(0, 80)}`);
+          const allowed = await this.requestPermission('run', `SQLite 寫入: ${sqlQuery.slice(0, 80)}`, 'db_query');
           if (!allowed) return '使用者已拒絕資料庫寫入操作';
         }
         const pyCode = `import sqlite3, json, sys
@@ -5325,6 +5371,50 @@ except Exception as e:
         return reMatches.length > 0
           ? `=== RegExp /${pattern}/${reFlags} 匹配 (${reMatches.length}) ===\n${reMatches.join('\n')}`
           : `找不到符合 /${pattern}/${reFlags} 的結果`;
+      }
+      case 'lint_fix': {
+        const fixPath = resolvePath((args.path as string) || '.');
+        const fixTool = (args.tool as string) || 'both';
+        const lfAllowed = await this.requestPermission('run', `程式碼格式化: ${fixPath} (${fixTool})`, 'lint_fix');
+        if (!lfAllowed) { return '使用者已拒絕程式碼格式化操作'; }
+        const lfCwd = folders[0]?.uri.fsPath ?? process.cwd();
+        const runFmt = (cmd: string) => new Promise<string>(res => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { exec } = require('child_process') as typeof import('child_process');
+          exec(cmd, { cwd: lfCwd, timeout: 30000 }, (_e, o, e) => res(((o || '') + (e ? '\n[stderr]\n' + e : '')).trim() || '(無輸出)'));
+        });
+        const lfResults: string[] = [];
+        if (fixTool === 'eslint' || fixTool === 'both') { lfResults.push('[ESLint] ' + await runFmt(`npx eslint --fix "${fixPath}"`)); }
+        if (fixTool === 'prettier' || fixTool === 'both') { lfResults.push('[Prettier] ' + await runFmt(`npx prettier --write "${fixPath}"`)); }
+        return lfResults.join('\n\n') || '(無輸出)';
+      }
+      case 'run_tests': {
+        const rtFilter = (args.filter as string) || '';
+        const rtDir = (args.path as string) ? resolvePath(args.path as string) : (folders[0]?.uri.fsPath ?? process.cwd());
+        const rtAllowed = await this.requestPermission('run', `執行測試${rtFilter ? ': ' + rtFilter : ''}`, 'run_tests');
+        if (!rtAllowed) { return '使用者已拒絕執行測試'; }
+        let rtRunner = 'npx jest --passWithNoTests';
+        try {
+          const rtPkgTxt = fs.readFileSync(path.join(folders[0]?.uri.fsPath ?? process.cwd(), 'package.json'), 'utf-8');
+          const rtPkg = JSON.parse(rtPkgTxt) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; scripts?: Record<string, string> };
+          const rtDeps = { ...rtPkg.dependencies, ...rtPkg.devDependencies };
+          const rtScripts = rtPkg.scripts ?? {};
+          if (rtDeps['vitest'] || Object.values(rtScripts).some(s => s.includes('vitest'))) { rtRunner = 'npx vitest run'; }
+          else if (rtDeps['mocha']) { rtRunner = 'npx mocha'; }
+          else if (rtDeps['pytest'] || rtDeps['py.test']) { rtRunner = 'python -m pytest -v'; }
+        } catch { /* use default */ }
+        const rtFilterFlag = rtFilter
+          ? (rtRunner.includes('vitest') || rtRunner.includes('jest') ? ` -t "${rtFilter}"` : rtRunner.includes('pytest') ? ` -k "${rtFilter}"` : '')
+          : '';
+        const rtCmd = `${rtRunner}${rtFilterFlag}`.trim();
+        return await new Promise<string>(res => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { exec } = require('child_process') as typeof import('child_process');
+          exec(rtCmd, { cwd: rtDir, timeout: 60000 }, (_e, o, e) => {
+            const out = ((o || '') + (e ? '\n[stderr]\n' + e : '')).trim();
+            res(out.slice(0, 10000) || '(無輸出)');
+          });
+        });
       }
       default:
         return `未知工具: ${name}`;
@@ -5436,10 +5526,12 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'http_request', description: '發送 HTTP 請求（GET/POST/PUT/DELETE/PATCH）並回傳回應內容。適合呼叫 REST API、切換 Webhook、測試端點。非 GET 請求需使用者確認。', parameters: { type: 'object', properties: { method: { type: 'string', enum: ['GET','POST','PUT','DELETE','PATCH','HEAD'], description: 'HTTP 方法（預設 GET）' }, url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, headers: { type: 'object', description: '自訂請求標頭（可選）', additionalProperties: { type: 'string' } }, body: { type: 'string', description: '請求本文（POST/PUT 用，JSON 字串或純文字）' }, timeout: { type: 'number', description: '超時毫秒（預設 15000）' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'db_query', description: '對 SQLite 資料庫執行 SQL 查詢（SELECT/INSERT/UPDATE/DELETE）並回傳結果表格。寫入操作需使用者確認。', parameters: { type: 'object', properties: { db_path: { type: 'string', description: 'SQLite 資料庫檔案路徑（.db 檔）' }, query: { type: 'string', description: '要執行的 SQL 語句' }, params: { type: 'array', items: {}, description: 'SQL 參數（防止 SQL injection，? 佔位符對應）' } }, required: ['db_path', 'query'] } } },
   { type: 'function', function: { name: 'search_regex', description: '使用正規表達式在工作區搜尋檔案內容。支援 glob 檔案樣式、大小寫、multiline 等 flag。', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'JavaScript 正規表達式字串（不包括 //）' }, include: { type: 'string', description: 'glob 檔案樣式（預設 **/*），如 **/*.ts' }, flags: { type: 'string', description: 'regex flags（預設 i，可用 g/i/m）' } }, required: ['pattern'] } } },
+  { type: 'function', function: { name: 'lint_fix', description: '對指定路徑的檔案或目錄執行 ESLint --fix 和/或 Prettier --write 修正程式碼風格問題', parameters: { type: 'object', properties: { path: { type: 'string', description: '要格式化的檔案或目錄路徑（可選，預設工作區根目錄）' }, tool: { type: 'string', enum: ['eslint', 'prettier', 'both'], description: '要執行的工具（預設 both）' } }, required: [] } } },
+  { type: 'function', function: { name: 'run_tests', description: '執行專案測試套件（自動偵測 jest/vitest/mocha/pytest），回傳測試結果輸出', parameters: { type: 'object', properties: { path: { type: 'string', description: '測試目錄路徑（可選，預設工作區根目錄）' }, filter: { type: 'string', description: '測試名稱過濾（-t / -k pattern，可選）' } }, required: [] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪' };
   return m[name] ?? '🔧';
 }
 
@@ -5474,8 +5566,29 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'http_request': return `HTTP ${(args.method as string || 'GET').toUpperCase()}: ${args.url}`;
     case 'db_query': return `SQLite: ${(args.query as string || '').trim().slice(0, 60)}`;
     case 'search_regex': return `RegExp /${args.pattern}/${args.flags || 'i'}`;
+    case 'lint_fix': return `程式碼格式化: ${args.path || '.'} (${args.tool || 'both'})`;
+    case 'run_tests': return `執行測試${args.filter ? ': ' + args.filter : args.path ? ' @ ' + args.path : ''}`;
     default: return name;
   }
+}
+
+/** 過濾輸出文字中的敏感資訊（API key、token、密碼等），避免模型學習或外洩憑證。 */
+function filterSensitiveInfo(text: string): string {
+  return text
+    // JWT tokens (Header.Payload.Signature)
+    .replace(/eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}/g, '[JWT_REDACTED]')
+    // AWS access key IDs
+    .replace(/\bAKIA[A-Z0-9]{16}\b/g, '[AWS_KEY_REDACTED]')
+    // PEM private key blocks
+    .replace(/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----/g, '[PRIVATE_KEY_REDACTED]')
+    // Authorization Bearer headers
+    .replace(/(Authorization:\s*Bearer\s+)[A-Za-z0-9_\-.+/]{20,}/gi, '$1[REDACTED]')
+    // GitHub personal access tokens
+    .replace(/\bgh[pousr]_[a-zA-Z0-9]{36,}\b/g, '[GH_TOKEN_REDACTED]')
+    // OpenAI / Anthropic / generic sk- API keys
+    .replace(/\bsk-[a-zA-Z0-9]{20,}\b/g, '[API_KEY_REDACTED]')
+    // Generic credential key=value or "key": "value" patterns
+    .replace(/(["\'']?(?:api_?key|secret|password|passwd|token|access_?key|auth_?key|private_?key)["\'']?\s*[:=]\s*["\'']?)[A-Za-z0-9_\-.+/]{16,}(["\'']?)/gi, '$1[REDACTED]$2');
 }
 
 /** 估算文字的約略 token 數（CJK 字元每個約 1 token，ASCII 每 4 字元約 1 token）。 */
