@@ -57,8 +57,8 @@
 ### 8. 整合開發工具
 - [x] **ESLint/Prettier 整合**：Agent 自動修正程式碼風格 → `lint_fix` 工具：執行 `npx eslint --fix` 和/或 `npx prettier --write`，`tool` 參數可選 `eslint`/`prettier`/`both` `commit 7855767`
 - [x] **單元測試生成**：為選取的函式自動產生 Jest/Mocha 測試 → `run_tests` 工具：自動偵測 jest/vitest/mocha/pytest，執行測試套件並回傳結果；Agent 可讀取原始碼後用 `write_file` 寫入測試 `commit 7855767`
-- [ ] **文件生成**：為專案自動產生 API 文件（JSDoc、TypeDoc）
-- [ ] **重構建議**：分析程式碼並提供重構方案
+- [x] **文件生成**：為專案自動產生 API 文件（JSDoc、TypeDoc）→ `generate_docs` 工具：自動偵測 TypeDoc/JSDoc（package.json devDeps 或 typedoc.json/.jsdocrc 設定檔），執行 `npx typedoc/jsdoc`，回報輸出目錄路徑 `commit 7b1a5f6`
+- [x] **重構建議**：分析程式碼並提供重構方案 → `refactor_suggest` 工具：讀取目標檔案（≤500KB），以暫時 ESLint 設定執行複雜度/品質分析（循環複雜度 >10、函式行數 >60、巢狀深度 >4、參數數量 >5），回傳含行號的原始碼與警告供 AI 產生重構建議 `commit 7b1a5f6`
 
 ### 9. 雲端模型支援（選配）
 - [ ] **OpenAI API 整合**：支援 GPT-4、GPT-3.5
