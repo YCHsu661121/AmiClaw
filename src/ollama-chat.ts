@@ -888,6 +888,7 @@ export class OllamaChatPanel {
       // ── 使用者訊息計數 / 歷史長度追蹤 ────
       var _userMsgCount = 0;   // 已加入的 user message 數（用於 editMessage / forkSession）
       var _lastHistLen  = 0;   // 最近一次 historyCount 回傳的後端歷史長度
+      var _lastTokenInfo = ''; // streamEnd 設定的 token 資訊文字（供 agentStatus restore 用）
 
       // ── 訊息處理 (最先掛上，避免後續程式碼拋例外導致 listener 遺失) ──────
       window.addEventListener('message', function(event) {
@@ -912,6 +913,7 @@ export class OllamaChatPanel {
                 var _rb = _sbE.querySelector('.response-body');
                 var _est = 0;
                 if (_rb) { var _t = _rb.textContent || ''; for (var _ci = 0; _ci < _t.length; _ci++) { _est += _t.codePointAt(_ci) > 0x2E7F ? 1 : 0.25; } _est = Math.max(1, Math.ceil(_est)); }
+                if (!_est) { var _thinkPre = _sbE.querySelector('details.think pre.think-stream'); if (_thinkPre) { var _tt = _thinkPre.textContent || ''; for (var _tk = 0; _tk < _tt.length; _tk++) { _est += _tt.codePointAt(_tk) > 0x2E7F ? 1 : 0.25; } _est = Math.max(1, Math.ceil(_est)); } }
                 if (_est) _tb.textContent = '\u2248' + _est + ' tokens (\u4f30\u7b97)';
               }
             }
@@ -920,13 +922,19 @@ export class OllamaChatPanel {
             // 更新 statusBar 顯示 token 資訊
             if (statusBar) {
               var _modeLabel = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F');
+              var _tokText = '';
               if (_lastStreamTokens) {
-                statusBar.textContent = _modeLabel + '\u2003\u2014\u2003~' + _lastStreamTokens + ' tokens  ' + _lastStreamTps.toFixed(1) + ' t/s';
+                _tokText = '~' + _lastStreamTokens + ' tokens  ' + _lastStreamTps.toFixed(1) + ' t/s';
               } else if (_sbE) {
                 var _rbStat = _sbE.querySelector('.response-body');
                 var _estStat = 0;
                 if (_rbStat) { var _ts = _rbStat.textContent || ''; for (var _cj = 0; _cj < _ts.length; _cj++) { _estStat += _ts.codePointAt(_cj) > 0x2E7F ? 1 : 0.25; } _estStat = Math.max(1, Math.ceil(_estStat)); }
-                if (_estStat) statusBar.textContent = _modeLabel + '\u2003\u2014\u2003\u2248' + _estStat + ' tokens (\u4f30\u7b97)';
+                if (!_estStat) { var _thinkPre2 = _sbE.querySelector('details.think pre.think-stream'); if (_thinkPre2) { var _tt2 = _thinkPre2.textContent || ''; for (var _tk2 = 0; _tk2 < _tt2.length; _tk2++) { _estStat += _tt2.codePointAt(_tk2) > 0x2E7F ? 1 : 0.25; } _estStat = Math.max(1, Math.ceil(_estStat)); } }
+                if (_estStat) _tokText = '\u2248' + _estStat + ' tokens (\u4f30\u7b97)';
+              }
+              if (_tokText) {
+                _lastTokenInfo = _modeLabel + '\u2003\u2014\u2003' + _tokText;
+                statusBar.textContent = _lastTokenInfo;
               }
             }
             _streamNode = null; _lastStreamTokens = 0; _lastStreamTps = 0;
@@ -968,7 +976,12 @@ export class OllamaChatPanel {
           else if (msg.type === 'debateTurnEnd') { finalizeDebateTurn(msg.speaker, msg.tokens, msg.tps); }
           else if (msg.type === 'debateEnd')     { _debateRunning = false; var _dsBar2 = document.getElementById('debateSwapBar'); if (_dsBar2) _dsBar2.style.display = 'none'; finalizeDebate(msg.consensus); setSendEnabled(true); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f'; }
           else if (msg.type === 'agentStatus')   {
-            if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
+            if (msg.running) {
+              if (statusBar) statusBar.textContent = '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026';
+              _lastTokenInfo = '';
+            } else {
+              if (statusBar) statusBar.textContent = _lastTokenInfo || (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
+            }
             setSendEnabled(!msg.running);
           }
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
