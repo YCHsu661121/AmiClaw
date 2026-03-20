@@ -285,6 +285,15 @@ export class OllamaChatPanel {
           case 'memoryConsolidate':
             await this.handleMemoryConsolidate(message.sessionId);
             break;
+          case 'saveModel': {
+            const newModel = message.model as string;
+            if (newModel) {
+              const cfg3 = vscode.workspace.getConfiguration('amiAiClaw');
+              await cfg3.update('model', newModel, vscode.ConfigurationTarget.Global);
+              OllamaChatPanel.log('saveModel: ' + newModel);
+            }
+            break;
+          }
           case 'openSettings':
             vscode.commands.executeCommand('workbench.action.openSettings', 'amiAiClaw.systemPrompt');
             break;
@@ -1309,6 +1318,7 @@ export class OllamaChatPanel {
           var selOpt = modelSelect.options[modelSelect.selectedIndex];
           var multEl = document.getElementById('modelMultiplier');
           if (multEl) multEl.textContent = selOpt && selOpt.dataset.multiplier ? selOpt.dataset.multiplier : '';
+          vscode.postMessage({ type: 'saveModel', model: modelSelect.value });
         });
       }
 
@@ -2002,6 +2012,8 @@ export class OllamaChatPanel {
         if (!modelSelect.value && hasAny) { var firstOpt = modelSelect.querySelector('option'); if (firstOpt) modelSelect.value = firstOpt.value; }
         // 更新倍數標籤
         (function() { var selOpt = modelSelect.options[modelSelect.selectedIndex]; var multEl = document.getElementById('modelMultiplier'); if (multEl) multEl.textContent = selOpt && selOpt.dataset.multiplier ? selOpt.dataset.multiplier : ''; })();
+        // 同步當前選擇到後端設定（確保 handleAgent fallback 不使用舊模型名稱）
+        if (modelSelect.value) { vscode.postMessage({ type: 'saveModel', model: modelSelect.value }); }
       }
 
       function updateConnStatus(ok, url, message) {
