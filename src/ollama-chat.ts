@@ -826,8 +826,21 @@ export class OllamaChatPanel {
           else if (msg.type === 'streamStart')   { clearPendingBubble(); _streamNode = null; }
           else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk); }
           else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
-          else if (msg.type === 'streamEnd')     { _agentStepNode = null; _streamNode = null; setSendEnabled(true); }
-          else if (msg.type === 'streamStats')   { var _sb = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null; if (_sb) { var _det = _sb.querySelector('details.think'); if (_det) { var _lbl = _det.querySelector('.think-label'); var _secs = _det._thinkEnd ? Math.round((_det._thinkEnd - (_det._thinkStart||_det._thinkEnd)) / 1000) : 0; if (_lbl) _lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (' + msg.tokens + ' tokens, \u8017\u6642 ' + _secs + 's, ' + msg.tps.toFixed(1) + ' t/s)'; } } }
+          else if (msg.type === 'streamEnd')     { _agentStepNode = null; setSendEnabled(true);
+            // 补上 token badge（若 streamStats 先到）
+            var _sbE = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null;
+            if (_sbE && _lastStreamTokens) { var _tb = _sbE.querySelector('.stream-token-badge'); if (!_tb) { _tb = document.createElement('span'); _tb.className = 'stream-token-badge'; _tb.style.cssText = 'font-size:10px;opacity:0.5;margin-top:3px;display:block'; _sbE.appendChild(_tb); } _tb.textContent = '~' + _lastStreamTokens + ' tokens  ' + _lastStreamTps.toFixed(1) + ' t/s'; }
+            _streamNode = null; _lastStreamTokens = 0; _lastStreamTps = 0;
+          }
+          else if (msg.type === 'streamStats')   {
+            _lastStreamTokens = msg.tokens; _lastStreamTps = msg.tps;
+            var _sb = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null;
+            if (_sb) {
+              var _det = _sb.querySelector('details.think');
+              if (_det) { var _lbl = _det.querySelector('.think-label'); var _secs = _det._thinkEnd ? Math.round((_det._thinkEnd - (_det._thinkStart||_det._thinkEnd)) / 1000) : 0; if (_lbl) _lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (' + msg.tokens + ' tokens, \u8017\u6642 ' + _secs + 's, ' + msg.tps.toFixed(1) + ' t/s)'; }
+              var _tb2 = _sb.querySelector('.stream-token-badge'); if (!_tb2) { _tb2 = document.createElement('span'); _tb2.className = 'stream-token-badge'; _tb2.style.cssText = 'font-size:10px;opacity:0.5;margin-top:3px;display:block'; _sb.appendChild(_tb2); } _tb2.textContent = '~' + msg.tokens + ' tokens  ' + msg.tps.toFixed(1) + ' t/s';
+            }
+          }
           else if (msg.type === 'error')         { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', '\u932f\u8aa4\uff1a' + msg.text); }
           else if (msg.type === 'teamMemberStart') { createTeamMember(msg.id, msg.model, msg.color, msg.task); }
           else if (msg.type === 'teamThinkChunk')  { appendTeamThinkChunk(msg.id, msg.color, msg.chunk); }
@@ -930,6 +943,8 @@ export class OllamaChatPanel {
       let streamMode = false;
       let attachedFiles = [];
       let _streamNode = null;
+      let _lastStreamTokens = 0;
+      let _lastStreamTps = 0;
       let _pendingBubble = null;
       let agentMode = true;
       let teamMode = false;
