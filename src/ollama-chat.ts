@@ -813,7 +813,7 @@ export class OllamaChatPanel {
           const msg = event.data;
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
           if (debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
-          if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking); }
+          if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); }
           else if (msg.type === 'streamStart')   { clearPendingBubble(); _streamNode = null; }
           else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk); }
           else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
@@ -1391,7 +1391,7 @@ export class OllamaChatPanel {
       }
 
       // -- appendMessage --------------------------------------------------------
-      function appendMessage(who, text, thinkingText) {
+      function appendMessage(who, text, thinkingText, tokens) {
         var node = document.createElement('div'); node.className = 'msg ' + who;
         var bubble = document.createElement('div'); bubble.className = 'bubble';
         if (who === 'assistant' && thinkingText) bubble.appendChild(makeThinkBlock(thinkingText, false));
@@ -1403,9 +1403,12 @@ export class OllamaChatPanel {
               var d = document.createElement('div'); d.style.whiteSpace = 'pre-wrap'; d.textContent = p.v; bubble.appendChild(d);
             }
           });
+          var statRow = document.createElement('div'); statRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:4px';
           var sumBtn = document.createElement('button'); sumBtn.textContent = '\u6458\u8981';
           sumBtn.addEventListener('click', function() { vscode.postMessage({ type: 'summarize', text: text, model: modelSelect ? modelSelect.value : undefined }); });
-          var sdiv = document.createElement('div'); sdiv.appendChild(sumBtn); bubble.appendChild(sdiv);
+          statRow.appendChild(sumBtn);
+          if (tokens) { var tokSpan = document.createElement('span'); tokSpan.style.cssText = 'font-size:10px;opacity:0.5'; tokSpan.textContent = '~' + tokens + ' tokens'; statRow.appendChild(tokSpan); }
+          bubble.appendChild(statRow);
         } else {
           var body = document.createElement('div'); body.textContent = text; bubble.appendChild(body);
         }
@@ -3888,6 +3891,10 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           if (resp) { this.trackUsage(model, Math.ceil(estimateTokens(resp.content ?? '')), model.startsWith('copilot::') ? getCopilotMultiplierById(model.slice('copilot::'.length)) : ''); }
         } catch (e) {
           const emsg = e instanceof Error ? e.message : String(e);
+          if (/does not support tools/i.test(emsg)) {
+            this._panel.webview.postMessage({ type: 'error', text: `模型 ${model} 不支援工具呼叫（tools API）。\nAgent 模式需要支援 tools 的模型，例如：qwen2.5:7b、llama3.1:8b、mistral-nemo。\n請在 AMI-AiClaw 設定中更換模型。` });
+            break;
+          }
           if (/token|limit|context|exceed/i.test(emsg) && this._agentMessages.length > 4) {
             this._trimAgentHistory();
             this._panel.webview.postMessage({ type: 'agentStep', icon: '✂️', title: '歷史記錄過長，已自動裁剪後重試', fullPath: '' });
@@ -3926,14 +3933,19 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             }
           }
         } else {
-          const text = resp.content ?? '';
-          this._agentMessages.push({ role: 'assistant', content: text });
+          const rawText = resp.content ?? '';
+          // 提取 <think>...</think> 區塊供思考視窗顯示
+          const thinkMatch = rawText.match(/^<think>([\s\S]*?)<\/think>\s*/);
+          const thinkContent = thinkMatch ? thinkMatch[1].trim() : '';
+          const text = thinkMatch ? rawText.slice(thinkMatch[0].length) : rawText;
+          const tokenEst = Math.ceil(estimateTokens(rawText));
+          this._agentMessages.push({ role: 'assistant', content: rawText });
           if (recordToShortTerm) {
-            this._chatHistory.push({ role: 'assistant', content: text });
+            this._chatHistory.push({ role: 'assistant', content: text || rawText });
             this._chatHistories[this._activeSessionId] = this._chatHistory;
             this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
           }
-          this._panel.webview.postMessage({ type: 'assistant', text });
+          this._panel.webview.postMessage({ type: 'assistant', text: text || rawText, thinking: thinkContent || undefined, tokens: tokenEst });
           break;
         }
       }
