@@ -555,6 +555,14 @@ export class OllamaChatPanel {
       .team-round-iterate { color:#f7cc65; margin-left:4px }
       .response-body-collapsed { max-height:14em; overflow:hidden; position:relative }
       .response-body-collapsed::after { content:''; position:absolute; bottom:0; left:0; right:0; height:2.5em; background:linear-gradient(transparent, var(--vscode-editorWidget-background,rgba(30,30,30,0.95))) }
+      /* Markdown 渲染 */
+      .md-table{border-collapse:collapse;margin:6px 0;max-width:100%;font-size:0.88em;display:block;overflow-x:auto}
+      .md-table th,.md-table td{border:1px solid rgba(128,128,128,0.3);padding:4px 9px;text-align:left;vertical-align:top;white-space:nowrap}
+      .md-table th{background:rgba(128,128,128,0.12);font-weight:600}
+      .md-table tbody tr:hover td{background:rgba(128,128,128,0.06)}
+      .task-item{display:flex;align-items:baseline;gap:5px;padding:1px 0;line-height:1.5}
+      .math-inline{font-family:Georgia,serif;color:var(--vscode-editorInfo-foreground,#4fc1ff);font-style:italic;background:rgba(79,193,255,0.08);padding:1px 4px;border-radius:3px;white-space:nowrap}
+      .math-block{font-family:Georgia,serif;color:var(--vscode-editorInfo-foreground,#4fc1ff);font-style:italic;background:rgba(79,193,255,0.07);padding:6px 12px;border-radius:4px;display:block;margin:6px 0;white-space:pre-wrap;overflow-x:auto}
       .response-expand-btn { display:block; font-size:11px; padding:2px 10px; margin:4px 0 0; cursor:pointer; border-radius:4px; background:rgba(128,128,128,0.15); border:1px solid rgba(128,128,128,0.3); color:inherit; width:100%; text-align:center }
       .team-todos-panel { background:rgba(128,128,128,0.06); border:1px solid rgba(128,128,128,0.2); border-radius:6px; padding:6px 10px; margin:8px 0; width:100%; box-sizing:border-box }
       .team-todos-header { font-size:0.78em; font-weight:700; color:#f7cc65; margin-bottom:5px; display:flex; align-items:center; gap:5px }
@@ -844,6 +852,8 @@ export class OllamaChatPanel {
                 if (_est) _tb.textContent = '\u2248' + _est + ' tokens (\u4f30\u7b97)';
               }
             }
+            // 串流結束後重新渲染 response-body 為 Markdown
+            if (_sbE) { rerenderBubbleMd(_sbE); }
             // 更新 statusBar 顯示 token 資訊
             if (statusBar) {
               var _modeLabel = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F');
@@ -1401,6 +1411,79 @@ export class OllamaChatPanel {
       }
 
       // ── 訊息 ─────────────────────────────────────────────────────────────
+      // -- Markdown 渲染工具函式 -------------------------------------------
+      function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+      function renderInline(txt) {
+        // 先跳脫 HTML，再套用 inline 語法
+        txt = escHtml(txt);
+        // $$...$$ → 行內數學（保護，避免後面 $...$ 匹配）
+        var PH = '\x02';
+        txt = txt.replace(/\$\$([^$\n]+?)\$\$/g, function(_,m){ return '<code class="math-inline">'+m+'</code>'; });
+        // $...$ → 行內數學
+        txt = txt.replace(/\$([^$\n]{1,80}?)\$/g, function(_,m){ return '<code class="math-inline">'+m+'</code>'; });
+        // **bold**
+        txt = txt.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+        txt = txt.replace(/__([^_\n]+?)__/g, '<strong>$1</strong>');
+        // *italic*  (skip *** and **)
+        txt = txt.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
+        // inline code (backtick)
+        var BTCK = String.fromCharCode(96);
+        var btRe = new RegExp(BTCK + '([^' + BTCK + '\\n]+?)' + BTCK, 'g');
+        txt = txt.replace(btRe, function(_,c){ return '<code>'+c+'</code>'; });
+        return txt;
+      }
+      function renderMdTable(tblLines) {
+        var spl = function(r){ var c=r.split('|'); if(!c[0].trim())c.shift(); if(c.length&&!c[c.length-1].trim())c.pop(); return c; };
+        var h='<table class="md-table"><thead><tr>';
+        spl(tblLines[0]).forEach(function(c){ h+='<th>'+renderInline(c.trim())+'</th>'; });
+        h+='</tr></thead><tbody>';
+        for(var r=2;r<tblLines.length;r++){ if(!tblLines[r].trim())continue; h+='<tr>'; spl(tblLines[r]).forEach(function(c){ h+='<td>'+renderInline(c.trim())+'</td>'; }); h+='</tr>'; }
+        return h+'</tbody></table>';
+      }
+      function renderTextBlock(raw) {
+        var lines=raw.split('\n'), html='', i=0, mathBuf='', inMath=false;
+        while(i<lines.length){
+          var ln=lines[i];
+          // $$ 區塊
+          if(ln.trim()==='$$'){ if(!inMath){inMath=true;mathBuf='';i++;continue;}else{inMath=false;html+='<code class="math-block">'+escHtml(mathBuf.trim())+'</code>';mathBuf='';i++;continue;} }
+          if(inMath){mathBuf+=ln+'\n';i++;continue;}
+          // 表格
+          if(ln.includes('|')&&i+1<lines.length&&/^\|?[\s:|-]+\|/.test(lines[i+1])){
+            var tl=[ln],j=i+1; while(j<lines.length&&lines[j].includes('|')){tl.push(lines[j]);j++;}
+            html+=renderMdTable(tl); i=j; continue;
+          }
+          // 任務清單
+          var tm=ln.match(/^(\s*)-\s+\[([ xX])\]\s*(.*)/);
+          if(tm){ var ck=tm[2].toLowerCase()==='x'; html+='<div class="task-item"><span style="font-family:monospace;color:'+(ck?'#4ec94e':'rgba(128,128,128,0.55)')+'">'+(ck?'[x]':'[ ]')+'</span> <span style="'+(ck?'text-decoration:line-through;opacity:0.55':'')+'">'+renderInline(tm[3])+'</span></div>'; i++;continue; }
+          // 無序清單
+          var um=ln.match(/^(\s*)[-*+] (.*)/);
+          if(um){ html+='<div style="padding-left:'+(um[1].length*8+14)+'px;margin:1px 0">&bull; '+renderInline(um[2])+'</div>'; i++;continue; }
+          // 有序清單
+          var om=ln.match(/^(\s*)(\d+)\. (.*)/);
+          if(om){ html+='<div style="padding-left:'+(om[1].length*8+16)+'px;margin:1px 0">'+om[2]+'. '+renderInline(om[3])+'</div>'; i++;continue; }
+          // 標題
+          var hm=ln.match(/^(#{1,4})\s+(.*)/);
+          if(hm){ var lv=hm[1].length,fs=['1.2em','1.1em','1em','0.95em'][lv-1]; html+='<div style="font-weight:700;font-size:'+fs+';margin:6px 0 2px;'+(lv<=2?'border-bottom:1px solid rgba(128,128,128,0.2)':'')+'">'+renderInline(hm[2])+'</div>'; i++;continue; }
+          // 空行
+          if(!ln.trim()){html+='<div style="height:5px"></div>';i++;continue;}
+          // 一般行
+          html+='<div style="line-height:1.55;white-space:pre-wrap">'+renderInline(ln)+'</div>';
+          i++;
+        }
+        if(inMath&&mathBuf) html+='<code class="math-block">'+escHtml(mathBuf.trim())+'</code>';
+        return html;
+      }
+      function rerenderBubbleMd(bubble) {
+        var rb = bubble && bubble.querySelector('.response-body');
+        if (!rb) return;
+        var rawText = rb.textContent || '';
+        if (!rawText.trim()) return;
+        rb.innerHTML = ''; rb.style.whiteSpace = '';
+        parseBlocks(rawText).forEach(function(p) {
+          if (p.t === 'code') { rb.appendChild(makeCodeBlock(p.v)); }
+          else if (p.v.trim()) { var d = document.createElement('div'); d.innerHTML = renderTextBlock(p.v); rb.appendChild(d); }
+        });
+      }
       // -- parseBlocks + makeCodeBlock -------------------------------------------
       function parseBlocks(text) {
         var TICK = String.fromCharCode(96, 96, 96);
@@ -1451,7 +1534,7 @@ export class OllamaChatPanel {
             if (p.t === 'code') {
               bubble.appendChild(makeCodeBlock(p.v));
             } else if (p.v.trim()) {
-              var d = document.createElement('div'); d.style.whiteSpace = 'pre-wrap'; d.textContent = p.v; bubble.appendChild(d);
+              var d = document.createElement('div'); d.innerHTML = renderTextBlock(p.v); bubble.appendChild(d);
             }
           });
           var statRow = document.createElement('div'); statRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:4px';
