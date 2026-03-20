@@ -5623,6 +5623,81 @@ except Exception as e:
           });
         } finally { try { fs.unlinkSync(bscTmp); } catch { /* ignore */ } }
       }
+      case 'generate_docs': {
+        const gdDocPath = (args.path as string) ? resolvePath(args.path as string) : (folders[0]?.uri.fsPath ?? process.cwd());
+        const gdTool = (args.tool as string) || 'auto';
+        const gdOutput = (args.output as string) || 'docs';
+        const gdCwd = folders[0]?.uri.fsPath ?? process.cwd();
+        const gdAllowed = await this.requestPermission('run', `產生 API 文件: ${gdDocPath} (${gdTool})`, 'generate_docs');
+        if (!gdAllowed) { return '使用者已拒絕文件產生操作'; }
+        let actualDocTool = gdTool;
+        if (actualDocTool === 'auto') {
+          try {
+            const gdPkgTxt = fs.readFileSync(path.join(gdCwd, 'package.json'), 'utf-8');
+            const gdPkg = JSON.parse(gdPkgTxt) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+            const gdDeps = { ...gdPkg.dependencies, ...gdPkg.devDependencies };
+            if (gdDeps['typedoc']) { actualDocTool = 'typedoc'; }
+            else if (gdDeps['jsdoc']) { actualDocTool = 'jsdoc'; }
+            else if (fs.existsSync(path.join(gdCwd, 'typedoc.json')) || fs.existsSync(path.join(gdCwd, 'typedoc.config.js'))) { actualDocTool = 'typedoc'; }
+            else if (fs.existsSync(path.join(gdCwd, '.jsdocrc')) || fs.existsSync(path.join(gdCwd, '.jsdocrc.js'))) { actualDocTool = 'jsdoc'; }
+            else { actualDocTool = 'typedoc'; }
+          } catch { actualDocTool = 'typedoc'; }
+        }
+        const gdCmd = actualDocTool === 'jsdoc'
+          ? `npx jsdoc -d "${gdOutput}" -r "${gdDocPath}"`
+          : `npx typedoc --out "${gdOutput}" "${gdDocPath}"`;
+        return await new Promise<string>(res => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { exec } = require('child_process') as typeof import('child_process');
+          exec(gdCmd, { cwd: gdCwd, timeout: 60000 }, (_e, o, e) => {
+            const out = ((o || '') + (e ? '\n[stderr]\n' + e : '')).trim();
+            const outDir = path.join(gdCwd, gdOutput);
+            const existsMsg = fs.existsSync(outDir) ? `\n\n✅ 文件已產生至: ${outDir}` : '';
+            res((out.slice(0, 8000) || '(無輸出)') + existsMsg);
+          });
+        });
+      }
+      case 'refactor_suggest': {
+        const rsFilePath = resolvePath(args.path as string);
+        const rsFocus = (args.focus as string) || 'all';
+        const rsAllowed = await this.requestPermission('read', `讀取並分析: ${rsFilePath}`, 'refactor_suggest');
+        if (!rsAllowed) { return '使用者已拒絕程式碼分析'; }
+        let rsContent: string;
+        try {
+          const rsStats = fs.statSync(rsFilePath);
+          if (rsStats.size > 500 * 1024) { return '檔案超過 500KB，無法一次分析，請指定較小的檔案或特定函式'; }
+          rsContent = fs.readFileSync(rsFilePath, 'utf-8');
+        } catch (e) { return `讀取檔案失敗: ${e instanceof Error ? e.message : String(e)}`; }
+        const rsCwd = folders[0]?.uri.fsPath ?? process.cwd();
+        const rsTmpCfg = path.join(os.tmpdir(), `ami_eslint_rs_${Date.now()}.json`);
+        const rsEslintCfg = { env: { browser: true, es2020: true, node: true }, rules: { complexity: ['warn', 10], 'max-lines-per-function': ['warn', 60], 'max-depth': ['warn', 4], 'max-params': ['warn', 5] } };
+        fs.writeFileSync(rsTmpCfg, JSON.stringify(rsEslintCfg), 'utf-8');
+        let rsEslintOut = '(跳過 ESLint 分析)';
+        try {
+          rsEslintOut = await new Promise<string>(res => {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { exec } = require('child_process') as typeof import('child_process');
+            exec(`npx eslint --no-eslintrc -c "${rsTmpCfg}" --format compact "${rsFilePath}"`, { cwd: rsCwd, timeout: 20000 }, (_e, o, e) => {
+              res(((o || '') + (e && !o ? '\n' + e : '')).trim().slice(0, 3000) || '✅ 無複雜度警告');
+            });
+          });
+        } finally { try { fs.unlinkSync(rsTmpCfg); } catch { /* ignore */ } }
+        const rsLines = rsContent.split('\n');
+        const rsFocusNote = rsFocus !== 'all' ? `\n分析重點: ${rsFocus}` : '';
+        const rsNumbered = rsLines.slice(0, 500).map((l, i) => `${String(i + 1).padStart(4)}: ${l}`).join('\n');
+        const rsReport = [
+          `=== 重構分析: ${rsFilePath} ===`,
+          `行數: ${rsLines.length} | 字元數: ${rsContent.length}${rsFocusNote}`,
+          '',
+          '--- ESLint 複雜度/品質警告 ---',
+          rsEslintOut,
+          '',
+          '--- 原始碼（含行號，供 AI 標記問題位置）---',
+          rsNumbered,
+          rsLines.length > 500 ? `\n...[省略 ${rsLines.length - 500} 行，請用 read_file 取得剩餘內容]` : ''
+        ].join('\n');
+        return rsReport.slice(0, 20000);
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -5738,10 +5813,12 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'browser_navigate', description: '使用 Playwright 無頭瀏覽器訪問網頁，回傳頁面標題、文字內容與連結清單。適合需要執行 JavaScript 的 SPA 或動態頁面（靜態頁面請用 fetch_url）。需要 Python playwright：pip install playwright && playwright install chromium', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, selector: { type: 'string', description: '等待此 CSS selector 出現後再擷取內容（可選）' }, wait_for: { type: 'string', enum: ['load', 'networkidle', 'domcontentloaded'], description: '等待頁面事件（預設 networkidle）' }, timeout_ms: { type: 'number', description: '超時毫秒（預設 20000，最大 60000）' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'browser_screenshot', description: '使用 Playwright 無頭瀏覽器截取網頁截圖並儲存為 PNG 檔案。需要 Python playwright。', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, path: { type: 'string', description: '輸出 PNG 檔案路徑（預設 screenshot_<ts>.png 存於工作區根目錄）' }, selector: { type: 'string', description: '只截取此 CSS selector 元素（可選，預設整頁）' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'browser_script', description: '執行 Python Playwright 自動化腳本（適合表單填寫、點擊、多步驟操作等複雜流程）。腳本中用 print() 輸出結果。需要 Python playwright。', parameters: { type: 'object', properties: { script: { type: 'string', description: 'Python playwright 腳本（sync_api），包含完整邏輯，用 print() 輸出結果' }, description: { type: 'string', description: '一行說明腳本用途（顯示在步驟列）' } }, required: ['script'] } } },
+  { type: 'function', function: { name: 'generate_docs', description: '為專案或指定檔案自動產生 API 文件。自動偵測 TypeDoc（TypeScript）或 JSDoc（JavaScript），若都未安裝則嘗試 TypeDoc。', parameters: { type: 'object', properties: { path: { type: 'string', description: '要產生文件的原始碼檔案或目錄路徑（可選，預設工作區根目錄）' }, tool: { type: 'string', enum: ['auto', 'typedoc', 'jsdoc'], description: '文件工具（預設 auto，自動從 package.json 偵測）' }, output: { type: 'string', description: '輸出目錄名稱（預設 docs）' } }, required: [] } } },
+  { type: 'function', function: { name: 'refactor_suggest', description: '讀取指定原始碼檔案，執行 ESLint 複雜度/品質分析，並回傳含行號的原始碼供 AI 提供重構建議。分析包含循環複雜度、函式長度、巢狀深度等指標。', parameters: { type: 'object', properties: { path: { type: 'string', description: '要分析的原始碼檔案路徑（必填）' }, focus: { type: 'string', enum: ['all', 'complexity', 'naming', 'duplication', 'solid'], description: '分析重點方向（預設 all，AI 會依此強調對應建議）' } }, required: ['path'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬' };
   return m[name] ?? '🔧';
 }
 
@@ -5781,6 +5858,8 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'browser_navigate': return `瀏覽器訪問: ${args.url}`;
     case 'browser_screenshot': return `瀏覽器截圖: ${args.url}${args.path ? ' → ' + args.path : ''}`;
     case 'browser_script': return `Playwright: ${(args.description as string) || (args.script as string || '').split('\n')[0].slice(0, 60)}`;
+    case 'generate_docs': return `產生 API 文件: ${args.path || '(工作區)'} [${args.tool || 'auto'}] → ${args.output || 'docs'}`;
+    case 'refactor_suggest': return `重構分析: ${args.path}${args.focus && args.focus !== 'all' ? ' (' + args.focus + ')' : ''}`;
     default: return name;
   }
 }
