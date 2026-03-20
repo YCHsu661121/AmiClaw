@@ -136,7 +136,7 @@ export class OllamaChatPanel {
             break;
           case 'teamSend':
             this.switchChatSession(message.sessionId);
-            this.handleTeamSend(message.prompt, message.models, message.rounds).catch(() => {});
+            this.handleTeamSend(message.prompt, message.models, message.rounds, message.teamExecMode).catch(() => {});
             break;
           case 'teamStop':
             this._teamCancel = true;
@@ -510,7 +510,13 @@ export class OllamaChatPanel {
         <div id="teamPickerBar">
           <span style="font-size:11px;font-weight:700">&#x1F465; 選擇團隊成員（最多 5 個）</span>
             <button class="team-pick-mini-btn" id="teamPickerRefresh">&#x1F504;</button>
-            <label style="font-size:11px;margin-left:8px">回合：</label>
+            <label style="font-size:11px;margin-left:8px">模式：</label>
+            <select id="teamModeSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
+              <option value="task" selected>&#x1F9E9; 任務分解</option>
+              <option value="discussion">&#x1F4AC; 討論模式</option>
+              <option value="agent">&#x1F916; Agent 模式</option>
+            </select>
+            <label style="font-size:11px;margin-left:6px">回合：</label>
             <select id="teamRoundsSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
               <option value="10">10</option>
               <option value="20" selected>20</option>
@@ -635,7 +641,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamTodoStart') { updateTodo(msg.idx, 'running', msg.worker); }
           else if (msg.type === 'teamTodoDone')  { updateTodo(msg.idx, 'done'); }
           else if (msg.type === 'debateStart')   { createDebateHeader(msg.labelA, msg.labelB, msg.labelJ, msg.colorA, msg.colorB, msg.colorJ); }
-          else if (msg.type === 'debateTurnStart') { startDebateTurn(msg.speaker, msg.round); }
+          else if (msg.type === 'debateTurnStart') { startDebateTurn(msg.speaker, msg.round, msg.label, msg.color); }
           else if (msg.type === 'debateChunk')   { appendDebateChunk(msg.speaker, msg.chunk); }
           else if (msg.type === 'debateThinkChunk') { appendDebateThinkChunk(msg.speaker, msg.chunk); }
           else if (msg.type === 'debateTurnEnd') { finalizeDebateTurn(msg.speaker, msg.tokens, msg.tps); }
@@ -900,9 +906,12 @@ export class OllamaChatPanel {
             var selModels = getSelectedTeamModels();
             var roundsEl = document.getElementById('teamRoundsSelect');
             var roundsVal = roundsEl ? roundsEl.value : '20';
-            vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, rounds: roundsVal, sessionId: _activeChatSessionId });
+            var teamModeEl = document.getElementById('teamModeSelect');
+            var teamExecMode = teamModeEl ? teamModeEl.value : 'task';
+            var tModeLabel = teamExecMode === 'discussion' ? '\u{1F4AC} \u8a0e\u8ad6\u4e2d\u2026' : teamExecMode === 'agent' ? '\u{1F916} Agent \u57f7\u884c\u4e2d\u2026' : '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
+            vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, rounds: roundsVal, teamExecMode: teamExecMode, sessionId: _activeChatSessionId });
             prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
-            if (statusBar) statusBar.textContent = '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
+            if (statusBar) statusBar.textContent = tModeLabel;
             return;
         }
         if (debateMode) {
@@ -1767,7 +1776,7 @@ export class OllamaChatPanel {
 </html>`;
   }
 
-  private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number): Promise<void> {
+  private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number, teamExecMode?: string): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const urls = getOllamaUrls(cfg);
     const defaultBaseUrl = urls[0];
@@ -1791,6 +1800,17 @@ export class OllamaChatPanel {
     this._chatHistory.push({ role: 'user', content: prompt });
     this._chatHistories[this._activeSessionId] = this._chatHistory;
     this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+
+    // ── 討論模式：全員針對同一問題各自回答，依回合數重複，最後合成 ──────
+    if (teamExecMode === 'discussion') {
+      return this._handleTeamDiscussion(prompt, allModels, roundsNum);
+    }
+
+    // ── Agent 模式：每個成員用 handleAgent（含工具）各自獨立完成任務 ──────
+    if (teamExecMode === 'agent') {
+      return this._handleTeamAgent(prompt, allModels);
+    }
+
     let finalDebateSummary = '';
     const systemContent = this.buildSystemContent();
     // Workspace context for all team prompts
@@ -2096,6 +2116,161 @@ export class OllamaChatPanel {
       if (bestScore === -1 || s < bestScore) { bestScore = s; best = m; }
     }
     return best;
+  }
+
+  // ── Team 討論模式 ────────────────────────────────────────────────────────
+  /** 全員同題作答，每回合每人輪流發言，最後一輪收尾合成 */
+  private async _handleTeamDiscussion(prompt: string, allModels: string[], maxRounds: number): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const urls = getOllamaUrls(cfg);
+    const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
+    const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
+    const getDisplay = (m: string) => {
+      if (m.startsWith('copilot::')) return '\uD83D\uDC19 ' + m.slice('copilot::'.length);
+      const { url, model } = decodeOllamaModel(m, urls);
+      try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; }
+    };
+
+    const roundsLimit = isFinite(maxRounds) ? maxRounds : 4; // 討論模式無限預設 4 輪
+    const summaryLines: string[] = [];
+
+    this._panel.webview.postMessage({ type: 'debateStart',
+      labelA: getDisplay(allModels[0]), labelB: getDisplay(allModels[1] ?? allModels[0]),
+      labelJ: allModels[2] ? getDisplay(allModels[2]) : null,
+      colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
+
+    // Each model has independent context (historyX[model])
+    const histories: Map<string, { role: 'user'|'assistant'; content: string }[]> = new Map();
+    for (const m of allModels) { histories.set(m, [{ role: 'user', content: prompt }]); }
+
+    for (let round = 0; round < roundsLimit && !this._teamCancel; round++) {
+      for (let mi = 0; mi < allModels.length && !this._teamCancel; mi++) {
+        const model = allModels[mi];
+        const color = COLORS[mi % COLORS.length];
+        const display = getDisplay(model);
+        const speakerKey = String(mi); // use index as "speaker" for debateTurn
+        this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: speakerKey, round, label: display, color });
+
+        const hist = histories.get(model)!;
+        let response = '';
+        try {
+          if (model.startsWith('copilot::')) {
+            const family = model.slice('copilot::'.length);
+            response = await this.copilotStream(family, prompt,
+              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); });
+          } else {
+            const { url, model: mName } = decodeOllamaModel(model, urls);
+            const messages: ChatMessage[] = [
+              { role: 'system', content: `你是 ${display}，正在和其他 AI 討論以下問題。每次回答請根據前幾輪的對話內容延伸，不要重複，請提出新觀點或補充說明。` },
+              ...hist.map(h => ({ role: h.role as 'user'|'assistant', content: h.content }))
+            ];
+            if (messages[messages.length - 1].role !== 'user') messages.push({ role: 'user', content: '請繼續。' });
+            response = await ollamaChatStream(url, mName, messages,
+              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); });
+          }
+        } catch (e) {
+          response = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
+          this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: response });
+        }
+        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: speakerKey });
+        // Update this model's own history
+        hist.push({ role: 'assistant', content: response });
+        hist.push({ role: 'user', content: '請繼續補充或回應其他觀點。' });
+        summaryLines.push(`【${display} 第${round+1}輪】\n${response}`);
+      }
+    }
+
+    // 合成：用第一個模型或思考模型
+    if (!this._teamCancel && summaryLines.length > 0) {
+      const synthModel = OllamaChatPanel.pickThinkingModel(allModels.filter(m => isOllamaModel(m))) || allModels[0];
+      const synthPrompt = `【原始問題】\n${prompt}\n\n【各成員觀點】\n${summaryLines.join('\n\n---\n\n')}\n\n請整合所有觀點，給出完整的綜合結論：`;
+      this._panel.webview.postMessage({ type: 'teamSynthStart' });
+      let synthResult = '';
+      try {
+        if (synthModel.startsWith('copilot::')) {
+          synthResult = await this.copilotStream(synthModel.slice('copilot::'.length), synthPrompt,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: c }); });
+        } else {
+          const { url, model: mName } = decodeOllamaModel(synthModel, urls);
+          synthResult = await ollamaGenerateStream(url, mName, synthPrompt,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: c }); });
+        }
+      } catch { /* ignore */ }
+      if (synthResult) {
+        this._chatHistory.push({ role: 'assistant', content: synthResult });
+        this._chatHistories[this._activeSessionId] = this._chatHistory;
+        this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+      } else if (summaryLines.length) {
+        this._chatHistory.push({ role: 'assistant', content: summaryLines.join('\n\n---\n\n') });
+        this._chatHistories[this._activeSessionId] = this._chatHistory;
+        this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+      }
+    }
+    this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
+    this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
+  }
+
+  // ── Team Agent 模式 ──────────────────────────────────────────────────────
+  /** 每個選定的模型各自以 Agent 身份（含工具）處理同一個任務 */
+  private async _handleTeamAgent(prompt: string, allModels: string[]): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiClaw');
+    const urls = getOllamaUrls(cfg);
+    const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
+    const getDisplay = (m: string) => {
+      if (m.startsWith('copilot::')) return '\uD83D\uDC19 ' + m.slice('copilot::'.length);
+      const { url, model } = decodeOllamaModel(m, urls);
+      try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; }
+    };
+
+    this._panel.webview.postMessage({ type: 'teamTodoList', tasks: allModels.map(m => `[Agent] ${getDisplay(m)}`) });
+
+    for (let mi = 0; mi < allModels.length && !this._teamCancel; mi++) {
+      const model = allModels[mi];
+      const color = COLORS[mi % COLORS.length];
+      const display = getDisplay(model);
+      const id = `tagent_${mi}`;
+      this._panel.webview.postMessage({ type: 'teamTodoStart', idx: mi, worker: display });
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `🤖 ${display}`, color, task: prompt });
+
+      // Pipe agent output to the team member bubble
+      const origPost = this._panel.webview.postMessage.bind(this._panel.webview);
+      const patchedPost = (msg: object & { type?: string }): Thenable<boolean> => {
+        const t = (msg as { type?: string }).type;
+        if (t === 'assistant') {
+          origPost({ type: 'teamResponseChunk', id, chunk: (msg as { text?: string }).text ?? '' });
+          return Promise.resolve(true);
+        }
+        if (t === 'assistantChunk') {
+          origPost({ type: 'teamResponseChunk', id, chunk: (msg as { chunk?: string }).chunk ?? '' });
+          return Promise.resolve(true);
+        }
+        if (t === 'agentStep' || t === 'agentStepDone' || t === 'agentStatus') {
+          return origPost(msg); // pass through agent step indicators
+        }
+        return origPost(msg);
+      };
+      (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = patchedPost;
+
+      // Reset agent state for this worker
+      this._agentMessages = [];
+      this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+
+      try {
+        await this.handleAgent(prompt, model, false);
+      } catch { /* continue with next worker */ }
+
+      // Restore original postMessage
+      (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = origPost;
+
+      this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+      this._panel.webview.postMessage({ type: 'teamTodoDone', idx: mi });
+    }
+
+    // restore a clean agent context
+    this._agentMessages = [];
+    this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+    this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
+    this._panel.webview.postMessage({ type: 'agentStatus', running: false });
   }
 
   // ── Debate / Dialogue Mode ───────────────────────────────────────────────
