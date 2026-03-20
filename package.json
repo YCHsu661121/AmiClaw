@@ -199,6 +199,16 @@
             "type": "string",
             "default": "mcr.microsoft.com/playwright/python:v1.49.0-jammy",
             "description": "瀏覽器 Docker 模式使用的影像名稱。預設為內建 playwright + Chromium 的官方影像。送出前請先執行: docker pull mcr.microsoft.com/playwright/python:v1.49.0-jammy"
+          },
+          "amiAiClaw.sandboxUseDocker": {
+            "type": "boolean",
+            "default": false,
+            "description": "將 run_terminal、run_command、run_python 導入 Docker 沙箱執行（沙箱隔離，不會影響呆主機）。需要 Docker Desktop 正在執行且已拉取 sandboxDockerImage 指定影像。"
+          },
+          "amiAiClaw.sandboxDockerImage": {
+            "type": "string",
+            "default": "ubuntu:24.04",
+            "description": "沙箱 Docker 影像名稱。run_terminal/run_command 使用此影像的 sh；run_python 若此影像不含 'python' 一詞則自動改用 python:3.12-slim。建議先執行: docker pull ubuntu:24.04"
           }
         }
       }

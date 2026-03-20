@@ -4781,6 +4781,11 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const cwd = (args.cwd as string) ? resolvePath(args.cwd as string) : (folders[0]?.uri.fsPath ?? process.cwd());
         const allowed = await this.requestPermission('run', `終端機執行: ${cmd}`, 'run_terminal');
         if (!allowed) { return '使用者已拒絕執行操作'; }
+        const rtCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        if (rtCfg.get<boolean>('sandboxUseDocker', false)) {
+          const rtImg = rtCfg.get<string>('sandboxDockerImage', 'ubuntu:24.04');
+          return await runDockerShell(cmd, rtImg, 125000);
+        }
         // Show in VS Code terminal for user visibility
         const terminals = vscode.window.terminals;
         const terminal = terminals.length > 0 ? terminals[terminals.length - 1] : vscode.window.createTerminal('Agent');
@@ -4841,6 +4846,11 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const cwd = (args.cwd as string) ? resolvePath(args.cwd as string) : (folders[0]?.uri.fsPath ?? process.cwd());
         const allowed = await this.requestPermission('run', `執行指令: ${cmd}`, 'run_command');
         if (!allowed) { return '使用者已拒絕執行操作'; }
+        const rcCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        if (rcCfg.get<boolean>('sandboxUseDocker', false)) {
+          const rcImg = rcCfg.get<string>('sandboxDockerImage', 'ubuntu:24.04');
+          return await runDockerShell(cmd, rcImg, 35000);
+        }
         return new Promise<string>((resolve) => {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
           const { exec } = require('child_process') as typeof import('child_process');
@@ -5159,10 +5169,18 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         if (!pyCode) return '請提供 code 參數';
         // Detect destructive operations to ask permission
         const isDestructive = /os\.remove|os\.rmdir|shutil\.rmtree|shutil\.move|open\s*\(.*['"]w['"]|open\s*\(.*['"]a['"]|Path.*\.unlink|Path.*\.rmdir|copyfile|shutil\.copy/i.test(pyCode);
-        if (isDestructive) {
+        const rpCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const rpSandbox = rpCfg.get<boolean>('sandboxUseDocker', false);
+        if (isDestructive && !rpSandbox) {
           const descLine = (args.description as string || pyCode.split('\n')[0]).slice(0, 120);
           const allowed = await this.requestPermission('run', `Python（含檔案操作）: ${descLine}`, 'run_python');
           if (!allowed) return '使用者已拒絕執行操作';
+        }
+        if (rpSandbox) {
+          const rpImg = rpCfg.get<string>('sandboxDockerImage', 'ubuntu:24.04');
+          // 沙箱 Python 影像：少必 ubuntu:24.04 內建 python3，也可用 python:3.12-slim
+          const rpPyImg = rpImg.includes('python') ? rpImg : 'python:3.12-slim';
+          return await runDockerPython(pyCode, rpPyImg, 35000);
         }
         const tmpDir = os.tmpdir();
         const tmpFile = path.join(tmpDir, `ami_ai_claw_py_${Date.now()}.py`);
@@ -5787,6 +5805,31 @@ function runDockerPython(pyCode: string, dockerImage: string, timeoutMs: number)
       proc.on('close', () => clearTimeout(timer));
       proc.stdin.write(pyCode, 'utf-8');
       proc.stdin.end();
+    } catch (e) {
+      res(`Docker 執行失敗: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  });
+}
+
+/** 沙箱 Shell 執行助手：透過 `docker run --rm -i <image> sh -c "<cmd>"` 執行 shell 指令。
+ *  容器沒有工作區檔案（純命令執行隔離）。
+ */
+function runDockerShell(cmd: string, dockerImage: string, timeoutMs: number): Promise<string> {
+  return new Promise(res => {
+    try {
+      const { spawn } = require('child_process') as typeof import('child_process');
+      const proc = spawn('docker', ['run', '--rm', '--network=host', dockerImage, 'sh', '-c', cmd]);
+      let out = '', err = '';
+      proc.stdout.on('data', (d: Buffer) => { out += d.toString(); if ((out + err).length > 512000) { try { proc.kill(); } catch { /* noop */ } } });
+      proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+      proc.on('close', () => {
+        const combined = (out + (err ? '\n[stderr]\n' + err : '')).trim();
+        const r = combined.length > 10000 ? combined.slice(0, 10000) + '\n…（已截斷）' : combined || '(無輸出)';
+        res(r);
+      });
+      proc.on('error', (e: Error) => res(`Docker 錯誤: ${e.message} — 請確認 Docker Desktop 正在執行且已拉取影像`));
+      const timer = setTimeout(() => { try { proc.kill(); } catch { /* noop */ } res(`逾時 (${timeoutMs}ms)`); }, timeoutMs);
+      proc.on('close', () => clearTimeout(timer));
     } catch (e) {
       res(`Docker 執行失敗: ${e instanceof Error ? e.message : String(e)}`);
     }
