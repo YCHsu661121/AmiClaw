@@ -208,6 +208,70 @@ export class OllamaChatPanel {
             await this.saveLongTermMemory(message.ltm as string);
             this._panel.webview.postMessage({ type: 'memorySaved' });
             break;
+          case 'exportChat': {
+            // 將指定 session 的 _chatHistory 存檔
+            const exportSid = (message.sessionId as string) || this._activeSessionId;
+            const exportHist = this._chatHistories[exportSid] ?? [];
+            const exportTitle = (message.title as string) || exportSid;
+            const exportFmt = (message.format as string) || 'json';
+            let exportContent = '';
+            if (exportFmt === 'markdown') {
+              exportContent = `# ${exportTitle}\n\n` + exportHist.map(m => {
+                const role = m.role === 'user' ? '**👤 你**' : '**🤖 AI**';
+                return `${role}\n\n${m.content ?? ''}\n`;
+              }).join('\n---\n\n');
+            } else {
+              exportContent = JSON.stringify({ title: exportTitle, sessionId: exportSid, exportedAt: new Date().toISOString(), messages: exportHist }, null, 2);
+            }
+            const exportUri = await vscode.window.showSaveDialog({
+              defaultUri: vscode.Uri.file(`${exportTitle.replace(/[/\\?%*:|"<>]/g, '_')}.${exportFmt === 'markdown' ? 'md' : 'json'}`),
+              filters: exportFmt === 'markdown' ? { 'Markdown': ['md'] } : { 'JSON': ['json'] }
+            });
+            if (exportUri) {
+              await vscode.workspace.fs.writeFile(exportUri, Buffer.from(exportContent, 'utf-8'));
+              this._panel.webview.postMessage({ type: 'exportDone', path: exportUri.fsPath });
+            }
+            break;
+          }
+          case 'importChat': {
+            const importUris = await vscode.window.showOpenDialog({
+              canSelectMany: false,
+              filters: { 'JSON 對話': ['json'] },
+              title: '匯入對話 JSON'
+            });
+            if (!importUris || !importUris[0]) { break; }
+            try {
+              const raw = Buffer.from(await vscode.workspace.fs.readFile(importUris[0])).toString('utf-8');
+              const parsed = JSON.parse(raw) as { title?: string; sessionId?: string; messages?: { role: string; content?: string }[] };
+              if (!Array.isArray(parsed.messages)) { throw new Error('無效的 JSON 格式：缺少 messages 陣列'); }
+              const importId = 'chat-import-' + Date.now();
+              const importTitle = (parsed.title ?? '匯入的對話').slice(0, 30);
+              this._chatHistories[importId] = parsed.messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content ?? '' }));
+              this._panel.webview.postMessage({ type: 'importDone', sessionId: importId, title: importTitle });
+            } catch (e) {
+              this._panel.webview.postMessage({ type: 'error', text: '匯入失敗：' + (e instanceof Error ? e.message : String(e)) });
+            }
+            break;
+          }
+          case 'searchConversations': {
+            const q = ((message.query as string) || '').toLowerCase().trim();
+            if (!q) { this._panel.webview.postMessage({ type: 'searchResults', results: [] }); break; }
+            const results: { sessionId: string; title: string; snippet: string }[] = [];
+            for (const [sid, hist] of Object.entries(this._chatHistories)) {
+              for (const m of hist) {
+                const text = (m.content ?? '').toLowerCase();
+                const idx = text.indexOf(q);
+                if (idx !== -1) {
+                  const start = Math.max(0, idx - 30);
+                  const snippet = (idx > 30 ? '\u2026' : '') + (m.content ?? '').slice(start, start + 120) + (start + 120 < (m.content ?? '').length ? '\u2026' : '');
+                  results.push({ sessionId: sid, title: sid, snippet });
+                  break; // one hit per session
+                }
+              }
+            }
+            this._panel.webview.postMessage({ type: 'searchResults', results });
+            break;
+          }
           case 'resetUsage':
             this._usageStats = {};
             this._context.globalState.update('amiAiClaw.usageStats', {});
@@ -409,6 +473,15 @@ export class OllamaChatPanel {
       #bottomBar{border-top:1px solid rgba(128,128,128,0.15);background:var(--vscode-editor-background);padding:6px 8px;display:flex;flex-direction:column;gap:4px}
       #topBar{display:flex;align-items:center;gap:6px;padding:0 2px 2px}
       #chatSessionSelect{max-width:170px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
+      #chatSearchBar{display:none;align-items:center;gap:4px;padding:2px 0}
+      #chatSearchInput{flex:1;font-size:12px;padding:3px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));border-radius:4px;outline:none}
+      #chatSearchInput:focus{border-color:var(--vscode-focusBorder,#007fd4)}
+      #chatSearchResults{font-size:11px;padding:4px 6px;background:var(--vscode-editor-background);border:1px solid rgba(128,128,128,0.2);border-radius:4px;max-height:160px;overflow-y:auto;display:none}
+      .search-hit{padding:3px 6px;cursor:pointer;border-radius:3px}
+      .search-hit:hover{background:rgba(128,128,128,0.15)}
+      .search-hit-title{font-weight:600;font-size:11px}
+      .search-hit-snippet{opacity:0.65;font-size:11px;white-space:pre-wrap;word-break:break-all}
+      .session-tag{font-size:10px;padding:1px 5px;border-radius:9px;background:rgba(79,193,255,0.18);color:var(--vscode-editorInfo-foreground,#4fc1ff);margin-left:3px;vertical-align:middle}
       #modelSelect{flex:1;max-width:220px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
       .icon-btn{background:none;border:none;cursor:pointer;padding:3px 6px;border-radius:4px;font-size:15px;color:var(--vscode-editor-foreground);opacity:0.7;line-height:1}
       .icon-btn:hover{opacity:1;background:rgba(128,128,128,0.15)}
@@ -581,6 +654,18 @@ export class OllamaChatPanel {
         <span id="connStatus" style="font-size:11px;opacity:0.8">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
       </div>
       <div id="attachedFiles"></div>
+      <div id="chatSearchBar">
+        <input id="chatSearchInput" type="text" placeholder="&#x641C;&#x5C0B;&#x6240;&#x6709;&#x5C0D;&#x8A71;&#x2026;">
+        <button class="team-pick-mini-btn" id="chatSearchGo">&#x641C;&#x5C0B;</button>
+        <button class="team-pick-mini-btn" id="chatSearchClose">&#x2715;</button>
+      </div>
+      <div id="chatSearchResults"></div>
+      <div id="chatSearchBar">
+        <input id="chatSearchInput" type="text" placeholder="搜尋所有對話…">
+        <button class="team-pick-mini-btn" id="chatSearchGo">搜尋</button>
+        <button class="team-pick-mini-btn" id="chatSearchClose">✕</button>
+      </div>
+      <div id="chatSearchResults"></div>
       <div id="teamPicker">
         <div id="teamPickerBar">
           <span style="font-size:11px;font-weight:700">&#x1F465; 選擇團隊成員（最多 5 個）</span>
@@ -798,7 +883,38 @@ export class OllamaChatPanel {
             for (var ri2 = 0; ri2 < _chatSessions.length; ri2++) { if (_chatSessions[ri2].id === msg.sessionId) { rnSess = _chatSessions[ri2]; break; } }
             if (rnSess && msg.title) { rnSess.title = msg.title; rnSess.manualTitle = true; renderChatSessionSelect(); persistSessionState(); }
           }
-          else if (msg.type === 'deleteChatSessionFromHost') { deleteChatSession(msg.sessionId); }
+          else if (msg.type === 'exportDone')   { if (statusBar) statusBar.textContent = '\u2705 \u5df2\u532f\u51fa: ' + (msg.path || ''); setTimeout(function() { if (statusBar && statusBar.textContent.startsWith('\u2705 \u5df2\u532f\u51fa')) statusBar.textContent = ''; }, 3000); }
+          else if (msg.type === 'importDone')   {
+            _chatSeq += 1;
+            var iSess = { id: msg.sessionId, title: msg.title || '\u532f\u5165\u5c0d\u8a71', html: '', manualTitle: true };
+            _chatSessions.push(iSess);
+            switchChatSession(msg.sessionId);
+            if (statusBar) statusBar.textContent = '\u2705 \u5df2\u532f\u5165: ' + iSess.title;
+            setTimeout(function() { if (statusBar && statusBar.textContent.startsWith('\u2705 \u5df2\u532f\u5165')) statusBar.textContent = ''; }, 3000);
+          }
+          else if (msg.type === 'searchResults') {
+            if (!chatSearchResults) return;
+            chatSearchResults.innerHTML = '';
+            if (!msg.results || !msg.results.length) {
+              chatSearchResults.style.display = '';
+              chatSearchResults.innerHTML = '<div style="padding:4px 8px;opacity:0.6;font-size:11px">\u7121\u7b26\u5408\u7d50\u679c</div>';
+              return;
+            }
+            chatSearchResults.style.display = '';
+            msg.results.forEach(function(r) {
+              // \u5c0d\u6620 session title
+              var titleLabel = r.title;
+              for (var si = 0; si < _chatSessions.length; si++) { if (_chatSessions[si].id === r.sessionId) { titleLabel = _chatSessions[si].title || r.sessionId; break; } }
+              var row = document.createElement('div'); row.className = 'search-hit';
+              row.innerHTML = '<div class="search-hit-title">' + titleLabel + '</div><div class="search-hit-snippet">' + r.snippet.replace(/</g,'&lt;') + '</div>';
+              row.addEventListener('click', function() {
+                switchChatSession(r.sessionId);
+                if (chatSearchBar) chatSearchBar.style.display = 'none';
+                if (chatSearchResults) chatSearchResults.style.display = 'none';
+              });
+              chatSearchResults.appendChild(row);
+            });
+          }
         } catch(e) { dbg('CATCH: ' + (e && e.message ? e.message : String(e))); }
       });
 
@@ -877,7 +993,8 @@ export class OllamaChatPanel {
         chatSessionSelect.innerHTML = '';
         _chatSessions.forEach(function(s) {
           var opt = document.createElement('option');
-          opt.value = s.id; opt.textContent = s.title || s.id;
+          var tags = (s.tags && s.tags.length) ? ' [' + s.tags.join(', ') + ']' : '';
+          opt.value = s.id; opt.textContent = (s.title || s.id) + tags;
           if (s.id === _activeChatSessionId) opt.selected = true;
           chatSessionSelect.appendChild(opt);
         });
@@ -936,6 +1053,12 @@ export class OllamaChatPanel {
         if (!t) return;
         s.title = t;
         s.manualTitle = true;
+        // 標籤機能：詢問是否水設定標籤
+        var tagInput = window.prompt('設定分類標籤（多個用逗號隔開，留空不變）：', (s.tags || []).join(', '));
+        if (tagInput !== null) {
+          var tags = tagInput.split(',').map(function(tg) { return tg.trim(); }).filter(function(tg) { return tg.length > 0; });
+          s.tags = tags;
+        }
         renderChatSessionSelect();
         persistSessionState();
       }
@@ -964,6 +1087,42 @@ export class OllamaChatPanel {
       if (chatSessionSelect) chatSessionSelect.addEventListener('change', function() { switchChatSession(chatSessionSelect.value); });
       if (newChatBtn) newChatBtn.addEventListener('click', function() { createNewSession(); });
       if (renameChatBtn) renameChatBtn.addEventListener('click', function() { renameActiveSession(); });
+
+      // \u532f\u51fa\u5c0d\u8a71
+      var exportChatBtn = document.getElementById('exportChat');
+      if (exportChatBtn) exportChatBtn.addEventListener('click', function() {
+        var s = getActiveSession();
+        var fmt = window.confirm('\u9078\u64c7\u532f\u51fa\u683c\u5f0f\uff1a\u78ba\u5b9a = JSON\uff0c\u53d6\u6d88 = Markdown') ? 'json' : 'markdown';
+        vscode.postMessage({ type: 'exportChat', sessionId: _activeChatSessionId, title: s ? s.title : '\u5c0d\u8a71', format: fmt });
+      });
+      // \u532f\u5165\u5c0d\u8a71
+      var importChatBtn = document.getElementById('importChat');
+      if (importChatBtn) importChatBtn.addEventListener('click', function() {
+        vscode.postMessage({ type: 'importChat' });
+      });
+      // \u641c\u5c0b\u5c0d\u8a71
+      var searchChatBtnEl = document.getElementById('searchChatBtn');
+      var chatSearchBar = document.getElementById('chatSearchBar');
+      var chatSearchInput = document.getElementById('chatSearchInput');
+      var chatSearchResults = document.getElementById('chatSearchResults');
+      var chatSearchGo = document.getElementById('chatSearchGo');
+      var chatSearchClose = document.getElementById('chatSearchClose');
+      if (searchChatBtnEl) searchChatBtnEl.addEventListener('click', function() {
+        if (chatSearchBar) chatSearchBar.style.display = chatSearchBar.style.display === 'flex' ? 'none' : 'flex';
+        if (chatSearchResults) chatSearchResults.style.display = 'none';
+        if (chatSearchInput) { chatSearchInput.value = ''; chatSearchInput.focus(); }
+      });
+      if (chatSearchClose) chatSearchClose.addEventListener('click', function() {
+        if (chatSearchBar) chatSearchBar.style.display = 'none';
+        if (chatSearchResults) chatSearchResults.style.display = 'none';
+      });
+      function doSearchConversations() {
+        var q = chatSearchInput ? chatSearchInput.value.trim() : '';
+        if (!q) return;
+        vscode.postMessage({ type: 'searchConversations', query: q, sessions: _chatSessions.map(function(s) { return { id: s.id, title: s.title }; }) });
+      }
+      if (chatSearchGo) chatSearchGo.addEventListener('click', doSearchConversations);
+      if (chatSearchInput) chatSearchInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') doSearchConversations(); });
 
       // auto-grow textarea
       function resizePrompt() {
