@@ -2376,7 +2376,7 @@ export class OllamaChatPanel {
   private async fetchTeamModels(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiClaw');
     const ollamaUrls = getOllamaUrls(cfg);
-    const teamModels: { id: string; label: string; vendor: string }[] = [];
+    const teamModels: { id: string; label: string; vendor: string; multiplier?: string }[] = [];
     // Ollama models — all servers
     for (const url of ollamaUrls) {
       try {
@@ -2394,7 +2394,7 @@ export class OllamaChatPanel {
         const id = `copilot::${m.id}`;
         const rawName = m.name || m.family;
         const cleanName = rawName.replace(/\s+\d+x\b|\s+x\d+\b/gi, '').trim();
-        if (!seen.has(id)) { seen.add(id); teamModels.push({ id, label: cleanName, vendor: 'copilot' }); }
+        if (!seen.has(id)) { seen.add(id); teamModels.push({ id, label: cleanName, vendor: 'copilot', multiplier: getCopilotMultiplier(m) }); }
       }
     } catch { /* Copilot not available */ }
     this._panel.webview.postMessage({ type: 'teamModelList', models: teamModels });
