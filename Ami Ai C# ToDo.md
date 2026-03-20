@@ -55,8 +55,8 @@
 - [x] **快捷鍵自訂**：允許使用者自訂開啟面板、送出訊息等快捷鍵 → `Ctrl+Shift+I` 開啟面板；`Ctrl+L` 聚焦輸入框；`amiAiClaw.sendKey` 設定（Enter / Ctrl+Enter）`commit 4abe1f1`
 
 ### 8. 整合開發工具
-- [ ] **ESLint/Prettier 整合**：Agent 自動修正程式碼風格
-- [ ] **單元測試生成**：為選取的函式自動產生 Jest/Mocha 測試
+- [x] **ESLint/Prettier 整合**：Agent 自動修正程式碼風格 → `lint_fix` 工具：執行 `npx eslint --fix` 和/或 `npx prettier --write`，`tool` 參數可選 `eslint`/`prettier`/`both` `commit 7855767`
+- [x] **單元測試生成**：為選取的函式自動產生 Jest/Mocha 測試 → `run_tests` 工具：自動偵測 jest/vitest/mocha/pytest，執行測試套件並回傳結果；Agent 可讀取原始碼後用 `write_file` 寫入測試 `commit 7855767`
 - [ ] **文件生成**：為專案自動產生 API 文件（JSDoc、TypeDoc）
 - [ ] **重構建議**：分析程式碼並提供重構方案
 
@@ -67,10 +67,10 @@
 - [x] **模型費用追蹤**：記錄 API 使用量和預估費用
 
 ### 10. 安全性增強
-- [ ] **敏感資訊過濾**：自動偵測並遮蔽 API key、密碼等
-- [ ] **工具權限管理**：允許使用者設定哪些工具需要確認才執行
+- [x] **敏感資訊過濾**：自動偵測並遮蔽 API key、密碼等 → `filterSensitiveInfo()` 函式過濾 JWT/AWS/GitHub/OpenAI/PEM/Bearer/通用憑證模式；可透過 `amiAiClaw.filterSensitiveInfo` 設定關閉 `commit 7855767`
+- [x] **工具權限管理**：允許使用者設定哪些工具需要確認才執行 → `amiAiClaw.toolAlwaysAllow`（預核准工具列表）與 `amiAiClaw.toolAlwaysConfirm`（強制每次詢問）設定；`toolAlwaysConfirm` 工具會隱藏「永遠允許」按鈕 `commit 7855767`
 - [ ] **沙箱執行環境**（選配）：在容器中執行 `run_terminal` 命令
-- [ ] **稽核日誌**：記錄所有工具呼叫和檔案變更
+- [x] **稽核日誌**：記錄所有工具呼叫和檔案變更 → `_auditLog` 記憶體快取（200 筆）+ globalState 持久化（500 筆）；`amiAiClaw.showAuditLog` 指令開啟 QuickPick 歷程清單 `commit 7855767`
 
 ---
 
@@ -116,6 +116,7 @@
 - [x] **中文字數計算錯誤**：Token limit 計算未考慮中文字元實際佔用 → webview 估算邏輯改為 CJK > 0x2E7F 算 1 token、ASCII 算 0.25 token，與後端 `estimateTokens` 一致 `commit eff0945`
 - [x] **Agent/Ask 模式完成後 token 資訊消失**：`agentStatus{running:false}` 緊接在 `streamEnd` 之後，把 statusBar 覆寫成「🤖 Agent 模式」清掉 token 數字；Ask 模式因備份路徑未儲存 `_lastTokenInfo` 亦未顯示 → 新增 `_lastTokenInfo` 變數於 `streamEnd` 儲存 token 文字，`agentStatus{running:false}` 時恢復該文字；純思考型模型（無 `.response-body`）fallback 改抓 `details.think pre.think-stream` 文字估算 `commit 188321d`
 - [x] **Markdown 新增後 webview 卡在「連線：檢查中…」（regression）**：`0b34950` Markdown rendering commit 在 TS template literal 裡的 regex 及字串使用單反斜線跳脫（`\n`/`\*`/`\$`/`\s`/`\d`/`\|`），TS template literal evaluation 把 `\n` 變成真正換行字元、`\*\*` 變成非法 quantifier 等，導致 webview `<script>` 整體 SyntaxError，`webviewReady` 永遠不送出 → 全部加倍為 `\\n`/`\\*` 等 `commit ec182ba`；`split('\n')` / `mathBuf+=ln+'\n'` 兩處字串字面值同樣加倍 `commit e364265`
+- [x] **敏感資訊可能透過 Agent 工具輸出外洩**：`read_file`/`http_request`/`run_command` 等工具回傳的內容可能含有 API key、JWT token、私鑰等 → 新增 `filterSensitiveInfo()` 函式，偵測並遮蔽 JWT/AWS/GitHub/OpenAI/PEM/Bearer/通用 key=value 模式；Agent 工具迴圈在回傳給 AI 前自動過濾 `commit 7855767`
 
 ---
 
