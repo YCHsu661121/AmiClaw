@@ -43,6 +43,8 @@ export class OllamaChatPanel {
   /** Agent 工具快取：快取 list_dir / read_file 唯讀結果（30s TTL），寫入/刪除時自動失效 */
   private _toolCache = new Map<string, { value: string; ts: number }>();
   private static readonly TOOL_CACHE_TTL = 30_000;
+  /** 使用量統計：各 model 累計 token 與 Copilot 費率 */
+  private _usageStats: Record<string, { tokens: number; isCopilot: boolean; multiplier: string }> = {};
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
   private _chatHistories: Record<string, ChatMessage[]> = { default: [] };
@@ -56,9 +58,30 @@ export class OllamaChatPanel {
     OllamaChatPanel._log.appendLine(`[${new Date().toISOString()}] ${msg}`);
   }
 
+  /** 記錄一次 API 呼叫的 token 使用量，並推送更新到前端。 */
+  private trackUsage(model: string, tokens: number, multiplier = ''): void {
+    if (!tokens || tokens <= 0) { return; }
+    const isCopilot = model.startsWith('copilot::') || model.startsWith('copilot/');
+    const key = model.replace(/^copilot[::\/]+/, '');
+    const existing = this._usageStats[key];
+    if (existing) {
+      existing.tokens += tokens;
+    } else {
+      this._usageStats[key] = { tokens, isCopilot, multiplier };
+    }
+    // 持久化累計值
+    const saved = this._context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string }>>('amiAiClaw.usageStats') ?? {};
+    const sk = saved[key];
+    if (sk) { sk.tokens += tokens; } else { saved[key] = { tokens, isCopilot, multiplier }; }
+    this._context.globalState.update('amiAiClaw.usageStats', saved);
+    this._panel.webview.postMessage({ type: 'usageUpdate', stats: this._usageStats });
+  }
+
   private constructor(panel: vscode.WebviewPanel, context: vscode.ExtensionContext) {
     this._panel = panel;
     this._context = context;
+    // 載入持久化的使用量統計
+    this._usageStats = context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string }>>('amiAiClaw.usageStats') ?? {};
     OllamaChatPanel.log('Constructor: start');
     vscode.window.showInformationMessage('AMI-AiClaw: Extension activated');
 
@@ -176,12 +199,17 @@ export class OllamaChatPanel {
               const text = (m.content ?? '').slice(0, 200);
               return `${role}：${text}${(m.content ?? '').length > 200 ? '…' : ''}`;
             }).join('\n\n');
-            this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: this.getLongTermMemory(), persona: persona2, historyCount: this._chatHistory.length, historyPreview, sessionId: this._activeSessionId });
+            this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: this.getLongTermMemory(), persona: persona2, historyCount: this._chatHistory.length, historyPreview, sessionId: this._activeSessionId, usageStats: this._usageStats });
             break;
           }
           case 'memorySave':
             await this.saveLongTermMemory(message.ltm as string);
             this._panel.webview.postMessage({ type: 'memorySaved' });
+            break;
+          case 'resetUsage':
+            this._usageStats = {};
+            this._context.globalState.update('amiAiClaw.usageStats', {});
+            this._panel.webview.postMessage({ type: 'usageUpdate', stats: {} });
             break;
           case 'memoryConsolidate':
             await this.handleMemoryConsolidate(message.sessionId);
@@ -481,6 +509,11 @@ export class OllamaChatPanel {
       .mem-btn:hover{background:rgba(128,128,128,0.25)}
       .mem-btn.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border-color:transparent}
       .mem-btn.primary:hover{opacity:0.88}
+      /* 使用量統計表格 */
+      .usage-table{width:100%;border-collapse:collapse;font-size:11px;margin:2px 0}
+      .usage-table th{opacity:0.6;font-weight:600;text-align:left;padding:2px 6px;border-bottom:1px solid rgba(128,128,128,0.25)}
+      .usage-table td{padding:2px 6px;border-bottom:1px solid rgba(128,128,128,0.1);word-break:break-all}
+      .usage-copilot td{color:var(--vscode-editorInfo-foreground,#4fc1ff)}
       /* LTM 條目編輯器 */
       .ltm-tabs{display:flex;gap:2px;margin-bottom:0}
       .ltm-tab-btn{font-size:11px;padding:3px 12px;border-radius:4px 4px 0 0;background:rgba(128,128,128,0.1);border:1px solid rgba(128,128,128,0.25);cursor:pointer;color:inherit;opacity:0.65}
@@ -647,6 +680,14 @@ export class OllamaChatPanel {
           </div>
           <p id="consolidateStatus" style="font-size:11px;opacity:0.7;margin:2px 0;display:none"></p>
         </div>
+        <!-- 使用量統計 -->
+        <div class="mem-section">
+          <p class="mem-section-title">&#x1F4CA; API 使用量統計</p>
+          <div id="usageTableWrap"><p style="font-size:11px;opacity:0.55;margin:2px 0">尚無資料</p></div>
+          <div class="mem-row">
+            <button class="mem-btn" id="resetUsageBtn">&#x1F5D1; 重置統計</button>
+          </div>
+        </div>
       </div>
     </div>
     <script nonce="${nonce}">
@@ -722,6 +763,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; } }
           else if (msg.type === 'consolidateStart') { var cs = document.getElementById('consolidateStatus'); if (cs) { cs.style.display = ''; cs.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026'; } var clb = document.getElementById('consolidateLtmBtn'); if (clb) clb.disabled = true; }
           else if (msg.type === 'consolidateChunk') { var cs2 = document.getElementById('consolidateStatus'); if (cs2) cs2.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026 ' + (msg.chunk || '').slice(0, 40); }
+          else if (msg.type === 'usageUpdate') { renderUsageTable(msg.stats); }
           else if (msg.type === 'consolidateDone') {
             var clb2 = document.getElementById('consolidateLtmBtn'); if (clb2) clb2.disabled = false;
             var cs3 = document.getElementById('consolidateStatus');
@@ -1769,6 +1811,27 @@ export class OllamaChatPanel {
         if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.historyCount || 0) + ' \u689d\u8a0a\u606f';
         var hp = document.getElementById('historyPreview');
         if (hp) hp.value = msg.historyPreview || (msg.historyCount ? '（歷史存在但無預覽）' : '（目前沒有對話歷史）');
+        if (msg.usageStats) { renderUsageTable(msg.usageStats); }
+      }
+
+      function renderUsageTable(stats) {
+        var wrap = document.getElementById('usageTableWrap');
+        if (!wrap) return;
+        var keys = stats ? Object.keys(stats) : [];
+        if (keys.length === 0) { wrap.innerHTML = '<p style="font-size:11px;opacity:0.55;margin:2px 0">尚無資料</p>'; return; }
+        var html = '<table class="usage-table"><thead><tr><th>模型</th><th>Tokens</th><th>費率</th></tr></thead><tbody>';
+        var totalTokens = 0;
+        keys.forEach(function(k) {
+          var v = stats[k];
+          var mult = v.multiplier || (v.isCopilot ? '1x' : '-');
+          var dispTokens = v.tokens.toLocaleString();
+          totalTokens += v.tokens;
+          var cls = v.isCopilot ? ' class="usage-copilot"' : '';
+          html += '<tr' + cls + '><td>' + k + '</td><td>' + dispTokens + '</td><td>' + mult + '</td></tr>';
+        });
+        if (keys.length > 1) { html += '<tr style="font-weight:600;border-top:1px solid rgba(128,128,128,0.3)"><td>合計</td><td>' + totalTokens.toLocaleString() + '</td><td></td></tr>'; }
+        html += '</tbody></table>';
+        wrap.innerHTML = html;
       }
 
       var memModal = document.getElementById('memModal');
@@ -1794,6 +1857,10 @@ export class OllamaChatPanel {
         if (area) area.value = '';
         renderLtmEntries();
         vscode.postMessage({ type: 'memorySave', ltm: '' });
+      });
+      var resetUsageBtn = document.getElementById('resetUsageBtn');
+      if (resetUsageBtn) resetUsageBtn.addEventListener('click', function() {
+        vscode.postMessage({ type: 'resetUsage' });
       });
       var ltmSearch = document.getElementById('ltmSearch');
       if (ltmSearch) ltmSearch.addEventListener('input', function() {
@@ -2453,7 +2520,9 @@ export class OllamaChatPanel {
             ];
             if (messages[messages.length - 1].role !== 'user') messages.push({ role: 'user', content: '請繼續。' });
             response = await ollamaChatStream(url, mName, messages,
-              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); });
+              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); },
+              undefined,
+              (tokens) => { this.trackUsage(mName, tokens); });
           }
         } catch (e) {
           response = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
@@ -2646,7 +2715,8 @@ export class OllamaChatPanel {
           { role: 'user', content: userMsg }
         ];
         const text = await ollamaChatStream(url, mName, messages, onChunk,
-          (tc) => { thinkBuf += tc; if (!thinkTimer) { thinkTimer = setTimeout(flushThink, 80); } });
+          (tc) => { thinkBuf += tc; if (!thinkTimer) { thinkTimer = setTimeout(flushThink, 80); } },
+          (tokens) => { this.trackUsage(mName, tokens); });
         if (thinkTimer) { clearTimeout(thinkTimer); } flushThink();
         return text;
       }
@@ -3274,6 +3344,8 @@ ${reviewText.replace('[APPROVED]', '').trim()}
           }
           vmMsgs0.push(vscode.LanguageModelChatMessage.User(prompt));
           fullResponse = await copilotStreamText(copilotId, vmMsgs0, (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); }, cts0.token);
+          const copilotTokenEst = Math.ceil(estimateTokens(fullResponse));
+          this.trackUsage(copilotId, copilotTokenEst, getCopilotMultiplierById(copilotId));
         } finally { cts0.dispose(); }
       } else {
         fullResponse = await ollamaGenerateStream(
@@ -3284,7 +3356,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
             thinkBuf += thinkChunk;
             if (!thinkTimer) thinkTimer = setTimeout(flushThink, 80);
           },
-          (tokens, tps) => { this._panel.webview.postMessage({ type: 'streamStats', tokens, tps }); }
+          (tokens, tps) => { this._panel.webview.postMessage({ type: 'streamStats', tokens, tps }); this.trackUsage(model, tokens); }
         );
       }
       if (thinkTimer) { clearTimeout(thinkTimer); }
@@ -3579,6 +3651,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           resp = model.startsWith('copilot::')
             ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
             : await ollamaChatCall(baseUrl, model, this._agentMessages, AGENT_TOOLS);
+          if (resp) { this.trackUsage(model, Math.ceil(estimateTokens(resp.content ?? '')), model.startsWith('copilot::') ? getCopilotMultiplierById(model.slice('copilot::'.length)) : ''); }
         } catch (e) {
           const emsg = e instanceof Error ? e.message : String(e);
           if (/token|limit|context|exceed/i.test(emsg) && this._agentMessages.length > 4) {
@@ -4873,6 +4946,15 @@ function getCopilotMultiplier(m: vscode.LanguageModelChat): string {
   if (id.includes('opus') || fam.includes('opus')) return '3x';
   if (id.includes('mini') || fam.includes('mini')) return '0x';
   if ((id.startsWith('gpt-4o') && !id.includes('mini')) || fam === 'gpt-4o' || id === 'gpt-4o') return '0x';
+  return '1x';
+}
+
+function getCopilotMultiplierById(id: string): string {
+  const i = id.toLowerCase();
+  if (i === 'auto') { return '10% off'; }
+  if (i.includes('opus')) { return '3x'; }
+  if (i.includes('mini')) { return '0x'; }
+  if (i.startsWith('gpt-4o') && !i.includes('mini')) { return '0x'; }
   return '1x';
 }
 
