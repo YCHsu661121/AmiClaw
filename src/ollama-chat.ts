@@ -37,6 +37,8 @@ export class OllamaChatPanel {
   private _alwaysAllow = new Set<string>();
   /** 等待使用者確認的 pending promise resolve */
   private _pendingPermission: ((allow: boolean) => void) | null = null;
+  /** Ask / Copilot 串流的取消 token source，新請求送出時先 cancel 前一個以避免舊回應混入 */
+  private _pendingSendCts: vscode.CancellationTokenSource | null = null;
   /** 最後一次送出請求的 Ollama server URL + model（切換時需清 VRAM，但只在同一台 server）*/
   private _lastOllamaUrl = '';
   private _lastOllamaModel = '';
@@ -823,9 +825,10 @@ export class OllamaChatPanel {
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
           if (debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
           if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); if (statusBar && msg.tokens) { var _aML = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F'); statusBar.textContent = _aML + '\u2003\u2014\u2003~' + msg.tokens + ' tokens'; } }
-          else if (msg.type === 'streamStart')   { clearPendingBubble(); _streamNode = null; }
+          else if (msg.type === 'streamStart')   { _streamNode = null; /* dots stay until first thinkChunk/assistantChunk */ }
           else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk); }
           else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
+          else if (msg.type === 'streamAbort')   { if (_streamNode && chat.contains(_streamNode)) { _streamNode.remove(); } _streamNode = null; }
           else if (msg.type === 'streamEnd')     { _agentStepNode = null; setSendEnabled(true);
             var _sbE = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null;
             if (_sbE) {
@@ -834,10 +837,11 @@ export class OllamaChatPanel {
               if (_lastStreamTokens) {
                 _tb.textContent = '~' + _lastStreamTokens + ' tokens  ' + _lastStreamTps.toFixed(1) + ' t/s';
               } else {
-                // eval_count 未回傳時，從文字長度估算（~ 4 chars/token）
+                // eval_count 未回傳時，依字元類型估算（CJK ≈ 1 token, ASCII ≈ 4 chars/token）
                 var _rb = _sbE.querySelector('.response-body');
-                var _est = _rb ? Math.max(1, Math.round((_rb.textContent || '').length / 4)) : 0;
-                if (_est) _tb.textContent = '≈' + _est + ' tokens (估算)';
+                var _est = 0;
+                if (_rb) { var _t = _rb.textContent || ''; for (var _ci = 0; _ci < _t.length; _ci++) { _est += _t.codePointAt(_ci) > 0x2E7F ? 1 : 0.25; } _est = Math.max(1, Math.ceil(_est)); }
+                if (_est) _tb.textContent = '\u2248' + _est + ' tokens (\u4f30\u7b97)';
               }
             }
             // 更新 statusBar 顯示 token 資訊
@@ -847,7 +851,8 @@ export class OllamaChatPanel {
                 statusBar.textContent = _modeLabel + '\u2003\u2014\u2003~' + _lastStreamTokens + ' tokens  ' + _lastStreamTps.toFixed(1) + ' t/s';
               } else if (_sbE) {
                 var _rbStat = _sbE.querySelector('.response-body');
-                var _estStat = _rbStat ? Math.max(1, Math.round((_rbStat.textContent || '').length / 4)) : 0;
+                var _estStat = 0;
+                if (_rbStat) { var _ts = _rbStat.textContent || ''; for (var _cj = 0; _cj < _ts.length; _cj++) { _estStat += _ts.codePointAt(_cj) > 0x2E7F ? 1 : 0.25; } _estStat = Math.max(1, Math.ceil(_estStat)); }
                 if (_estStat) statusBar.textContent = _modeLabel + '\u2003\u2014\u2003\u2248' + _estStat + ' tokens (\u4f30\u7b97)';
               }
             }
@@ -1512,6 +1517,7 @@ export class OllamaChatPanel {
       }
 
       function appendChunk(chunk) {
+        clearPendingBubble(); // remove loading dots before creating stream node
         const bubble = getStreamBubble();
         const d = bubble.querySelector('details.think');
         if (d && d.hasAttribute('open')) {
@@ -3613,10 +3619,13 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 
     this._panel.webview.postMessage({ type: 'streamStart' });
     let fullResponse = '';
+    // Cancel any previous in-flight Copilot request (stale response guard)
+    if (this._pendingSendCts) { this._pendingSendCts.cancel(); this._pendingSendCts.dispose(); this._pendingSendCts = null; }
     try {
       if (model.startsWith('copilot::')) {
         const copilotId = model.slice('copilot::'.length);
         const cts0 = new vscode.CancellationTokenSource();
+        this._pendingSendCts = cts0;
         try {
           const vmMsgs0: vscode.LanguageModelChatMessage[] = [];
           if (systemContent.trim()) { vmMsgs0.push(vscode.LanguageModelChatMessage.User(`[系統]\n${systemContent}`)); }
@@ -3627,7 +3636,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
           fullResponse = await copilotStreamText(copilotId, vmMsgs0, (chunk) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk }); }, cts0.token);
           const copilotTokenEst = Math.ceil(estimateTokens(fullResponse));
           this.trackUsage(copilotId, copilotTokenEst, getCopilotMultiplierById(copilotId));
-        } finally { cts0.dispose(); }
+        } finally { this._pendingSendCts = null; cts0.dispose(); }
       } else {
         fullResponse = await ollamaGenerateStream(
           baseUrl, model, fullPrompt,
@@ -3925,12 +3934,19 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     try {
       for (let step = 0; step < 20 && !this._agentCancel; step++) {
         let resp: ChatMessage | undefined;
+        const isOllama = !model.startsWith('copilot::');
+        // Ollama: stream each call so thinking appears in real-time
+        if (isOllama) { this._panel.webview.postMessage({ type: 'streamStart' }); }
+        const onThinkCb = isOllama ? (c: string) => { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: c }); } : undefined;
+        const onTextCb  = isOllama ? (c: string) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk: c }); } : undefined;
+        const onStatsCb = isOllama ? (t: number, tps: number) => { this._panel.webview.postMessage({ type: 'streamStats', tokens: t, tps }); this.trackUsage(model, t); } : undefined;
         try {
           resp = model.startsWith('copilot::')
             ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
-            : await ollamaChatCall(baseUrl, model, this._agentMessages, AGENT_TOOLS);
-          if (resp) { this.trackUsage(model, Math.ceil(estimateTokens(resp.content ?? '')), model.startsWith('copilot::') ? getCopilotMultiplierById(model.slice('copilot::'.length)) : ''); }
+            : await ollamaChatCallStream(baseUrl, model, this._agentMessages, AGENT_TOOLS, onThinkCb, onTextCb, onStatsCb);
+          if (resp && !isOllama) { this.trackUsage(model, Math.ceil(estimateTokens(resp.content ?? '')), getCopilotMultiplierById(model.slice('copilot::'.length))); }
         } catch (e) {
+          if (isOllama) { this._panel.webview.postMessage({ type: 'streamAbort' }); }
           const emsg = e instanceof Error ? e.message : String(e);
           if (/does not support tools/i.test(emsg)) {
             this._panel.webview.postMessage({ type: 'error', text: `模型 ${model} 不支援工具呼叫（tools API）。\nAgent 模式需要支援 tools 的模型，例如：qwen2.5:7b、llama3.1:8b、mistral-nemo。\n請在 AMI-AiClaw 設定中更換模型。` });
@@ -3939,16 +3955,19 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           if (/token|limit|context|exceed/i.test(emsg) && this._agentMessages.length > 4) {
             this._trimAgentHistory();
             this._panel.webview.postMessage({ type: 'agentStep', icon: '✂️', title: '歷史記錄過長，已自動裁剪後重試', fullPath: '' });
+            if (isOllama) { this._panel.webview.postMessage({ type: 'streamStart' }); }
             resp = model.startsWith('copilot::')
               ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
-              : await ollamaChatCall(baseUrl, model, this._agentMessages, AGENT_TOOLS);
+              : await ollamaChatCallStream(baseUrl, model, this._agentMessages, AGENT_TOOLS, onThinkCb, onTextCb, onStatsCb);
           } else {
             throw e;
           }
         }
-        if (!resp) { break; }
+        if (!resp) { if (isOllama) { this._panel.webview.postMessage({ type: 'streamAbort' }); } break; }
 
         if (resp.tool_calls && resp.tool_calls.length > 0) {
+          // Tool call: discard streamed content (was empty for tool decisions)
+          if (isOllama) { this._panel.webview.postMessage({ type: 'streamAbort' }); }
           this._agentMessages.push({ role: 'assistant', content: resp.content ?? null, tool_calls: resp.tool_calls });
           // 循序執行工具（保持 _agentStepNode 追蹤正確 + requestPermission 單一 pending 不衝突）
           for (const tc of resp.tool_calls) {
@@ -3986,7 +4005,13 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             this._chatHistories[this._activeSessionId] = this._chatHistory;
             this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
           }
-          this._panel.webview.postMessage({ type: 'assistant', text: text || rawText, thinking: thinkContent || undefined, tokens: tokenEst });
+          if (isOllama) {
+            // Content was already streamed via assistantChunk; just finalize the stream node
+            this._panel.webview.postMessage({ type: 'streamEnd' });
+          } else {
+            // Copilot: non-streaming, post as complete message
+            this._panel.webview.postMessage({ type: 'assistant', text: text || rawText, thinking: thinkContent || undefined, tokens: tokenEst });
+          }
           break;
         }
       }
@@ -4325,6 +4350,14 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const rfKey = `rf:${fpath}`;
         const rfCached = this._toolCache.get(rfKey);
         if (rfCached && Date.now() - rfCached.ts < OllamaChatPanel.TOOL_CACHE_TTL) { return rfCached.value; }
+        // 先檢查檔案大小，避免大型二進位/文字檔案讓 webview 凍結
+        let fileStat: vscode.FileStat;
+        try { fileStat = await vscode.workspace.fs.stat(vscode.Uri.file(fpath)); }
+        catch { return `錯誤：找不到檔案 ${fpath}`; }
+        const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+        if (fileStat.size > MAX_BYTES) {
+          return `檔案過大（${(fileStat.size / 1024 / 1024).toFixed(1)} MB > 5 MB），拒絕讀取以防止凍結。請改用 search_regex 或指定行範圍。`;
+        }
         const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
         const text = Buffer.from(bytes).toString('utf8');
         const rfResult = text.length > 50000 ? text.slice(0, 50000) + '\n…（已截斷至 50KB）' : text;
@@ -4378,13 +4411,23 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       }
       case 'run_terminal': {
         const cmd = args.command as string;
+        const cwd = (args.cwd as string) ? resolvePath(args.cwd as string) : (folders[0]?.uri.fsPath ?? process.cwd());
         const allowed = await this.requestPermission('run', `終端機執行: ${cmd}`);
         if (!allowed) { return '使用者已拒絕執行操作'; }
+        // Show in VS Code terminal for user visibility
         const terminals = vscode.window.terminals;
         const terminal = terminals.length > 0 ? terminals[terminals.length - 1] : vscode.window.createTerminal('Agent');
         terminal.show(true);
         terminal.sendText(cmd);
-        return `已在終端機執行: ${cmd}`;
+        // Also capture output via exec with 120s timeout
+        return new Promise<string>((resolve) => {
+          const { exec } = require('child_process') as typeof import('child_process');
+          exec(cmd, { cwd, timeout: 120_000, shell: true as unknown as string, maxBuffer: 4 * 1024 * 1024 }, (_err, stdout, stderr) => {
+            const out = (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
+            const trimmed = out.trim();
+            resolve(trimmed.length > 10000 ? trimmed.slice(0, 10000) + '\n…（已截斷至 10KB）' : trimmed || '(無輸出)');
+          });
+        });
       }
       case 'search_workspace': {
         const query = ((args.query as string) ?? '').toLowerCase();
@@ -5229,6 +5272,93 @@ function ollamaChatCall(baseUrl: string, model: string, messages: ChatMessage[],
       req.setTimeout(600000, () => { req.destroy(new Error('Agent \u547c\u53eb\u903e\u6642 (600s)')); });
       req.write(body);
       req.end();
+    } catch (e) { reject(e); }
+  });
+}
+
+/** 串流版 /api/chat — 將 thinking 即時轉發給 onThinkChunk，累積回應後解析工具呼叫或文字回應 */
+function ollamaChatCallStream(
+  baseUrl: string, model: string, messages: ChatMessage[], tools: unknown[],
+  onThinkChunk?: (chunk: string) => void,
+  onTextChunk?: (chunk: string) => void,
+  onStats?: (tokens: number, tps: number) => void
+): Promise<ChatMessage> {
+  return new Promise((resolve, reject) => {
+    try {
+      const url = new URL('/api/chat', baseUrl);
+      const bodyObj: Record<string, unknown> = {
+        model, messages, stream: true,
+        ...(tools.length > 0 ? { tools } : {}),
+        ...(supportsThinking(model) ? { think: true } : {})
+      };
+      const body = JSON.stringify(bodyObj);
+      const protocol = url.protocol === 'https:' ? https : http;
+      const options: http.RequestOptions = {
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+        path: url.pathname, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      };
+      let lineBuffer = '';
+      let accContent = '';
+      let accThinking = '';
+      let finalToolCalls: unknown[] | undefined;
+      const req = protocol.request(options, (res) => {
+        if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+          let errBody = '';
+          res.setEncoding('utf8');
+          res.on('data', (d: string) => { errBody += d; });
+          res.on('end', () => {
+            try { const j = JSON.parse(errBody); reject(new Error('Ollama 錯誤：' + (j.error ?? 'HTTP ' + res.statusCode))); }
+            catch { reject(new Error('Ollama HTTP ' + res.statusCode)); }
+          });
+          return;
+        }
+        res.setEncoding('utf8');
+        let streamError: string | null = null;
+        res.on('data', (data: string) => {
+          lineBuffer += data;
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop() ?? '';
+          for (const line of lines) {
+            const t = line.trim(); if (!t) continue;
+            try {
+              const json = JSON.parse(t) as Record<string, unknown>;
+              if (json.error) { streamError = json.error as string; return; }
+              const msgFrag = json.message as (ChatMessage & { thinking?: string }) | undefined;
+              if (msgFrag) {
+                if (msgFrag.thinking) { accThinking += msgFrag.thinking; if (onThinkChunk) onThinkChunk(msgFrag.thinking); }
+                if (msgFrag.content) { accContent += msgFrag.content; if (onTextChunk) onTextChunk(msgFrag.content); }
+                if (msgFrag.tool_calls && Array.isArray(msgFrag.tool_calls) && msgFrag.tool_calls.length > 0) {
+                  finalToolCalls = msgFrag.tool_calls;
+                }
+              }
+              if (json.done) {
+                const ec = json.eval_count as number | undefined;
+                const ed = json.eval_duration as number | undefined;
+                if (onStats && ec && ed && ed > 0) onStats(ec, ec / (ed / 1e9));
+              }
+            } catch { /* partial */ }
+          }
+        });
+        res.on('end', () => {
+          if (streamError) { reject(new Error('Ollama 錯誤：' + streamError)); return; }
+          if (finalToolCalls && finalToolCalls.length > 0) {
+            resolve({ role: 'assistant', content: accContent || null, tool_calls: finalToolCalls as ChatMessage['tool_calls'] });
+          } else {
+            // Extract <think> from content if no dedicated thinking field
+            let content = accContent;
+            if (!accThinking && content) {
+              const m = content.match(/^<think>([\s\S]*?)<\/think>\s*/);
+              if (m) { if (onThinkChunk) onThinkChunk(m[1].trim()); content = content.slice(m[0].length); }
+            }
+            resolve({ role: 'assistant', content: content || null, thinking: accThinking || undefined });
+          }
+        });
+      });
+      req.on('error', (e: NodeJS.ErrnoException) => reject(ollamaConnectError(new URL(baseUrl).hostname, e)));
+      req.setTimeout(600000, () => { req.destroy(new Error('Agent 呼叫逾時 (600s)')); });
+      req.write(body); req.end();
     } catch (e) { reject(e); }
   });
 }
