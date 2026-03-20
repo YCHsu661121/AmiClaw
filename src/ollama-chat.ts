@@ -5182,7 +5182,7 @@ function ollamaChatCall(baseUrl: string, model: string, messages: ChatMessage[],
   return new Promise((resolve, reject) => {
     try {
       const url = new URL('/api/chat', baseUrl);
-      const body = JSON.stringify({ model, messages, tools, stream: false, think: true });
+      const body = JSON.stringify({ model, messages, tools, stream: false, ...(supportsThinking(model) ? { think: true } : {}) });
       const protocol = url.protocol === 'https:' ? https : http;
       const options: http.RequestOptions = {
         hostname: url.hostname,
@@ -5297,10 +5297,11 @@ async function copilotChatCallWithCts(
 }
 
 function supportsThinking(model: string): boolean {
-  // Always send think:true — models that don't support it simply ignore the param.
-  // This allows any model that outputs <think> tags (Ollama native thinking field or
-  // embedded tags) to have thinking captured without explicitly listing model names.
-  return true;
+  const m = model.toLowerCase().replace(/.*\//, ''); // strip hf.co/user/ prefix
+  return m.startsWith('deepseek-r1') || m.startsWith('deepseek-r2') ||
+    m.startsWith('qwq') || m.startsWith('qwen3') ||
+    m.includes(':thinking') || m.includes('-thinking') ||
+    m.includes('think');
 }
 
 function ollamaGenerate(baseUrl: string, model: string, prompt: string): Promise<{ response: string; thinking?: string }> {
