@@ -100,6 +100,14 @@ export function activate(context: vscode.ExtensionContext) {
       }
     })
   );
+
+  // 聚焦輸入框 (快捷鍵 Ctrl+L)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.focusInput', () => {
+      OllamaChatPanel.createOrShow(context);
+      OllamaChatPanel.currentPanel?.postMessageToWebview({ type: 'focusInput' });
+    })
+  );
 }
 
 export function deactivate() {}

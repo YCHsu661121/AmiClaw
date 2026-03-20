@@ -66,6 +66,24 @@
       {
         "command": "amiAiClaw.deleteChatSession",
         "title": "刪除聊天"
+      },
+      {
+        "command": "amiAiClaw.focusInput",
+        "title": "AMI-AiClaw: 聚焦輸入框"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "amiAiClaw.chat",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i",
+        "when": "editorTextFocus && !terminalFocus"
+      },
+      {
+        "command": "amiAiClaw.focusInput",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "activeWebviewPanelId == 'amiAiClaw.chat'"
       }
     ],
     "menus": {
@@ -143,6 +161,13 @@
             "type": "string",
             "default": "",
             "description": "（選填）Jira API Token（Cloud）或 Personal Access Token（Server/DC）。已安裝 atlascode 時不需要設定。"
+          },
+          "amiAiClaw.sendKey": {
+            "type": "string",
+            "enum": ["Enter", "Ctrl+Enter"],
+            "enumDescriptions": ["按 Enter 送出訊息（Ctrl+Enter 換行）", "按 Ctrl+Enter 送出（Enter 換行）"],
+            "default": "Enter",
+            "description": "聊天輸入框的送出鍵設定"
           }
         }
       }

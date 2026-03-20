@@ -299,6 +299,46 @@ export class OllamaChatPanel {
           case 'openSettings':
             vscode.commands.executeCommand('workbench.action.openSettings', 'amiAiClaw.systemPrompt');
             break;
+          case 'editMessage': {
+            // 訊息編輯：截斷歷史到第 userIdx 個 user 訊息之前，再重新送出
+            this.switchChatSession(message.sessionId);
+            const editUserIdx = message.userIdx as number;
+            let uc2 = 0, histCut = 0;
+            for (let i = 0; i < this._chatHistory.length; i++) {
+              if (this._chatHistory[i].role === 'user') {
+                if (uc2 === editUserIdx) { histCut = i; break; }
+                uc2++;
+              }
+            }
+            this._chatHistory = this._chatHistory.slice(0, histCut);
+            this._chatHistories[this._activeSessionId] = this._chatHistory;
+            this._agentMessages = [];
+            this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+            await this.handleSend(message.newText as string, message.model as string | undefined, message.sessionId);
+            break;
+          }
+          case 'forkSession': {
+            // 對話分支：依 userCount 複製歷史，建立新 session
+            this.switchChatSession(message.sessionId);
+            const forkUserCount = message.userCount as number;
+            let uc3 = 0, histEnd = this._chatHistory.length;
+            for (let i = 0; i < this._chatHistory.length; i++) {
+              if (this._chatHistory[i].role === 'user') {
+                uc3++;
+                if (uc3 === forkUserCount) {
+                  // Include this user msg + all subsequent non-user msgs up to next user msg
+                  histEnd = i + 1;
+                  while (histEnd < this._chatHistory.length && this._chatHistory[histEnd].role !== 'user') histEnd++;
+                  break;
+                }
+              }
+            }
+            const forkId = 'session_' + Date.now();
+            this._chatHistories[forkId] = this._chatHistory.slice(0, histEnd);
+            this._agentMessagesBySession[forkId] = [];
+            this._panel.webview.postMessage({ type: 'forkSessionDone', sessionId: forkId, forkHtml: message.forkHtml });
+            break;
+          }
           case 'notifySessionsChanged':
             if (OllamaChatPanel.onSessionsChanged && Array.isArray(message.sessions)) {
               OllamaChatPanel.onSessionsChanged(
@@ -462,6 +502,7 @@ export class OllamaChatPanel {
     const defaultModel = cfg.get<string>('model') ?? '';
     const models = cfg.get<string[]>('models') ?? (defaultModel ? [defaultModel] : []);
     const optionsHtml = models.map(m => `<option value="${m}" ${m === defaultModel ? 'selected' : ''}>${m}</option>`).join('');
+    const sendKey = cfg.get<string>('sendKey') ?? 'Enter';
 
     return `<!doctype html>
 <html>
@@ -649,6 +690,23 @@ export class OllamaChatPanel {
       .perm-btn-always:hover{background:rgba(0,122,204,0.32)}
       .perm-btn-deny{background:rgba(220,30,30,0.18);border-color:rgba(220,50,50,0.5);color:var(--vscode-terminal-ansiRed,#f87070)}
       .perm-btn-deny:hover{background:rgba(220,30,30,0.32)}
+      /* 程式碼語法高亮 token（深色主题） */
+      .hl-kw{color:#569cd6;font-weight:500}.hl-str{color:#ce9178}.hl-cmt{color:#6a9955;font-style:italic}.hl-num{color:#b5cea8}.hl-fn{color:#dcdcaa}.hl-type{color:#4ec9b0}
+      /* 淺色主题覆寫 */
+      body.vscode-light .hl-kw{color:#0000ff}body.vscode-light .hl-str{color:#a31515}body.vscode-light .hl-cmt{color:#008000}body.vscode-light .hl-num{color:#098658}body.vscode-light .hl-fn{color:#795e26}body.vscode-light .hl-type{color:#267f99}
+      /* 程式碼塊標頭 */
+      .code-block-header{display:flex;align-items:center;justify-content:space-between;padding:3px 10px;background:rgba(0,0,0,0.18);border-radius:4px 4px 0 0;font-size:11px;font-family:Consolas,'Courier New',monospace;opacity:0.75;user-select:none}
+      body.vscode-light .code-block-header{background:rgba(0,0,0,0.07)}
+      .code-block-wrap pre{border-radius:0 0 4px 4px;margin:0;overflow-x:auto}
+      /* 訊息動作按鈕（編輯 / 分支） */
+      .msg-actions{display:none;gap:3px;margin-top:3px;flex-wrap:wrap}
+      .msg:hover .msg-actions,.msg.editing .msg-actions{display:flex}
+      .msg-action-btn{font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(128,128,128,0.12);border:1px solid rgba(128,128,128,0.25);cursor:pointer;color:inherit;opacity:0.65;line-height:1.5}
+      .msg-action-btn:hover{opacity:1;background:rgba(128,128,128,0.22)}
+      /* 內嵌編輯覆蓋層 */
+      .user-edit-overlay{display:flex;flex-direction:column;gap:4px;width:100%}
+      .user-edit-textarea{min-height:48px;max-height:200px;resize:vertical;padding:6px 8px;font-size:13px;font-family:inherit;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-focusBorder,#007fd4);border-radius:6px;outline:none;width:100%;box-sizing:border-box}
+      .user-edit-actions{display:flex;gap:5px}
     </style>
   </head>
   <body>
@@ -815,6 +873,7 @@ export class OllamaChatPanel {
     </script>
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
+      var cfgSendKey = ${JSON.stringify(sendKey)};
 
       // ── Debug Console ──────
       window._debugLog = [];
@@ -825,6 +884,10 @@ export class OllamaChatPanel {
       debugPanel.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.85);color:#0f0;font-size:11px;padding:6px 10px;overflow:hidden;white-space:pre-wrap;font-family:Consolas,monospace;max-height:160px;border-bottom:1px solid #0f0;';
       document.body.appendChild(debugPanel);
       window.onerror = function(msg, src, line, col) { dbg('ERROR: ' + msg + ' at line ' + line + ':' + col); return false; };
+
+      // ── 使用者訊息計數 / 歷史長度追蹤 ────
+      var _userMsgCount = 0;   // 已加入的 user message 數（用於 editMessage / forkSession）
+      var _lastHistLen  = 0;   // 最近一次 historyCount 回傳的後端歷史長度
 
       // ── 訊息處理 (最先掛上，避免後續程式碼拋例外導致 listener 遺失) ──────
       window.addEventListener('message', function(event) {
@@ -919,7 +982,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
           else if (msg.type === 'memorySaved')   { var slb = document.getElementById('saveLtmBtn'); if (slb) { slb.textContent = '\u2713 \u5df2\u5132\u5b58'; setTimeout(function() { slb.textContent = '\uD83D\uDCBE \u5132\u5b58\u9577\u671f\u8a18\u61b6'; }, 1500); } }
-          else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; } }
+          else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; _lastHistLen = msg.count || 0; } }
           else if (msg.type === 'consolidateStart') { var cs = document.getElementById('consolidateStatus'); if (cs) { cs.style.display = ''; cs.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026'; } var clb = document.getElementById('consolidateLtmBtn'); if (clb) clb.disabled = true; }
           else if (msg.type === 'consolidateChunk') { var cs2 = document.getElementById('consolidateStatus'); if (cs2) cs2.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026 ' + (msg.chunk || '').slice(0, 40); }
           else if (msg.type === 'usageUpdate') { renderUsageTable(msg.stats); }
@@ -970,6 +1033,26 @@ export class OllamaChatPanel {
               chatSearchResults.appendChild(row);
             });
           }
+          // \u5c0d\u8a71\u5206\u652f\u5b8c\u6210 \u2014 \u5728\u524d\u7aef\u5efa\u7acb\u65b0\u5c0d\u8a71\u5206\u652f
+          else if (msg.type === 'forkSessionDone') {
+            saveActiveSessionSnapshot();
+            _chatSeq += 1;
+            var forkId = msg.sessionId;
+            var forkSess = { id: forkId, title: '\uD83C\uDF3F \u5206\u652f ' + _chatSeq, html: msg.forkHtml || '', manualTitle: false };
+            _chatSessions.push(forkSess);
+            _activeChatSessionId = forkId;
+            resetTransientNodes();
+            chat.innerHTML = forkSess.html || '';
+            _userMsgCount = chat.querySelectorAll('.msg.user').length;
+            clearFiles();
+            renderChatSessionSelect();
+            vscode.postMessage({ type: 'switchChatSession', sessionId: forkId });
+            persistSessionState();
+            if (statusBar) statusBar.textContent = '\uD83C\uDF3F \u5df2\u5efa\u7acb\u5206\u652f\u5c0d\u8a71';
+            setTimeout(function() { if (statusBar && statusBar.textContent.startsWith('\uD83C\uDF3F')) statusBar.textContent = ''; }, 3000);
+          }
+          // \u5c1a\u7126\u8f38\u5165\u6846\uff08\u5feb\u6377\u9375 Ctrl+L\uff09
+          else if (msg.type === 'focusInput') { var pEl = document.getElementById('prompt'); if (pEl) pEl.focus(); }
         } catch(e) { dbg('CATCH: ' + (e && e.message ? e.message : String(e))); }
       });
 
@@ -1237,7 +1320,7 @@ export class OllamaChatPanel {
         const m = modelSelect ? modelSelect.value : undefined;
         const label = text.length > 60 ? text.slice(0, 60) + '\u2026' : text;
         autoTitleFromPrompt(text);
-        appendMessage('user', label + (attachedFiles.length ? ' (\uD83D\uDCCE ' + attachedFiles.length + ')' : ''));
+        appendMessage('user', label + (attachedFiles.length ? ' (\uD83D\uDCCE ' + attachedFiles.length + ')' : ''), undefined, undefined, text);
         if (teamMode) {
             var selModels = getSelectedTeamModels();
             var roundsEl = document.getElementById('teamRoundsSelect');
@@ -1279,16 +1362,18 @@ export class OllamaChatPanel {
 
       // Apply default agentMode=true state to UI
       document.getElementById('agentMode').classList.add('active');
-      prompt.placeholder = '\u8f38\u5165\u4efb\u52d9\u2026 Agent \u6703\u81ea\u52d5\u4f7f\u7528\u5de5\u5177 (Enter \u9001\u51fa)';
+      var _skHint = cfgSendKey === 'Ctrl+Enter' ? 'Ctrl+Enter \u9001\u51fa' : 'Enter \u9001\u51fa';
+      prompt.placeholder = '\u8f38\u5165\u4efb\u52d9\u2026 Agent \u6703\u81ea\u52d5\u4f7f\u7528\u5de5\u5177 (' + _skHint + ')';
       if (statusBar) statusBar.textContent = '\uD83E\uDD16 Agent \u6a21\u5f0f';
 
       sendBtn.addEventListener('click', doSend);
 
-      // Enter = 送出；Ctrl+Enter = 換行
+      // Enter/Ctrl+Enter 送出設定由 cfgSendKey 控制
       prompt.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
-          e.preventDefault();
-          doSend();
+        if (cfgSendKey === 'Ctrl+Enter') {
+          if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); doSend(); }
+        } else {
+          if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.altKey) { e.preventDefault(); doSend(); }
         }
       });
 
@@ -1304,8 +1389,9 @@ export class OllamaChatPanel {
         document.getElementById('agentMode').classList.toggle('active', agentMode);
         if (agentMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
         if (agentMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
-        if (statusBar) statusBar.textContent = agentMode ? '🤖 Agent 模式 — AI 可自動讀寫檔案、執行命令' : '💬 Ask 模式 — 直接對話，不使用工具';
-        prompt.placeholder = agentMode ? '輸入任務… Agent 會自動使用工具 (Enter 送出)' : '輸入訊息… (Enter 送出 / Ctrl+Enter 換行)';
+        if (statusBar) statusBar.textContent = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F \u2014 AI \u53EF\u81EA\u52D5\u8B80\u5BEB\u6A94\u6848\u3001\u57F7\u884C\u547D\u4EE4' : '\uD83D\uDCAC Ask \u6A21\u5F0F \u2014 \u76F4\u63A5\u5C0D\u8A71\uFF0C\u4E0D\u4F7F\u7528\u5DE5\u5177';
+        var _ph = cfgSendKey === 'Ctrl+Enter' ? 'Ctrl+Enter \u9001\u51fa' : 'Enter \u9001\u51fa';
+        prompt.placeholder = agentMode ? '\u8f38\u5165\u4efb\u52d9\u2026 Agent \u6703\u81ea\u52d5\u4f7f\u7528\u5de5\u5177 (' + _ph + ')' : '\u8f38\u5165\u8a0a\u606f\u2026 (' + _ph + (cfgSendKey === 'Ctrl+Enter' ? ' / Enter \u63db\u884c' : ' / Ctrl+Enter \u63db\u884c') + ')';
       });
 
       document.getElementById('teamMode').addEventListener('click', function() {
@@ -1480,11 +1566,11 @@ export class OllamaChatPanel {
         if (!rawText.trim()) return;
         rb.innerHTML = ''; rb.style.whiteSpace = '';
         parseBlocks(rawText).forEach(function(p) {
-          if (p.t === 'code') { rb.appendChild(makeCodeBlock(p.v)); }
+          if (p.t === 'code') { rb.appendChild(makeCodeBlock(p.v, p.lang)); }
           else if (p.v.trim()) { var d = document.createElement('div'); d.innerHTML = renderTextBlock(p.v); rb.appendChild(d); }
         });
       }
-      // -- parseBlocks + makeCodeBlock -------------------------------------------
+      // -- parseBlocks + makeCodeBlock + highlightCode --------------------------
       function parseBlocks(text) {
         var TICK = String.fromCharCode(96, 96, 96);
         var parts = []; var rest = text;
@@ -1504,9 +1590,66 @@ export class OllamaChatPanel {
         return parts.length ? parts : [{ t: 'text', v: text }];
       }
 
-      function makeCodeBlock(code) {
+      // -- 語法高亮（輕量內嵌 tokenizer，支援 JS/TS/Python/Shell/CSS/JSON）------
+      function highlightCode(code, lang) {
+        var L = (lang || '').toLowerCase().replace(/[^a-z0-9#+]/g, '');
+        var isJS  = /^(js|ts|jsx|tsx|javascript|typescript|mjs|cjs|node)$/.test(L);
+        var isPy  = /^(py|python|python3)$/.test(L);
+        var isSh  = /^(sh|bash|shell|zsh|fish|ps|ps1|powershell|cmd|bat)$/.test(L);
+        var isCss = /^(css|scss|less|sass|styl)$/.test(L);
+        var isJson= /^(json|jsonc)$/.test(L);
+        if (!isJS && !isPy && !isSh && !isCss && !isJson) {
+          return code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+        var KW_JS = 'break,case,catch,class,const,continue,debugger,default,delete,do,else,export,extends,finally,for,function,if,import,in,instanceof,let,new,null,of,return,static,super,switch,throw,try,typeof,undefined,var,void,while,yield,async,await,from,as,type,interface,enum,implements,namespace,declare,abstract,readonly,override,public,private,protected,true,false,this,constructor,get,set,keyof,infer,never,any,unknown,string,number,boolean,object,symbol,bigint'.split(',');
+        var KW_PY = 'and,as,assert,async,await,break,class,continue,def,del,elif,else,except,False,finally,for,from,global,if,import,in,is,lambda,None,nonlocal,not,or,pass,raise,return,True,try,while,with,yield,self,cls,print,super,range,len,list,dict,set,tuple,str,int,float,bool,isinstance,hasattr,property,staticmethod,classmethod'.split(',');
+        var KW_SH = 'if,then,else,elif,fi,for,while,do,done,case,esac,in,function,return,export,local,declare,readonly,echo,printf,exit,break,continue,set,unset,read,true,false'.split(',');
+        var kwMap = {}; (isJS||isJson ? KW_JS : isPy ? KW_PY : isSh ? KW_SH : []).forEach(function(k){kwMap[k]=1;});
+        var isPyOrSh = isPy || isSh;
+        var TK = String.fromCharCode(96);
+        var html='', i=0, n=code.length;
+        function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+        function sp(cls,s){return '<span class="'+cls+'">'+esc(s)+'</span>';}
+        while(i<n){
+          var c=code[i];
+          // Python/Shell # comment
+          if(c==='#'&&isPyOrSh){ var e1=code.indexOf('\\n',i); if(e1===-1)e1=n; html+=sp('hl-cmt',code.slice(i,e1)); i=e1; continue; }
+          // // comment
+          if(c==='/'&&code[i+1]==='/'&&!isPy){ var e2=code.indexOf('\\n',i); if(e2===-1)e2=n; html+=sp('hl-cmt',code.slice(i,e2)); i=e2; continue; }
+          // /* ... */
+          if(c==='/'&&code[i+1]==='*'){ var e3=code.indexOf('*/',i+2); var ce=e3!==-1?e3+2:n; html+=sp('hl-cmt',code.slice(i,ce)); i=ce; continue; }
+          // Python triple-quote
+          if(isPy&&(code.slice(i,i+3)==='"""'||code.slice(i,i+3)==="'''")){var q3=code.slice(i,i+3),e4=code.indexOf(q3,i+3);var se=e4!==-1?e4+3:n;html+=sp('hl-str',code.slice(i,se));i=se;continue;}
+          // string " or '
+          if(c==='"'||c==="'"){var q=c,ss=q,si=i+1;while(si<n){var sc=code[si];if(sc==='\\\\'){ss+=sc+(code[si+1]||'');si+=2;continue;}ss+=sc;si++;if(sc===q)break;}html+=sp('hl-str',ss);i=si;continue;}
+          // template literal (backtick)
+          if(c===TK&&isJS){var ss2=TK,si2=i+1;while(si2<n){var sc2=code[si2];if(sc2==='\\\\'){ss2+=sc2+(code[si2+1]||'');si2+=2;continue;}ss2+=sc2;si2++;if(sc2===TK)break;}html+=sp('hl-str',ss2);i=si2;continue;}
+          // number
+          if(c>='0'&&c<='9'){var ns='',ni=i;while(ni<n&&/[0-9._xXa-fA-FbBoOpP]/.test(code[ni])){ns+=code[ni];ni++;}html+=sp('hl-num',ns);i=ni;continue;}
+          // identifier → keyword / Type / function()
+          if(/[a-zA-Z_$]/.test(c)){var id='',ii=i;while(ii<n&&/[\\w$]/.test(code[ii])){id+=code[ii];ii++;}
+            if(kwMap[id]){html+=sp('hl-kw',id);}
+            else if(/^[A-Z]/.test(id)&&id.length>1&&!/^[A-Z_]+$/.test(id)){html+=sp('hl-type',id);}
+            else{var ni2=ii;while(ni2<n&&(code[ni2]===' '||code[ni2]==='\\t'))ni2++;html+=(code[ni2]==='('?sp('hl-fn',id):id);}
+            i=ii;continue;}
+          if(c==='<'){html+='&lt;';i++;continue;}
+          if(c==='>'){html+='&gt;';i++;continue;}
+          if(c==='&'){html+='&amp;';i++;continue;}
+          html+=c;i++;
+        }
+        return html;
+      }
+
+      function makeCodeBlock(code, lang) {
+        var L = (lang || '').trim();
         var wrap = document.createElement('div'); wrap.className = 'code-block-wrap';
-        var pre = document.createElement('pre'); pre.textContent = code; wrap.appendChild(pre);
+        // 語言標頭列
+        var hdr = document.createElement('div'); hdr.className = 'code-block-header';
+        hdr.textContent = L || 'text';
+        wrap.appendChild(hdr);
+        var pre = document.createElement('pre');
+        if (L) { pre.innerHTML = highlightCode(code, L); } else { pre.textContent = code; }
+        wrap.appendChild(pre);
         var acts = document.createElement('div'); acts.className = 'code-actions';
         var applyBtn = document.createElement('button'); applyBtn.textContent = '\uD83D\uDCCB \u5957\u7528\u5230\u6a94\u6848';
         applyBtn.addEventListener('click', function() { vscode.postMessage({ type: 'applyToFile', code: code }); });
@@ -1524,15 +1667,17 @@ export class OllamaChatPanel {
         wrap.appendChild(acts); return wrap;
       }
 
-      // -- appendMessage --------------------------------------------------------
-      function appendMessage(who, text, thinkingText, tokens) {
+      // -- appendMessage (fullText = 5th param, user messages only) ------------
+      function appendMessage(who, text, thinkingText, tokens, fullText) {
         var node = document.createElement('div'); node.className = 'msg ' + who;
         var bubble = document.createElement('div'); bubble.className = 'bubble';
         if (who === 'assistant' && thinkingText) bubble.appendChild(makeThinkBlock(thinkingText, false));
         if (who === 'assistant') {
+          var _curUserCount = _userMsgCount; // 捕捉此時的 user count，供 fork 使用
+          node.dataset.userCount = String(_curUserCount);
           parseBlocks(text).forEach(function(p) {
             if (p.t === 'code') {
-              bubble.appendChild(makeCodeBlock(p.v));
+              bubble.appendChild(makeCodeBlock(p.v, p.lang));
             } else if (p.v.trim()) {
               var d = document.createElement('div'); d.innerHTML = renderTextBlock(p.v); bubble.appendChild(d);
             }
@@ -1543,11 +1688,79 @@ export class OllamaChatPanel {
           statRow.appendChild(sumBtn);
           if (tokens) { var tokSpan = document.createElement('span'); tokSpan.style.cssText = 'font-size:10px;opacity:0.5'; tokSpan.textContent = '~' + tokens + ' tokens'; statRow.appendChild(tokSpan); }
           bubble.appendChild(statRow);
+          // ── Fork (分支) 按鈕
+          var acts2 = document.createElement('div'); acts2.className = 'msg-actions';
+          var forkBtn = document.createElement('button'); forkBtn.className = 'msg-action-btn'; forkBtn.textContent = '\uD83C\uDF3F \u5EFA\u7ACB\u5206\u652F';
+          forkBtn.title = '\u5F9E\u6B64\u8655\u5EFA\u7ACB\u65B0\u7684\u5C0D\u8A71\u5206\u652F';
+          forkBtn.addEventListener('click', function() {
+            var allMsgs = Array.from(chat.querySelectorAll('.msg'));
+            var nodeIdx = allMsgs.indexOf(node);
+            var uc = 0;
+            for (var _fi = 0; _fi <= nodeIdx; _fi++) { if (allMsgs[_fi].classList.contains('user')) uc++; }
+            var forkHtml = allMsgs.slice(0, nodeIdx + 1).map(function(n2) { return n2.outerHTML; }).join('');
+            vscode.postMessage({ type: 'forkSession', userCount: uc, forkHtml: forkHtml, sessionId: _activeChatSessionId });
+          });
+          acts2.appendChild(forkBtn); bubble.appendChild(acts2);
         } else {
+          // ── 使用者訊息 — 記錄索引 + edit 按鈕
+          var _myUserIdx = _userMsgCount;
+          node.dataset.userIdx = String(_myUserIdx);
+          node.dataset.fullText = fullText || text;
+          _userMsgCount++;
           var body = document.createElement('div'); body.textContent = text; bubble.appendChild(body);
+          // Edit 按鈕區
+          var editActs = document.createElement('div'); editActs.className = 'msg-actions';
+          var editBtn = document.createElement('button'); editBtn.className = 'msg-action-btn'; editBtn.textContent = '\u270F\uFE0F \u7DE8\u8F2F';
+          editBtn.title = '\u4FEE\u6539\u6B64\u8A0A\u606F\u4E26\u91CD\u65B0\u7522\u751F\u56DE\u61C9';
+          (function(capturedNode, capturedBody, capturedIdx) {
+            editBtn.addEventListener('click', function() { startEditMessage(capturedNode, capturedBody, capturedIdx); });
+          })(node, body, _myUserIdx);
+          editActs.appendChild(editBtn); bubble.appendChild(editActs);
         }
         node.appendChild(bubble);
         chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
+      }
+
+      // ── 訊息編輯 ─────────────────────────────────────────────────────────
+      function startEditMessage(node, bodyEl, userIdx) {
+        if (node.classList.contains('editing')) return;
+        node.classList.add('editing');
+        var origText = node.dataset.fullText || (bodyEl ? bodyEl.textContent : '');
+        var overlay = document.createElement('div'); overlay.className = 'user-edit-overlay';
+        var ta = document.createElement('textarea'); ta.className = 'user-edit-textarea'; ta.value = origText;
+        var actRow = document.createElement('div'); actRow.className = 'user-edit-actions';
+        var confirmBtn = document.createElement('button'); confirmBtn.className = 'msg-action-btn'; confirmBtn.style.cssText = 'background:rgba(0,180,0,0.2);border-color:rgba(0,200,0,0.4)'; confirmBtn.textContent = '\u2713 \u78BA\u8A8D\u537B\u66F4\u65B0';
+        var cancelBtn  = document.createElement('button'); cancelBtn.className = 'msg-action-btn'; cancelBtn.textContent = '\u2715 \u53D6\u6D88';
+        actRow.appendChild(confirmBtn); actRow.appendChild(cancelBtn); overlay.appendChild(ta); overlay.appendChild(actRow);
+        if (bodyEl) bodyEl.style.display = 'none';
+        node.querySelector('.msg-actions') && (node.querySelector('.msg-actions').style.display = 'none');
+        var bubble = node.querySelector('.bubble'); if (bubble) bubble.appendChild(overlay);
+        ta.focus(); ta.select();
+        function doCancel() {
+          overlay.remove();
+          if (bodyEl) bodyEl.style.display = '';
+          node.querySelector('.msg-actions') && (node.querySelector('.msg-actions').style.display = '');
+          node.classList.remove('editing');
+        }
+        cancelBtn.addEventListener('click', doCancel);
+        confirmBtn.addEventListener('click', function() {
+          var newText = ta.value.trim();
+          if (!newText) { doCancel(); return; }
+          // \u66F4\u65B0 DOM \u986F\u793A\u6587\u5B57
+          var label = newText.length > 60 ? newText.slice(0, 60) + '\u2026' : newText;
+          if (bodyEl) { bodyEl.textContent = label; bodyEl.style.display = ''; }
+          node.dataset.fullText = newText;
+          overlay.remove();
+          node.querySelector('.msg-actions') && (node.querySelector('.msg-actions').style.display = '');
+          node.classList.remove('editing');
+          // \u522A\u9664\u6B64\u8A0A\u606F\u4E4B\u5F8C\u7684\u6240\u6709 DOM \u8A0A\u606F
+          var allMsgs = Array.from(chat.querySelectorAll('.msg'));
+          var nodeIdx = allMsgs.indexOf(node);
+          for (var _di = allMsgs.length - 1; _di > nodeIdx; _di--) { allMsgs[_di].remove(); }
+          _userMsgCount = userIdx + 1;
+          appendLoadingBubble();
+          vscode.postMessage({ type: 'editMessage', userIdx: userIdx, newText: newText, model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId });
+        });
       }
 
       // ── 串流 ─────────────────────────────────────────────────────────────
