@@ -136,7 +136,7 @@ export class OllamaChatPanel {
             break;
           case 'teamSend':
             this.switchChatSession(message.sessionId);
-            this.handleTeamSend(message.prompt, message.models, message.rounds, message.teamExecMode).catch(() => {});
+            this.handleTeamSend(message.prompt, message.models, message.rounds, message.teamExecMode, message.maxParallel).catch(() => {});
             break;
           case 'teamStop':
             this._teamCancel = true;
@@ -547,6 +547,13 @@ export class OllamaChatPanel {
               <option value="150">150</option>
               <option value="infinite">無限</option>
             </select>
+            <label style="font-size:11px;margin-left:6px" title="同時執行的子任務上限">並行：</label>
+            <select id="teamMaxParallelSelect" style="font-size:11px;padding:3px 6px;border-radius:4px" title="同時執行的子任務上限（1=完全序列）">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="5">5</option>
+            </select>
             <span style="flex:1"></span>
             <span id="teamPickerCount">0/5 已選</span>
         </div>
@@ -950,8 +957,10 @@ export class OllamaChatPanel {
             var roundsVal = roundsEl ? roundsEl.value : '20';
             var teamModeEl = document.getElementById('teamModeSelect');
             var teamExecMode = teamModeEl ? teamModeEl.value : 'task';
+            var maxParEl = document.getElementById('teamMaxParallelSelect');
+            var maxParVal = maxParEl ? parseInt(maxParEl.value) : 3;
             var tModeLabel = teamExecMode === 'discussion' ? '\u{1F4AC} \u8a0e\u8ad6\u4e2d\u2026' : teamExecMode === 'agent' ? '\u{1F916} Agent \u57f7\u884c\u4e2d\u2026' : teamExecMode === 'manager' ? '\u{1F3E2} \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
-            vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, rounds: roundsVal, teamExecMode: teamExecMode, sessionId: _activeChatSessionId });
+            vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, rounds: roundsVal, teamExecMode: teamExecMode, maxParallel: maxParVal, sessionId: _activeChatSessionId });
             prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
             if (statusBar) statusBar.textContent = tModeLabel;
             return;
@@ -2000,7 +2009,7 @@ export class OllamaChatPanel {
 </html>`;
   }
 
-  private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number, teamExecMode?: string): Promise<void> {
+  private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number, teamExecMode?: string, maxParallel?: number): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const defaultBaseUrl = urls[0];
@@ -2074,8 +2083,10 @@ export class OllamaChatPanel {
       // Phase 0: Orchestrator generates granular task list
       this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: orchestratorDisplay });
       const numCopilotTasks = Math.max(effectiveWorkers.length * 2, 4);
-      const planPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numCopilotTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
-      let assignments: { index: number; task: string }[] = [{ index: 0, task: prompt }];
+      const cAvailWorkerNames = effectiveWorkers.map(m => getDisplay(m)).join(', ');
+      const planPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numCopilotTasks} 個細緻子任務。\n可用助手（依名稱指派）：${cAvailWorkerNames}\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式範例：\n{"assignments":[\n  {"index":0,"task":"子任務描述","preferred_model":"助手名稱片段(可省略)","deps":[]},\n  {"index":1,"task":"子任務描述","deps":[0]}\n]}\ndeps: 依賴的前置任務索引陣列（空=立即可執行）。preferred_model: 適合的助手名稱片段（可省略）。`;
+      interface CAssignItem { index: number; task: string; deps: number[]; preferred_model?: string; _taken: boolean; _done: boolean; _retries: number; }
+      let assignments: CAssignItem[] = [{ index: 0, task: prompt, deps: [], _taken: false, _done: false, _retries: 0 }];
       try {
         const planText = await this.copilotStream(
           orchestratorFamily, planPrompt,
@@ -2085,11 +2096,15 @@ export class OllamaChatPanel {
         const jsonStr = (jsonMatch[1] ?? planText).trim();
         const parsed = JSON.parse(jsonStr);
         if (Array.isArray(parsed.assignments)) {
-          const raw = parsed.assignments.map((a: { index: number; task: string }) => ({ index: Number(a.index), task: String(a.task) }));
-          // Deduplicate: remove tasks with identical text
+          const raw = parsed.assignments.map((a: { index: number; task: string; preferred_model?: string; deps?: number[] }) => ({
+            index: Number(a.index), task: String(a.task),
+            deps: Array.isArray(a.deps) ? a.deps.map(Number) : [],
+            preferred_model: a.preferred_model ? String(a.preferred_model) : undefined,
+            _taken: false, _done: false, _retries: 0
+          }));
           const seen = new Set<string>();
-          assignments = raw.filter((a: { index: number; task: string }) => { if (seen.has(a.task)) return false; seen.add(a.task); return true; });
-          if (assignments.length === 0) assignments = [{ index: 0, task: prompt }];
+          assignments = raw.filter((a: CAssignItem) => { if (seen.has(a.task)) return false; seen.add(a.task); return true; });
+          if (assignments.length === 0) assignments = [{ index: 0, task: prompt, deps: [], _taken: false, _done: false, _retries: 0 }];
         }
       } catch { /* use default single-task fallback */ }
       this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
@@ -2100,27 +2115,52 @@ export class OllamaChatPanel {
       // Phase 1: Workers pick tasks from queue, each reviewed by Copilot orchestrator
       const copilotReviewFn = (p: string, onChunk: (c: string) => void) =>
         this.copilotStream(orchestratorFamily, p, onChunk);
-      let copilotQueuePos = 0;
-      const nextCopilotTask = () => copilotQueuePos < assignments.length ? assignments[copilotQueuePos++] : null;
+      const maxPar = Math.max(1, Math.min(Number(maxParallel ?? 3), effectiveWorkers.length));
+      let cWorkerIdx = 0;
+      const nextAvailCopilotTask = (): CAssignItem | null => {
+        const t = assignments.find(a => !a._taken && !a._done &&
+          a.deps.every(dep => assignments.find(d => d.index === dep)?._done));
+        if (t) { t._taken = true; }
+        return t ?? null;
+      };
 
-      await Promise.all(effectiveWorkers.map(async (model) => {
-        const displayName = getDisplay(model);
-        let taskItem: { index: number; task: string } | null;
-        while ((taskItem = nextCopilotTask()) !== null && !this._teamCancel) {
+      await Promise.all(Array.from({ length: maxPar }, async () => {
+        let taskItem: CAssignItem | null;
+        while ((taskItem = nextAvailCopilotTask()) !== null && !this._teamCancel) {
+          const prefModel = taskItem.preferred_model
+            ? effectiveWorkers.find(m => getDisplay(m).toLowerCase().includes((taskItem!.preferred_model ?? '').toLowerCase()))
+            : undefined;
+          const model = prefModel ?? effectiveWorkers[cWorkerIdx % effectiveWorkers.length];
+          cWorkerIdx++;
+          const displayName = getDisplay(model);
           const id = `team_t${taskItem.index}`;
           const color = COLORS[taskItem.index % COLORS.length];
           this._panel.webview.postMessage({ type: 'teamTodoStart', idx: taskItem.index, worker: displayName });
           this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: displayName, color, task: taskItem.task });
+          if (taskItem._retries > 0) {
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `\uD83D\uDD04 \u7b2c ${taskItem._retries} \u6b21\u91cd\u8a66\uff0c\u6539\u7528 ${displayName}...\n` });
+          }
           try {
               const response = await this.runWorkerDiscussion(getWorkerModel(model), copilotReviewFn, getWorkerUrl(model), taskItem.task, id, color, roundsNum);
+            taskItem._done = true;
             results.push({ model: displayName, response });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
-            results.push({ model: displayName, response: `錯誤: ${msg}` });
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[\u932f\u8aa4] ${msg}` });
+            taskItem._retries++;
+            if (taskItem._retries < 2) {
+              taskItem._taken = false; // re-queue for retry with different worker
+              this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n\u26a0\ufe0f \u4efb\u52d9#${taskItem.index} \u5931\u6557\uff0c\u6392\u5165\u7b2c ${taskItem._retries} \u6b21\u91cd\u8a66...\n` });
+            } else {
+              taskItem._done = true; // give up
+              results.push({ model: displayName, response: `\u932f\u8aa4: ${msg}` });
+              this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n\u274c \u4efb\u52d9#${taskItem.index} \u5df2\u9054\u91cd\u8a66\u4e0a\u9650\uff0c\u8df3\u904e\u3002\n` });
+            }
           }
           this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
-          this._panel.webview.postMessage({ type: 'teamTodoDone', idx: taskItem.index });
+          if (taskItem._done) {
+            this._panel.webview.postMessage({ type: 'teamTodoDone', idx: taskItem.index });
+          }
         }
       }));
 
@@ -2214,11 +2254,12 @@ export class OllamaChatPanel {
         // Phase 0: 思考模型生成細緻任務清單 (JSON)
         this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: '\uD83D\uDC19 ' + thinkModel });
         const numOllamaTasks = Math.max(effectiveWorkers.length * 2, 4);
-        const tPlanPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numOllamaTasks} 個可獨立執行的細緻子任務，讓多個 AI 助手從佇列中依序認領。\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式：\n{"assignments":[{"index":0,"task":"子任務描述"},{"index":1,"task":"子任務描述"},...]}`;
+        const tAvailWorkerNames = effectiveWorkers.map(m => getDisplay(m)).join(', ');
+        const tPlanPrompt = `你是 AI 工作協調員。請分析下面的任務，拆分成 ${numOllamaTasks} 個細緻子任務。\n可用助手（依名稱指派）：${tAvailWorkerNames}\n\n${wsContext}\n\n【任務】\n${prompt}\n\n只回傳 JSON（不含說明文字），格式範例：\n{"assignments":[\n  {"index":0,"task":"子任務描述","preferred_model":"助手名稱片段(可省略)","deps":[]},\n  {"index":1,"task":"子任務描述","deps":[0]}\n]}\ndeps: 依賴的前置任務索引陣列（空=立即可執行）。preferred_model: 適合的助手名稱片段（可省略）。`;
         // Tasks: pending=not started, running=in progress, done=completed, failed=error
         type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
-        interface TaskItem { index: number; task: string; status: TaskStatus; assignedTo?: string; response?: string; }
-        let tTasks: TaskItem[] = [{ index: 0, task: prompt, status: 'pending' as TaskStatus }];
+        interface TaskItem { index: number; task: string; status: TaskStatus; assignedTo?: string; response?: string; deps: number[]; preferred_model?: string; retries: number; }
+        let tTasks: TaskItem[] = [{ index: 0, task: prompt, status: 'pending' as TaskStatus, deps: [], retries: 0 }];
         try {
           const tPlanText = await ollamaCall(
             thinkModel, tPlanPrompt,
@@ -2229,12 +2270,15 @@ export class OllamaChatPanel {
           const tJsonStr = (tJsonMatch[1] ?? tPlanText).trim();
           const tParsed = JSON.parse(tJsonStr);
           if (Array.isArray(tParsed.assignments)) {
-            const raw = tParsed.assignments.map((a: { index: number; task: string }) => ({
-              index: Number(a.index), task: String(a.task), status: 'pending' as TaskStatus
+            const raw = tParsed.assignments.map((a: { index: number; task: string; preferred_model?: string; deps?: number[] }) => ({
+              index: Number(a.index), task: String(a.task), status: 'pending' as TaskStatus,
+              deps: Array.isArray(a.deps) ? a.deps.map(Number) : [],
+              preferred_model: a.preferred_model ? String(a.preferred_model) : undefined,
+              retries: 0
             }));
             const seen = new Set<string>();
             tTasks = raw.filter((a: TaskItem) => { if (seen.has(a.task)) return false; seen.add(a.task); return true; });
-            if (tTasks.length === 0) tTasks = [{ index: 0, task: prompt, status: 'pending' as TaskStatus }];
+            if (tTasks.length === 0) tTasks = [{ index: 0, task: prompt, status: 'pending' as TaskStatus, deps: [], retries: 0 }];
           }
         } catch { /* use default single-task fallback */ }
         this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
@@ -2246,20 +2290,25 @@ export class OllamaChatPanel {
         const ollamaReviewFn = async (p: string, onChunk: (c: string) => void) =>
           ollamaCall(thinkModel, p, onChunk);
 
-        const getNextPending = () => tTasks.find(t => t.status === 'pending') ?? null;
-        const workerCycle = [...effectiveWorkers]; // round-robin workers
+        // DAG-aware: only pick tasks whose deps are all 'done'
+        const getNextPending = () => tTasks.find(t =>
+          t.status === 'pending' &&
+          t.deps.every(dep => tTasks.find(d => d.index === dep)?.status === 'done')
+        ) ?? null;
+        const workerCycle = [...effectiveWorkers];
         let workerIdx = 0;
 
         while (!this._teamCancel) {
-          const tItem = getNextPending();
-          if (!tItem) break; // all tasks done or no more pending
+          const activeItem = getNextPending();
+          if (!activeItem) break;
 
-          // Also check for failed tasks that can be reassigned
-          const failedItem = tTasks.find(t => t.status === 'failed');
-          const activeItem = failedItem ?? tItem;
-
-          const model = workerCycle[workerIdx % workerCycle.length];
+          // Dynamic role assignment: prefer model matching preferred_model hint
+          let model = workerCycle[workerIdx % workerCycle.length];
           workerIdx++;
+          if (activeItem.preferred_model) {
+            const preferred = workerCycle.find(m => getDisplay(m).toLowerCase().includes((activeItem.preferred_model ?? '').toLowerCase()));
+            if (preferred) { model = preferred; }
+          }
           activeItem.status = 'running';
           activeItem.assignedTo = model;
 
@@ -2267,9 +2316,8 @@ export class OllamaChatPanel {
           const color = COLORS[activeItem.index % COLORS.length];
           this._panel.webview.postMessage({ type: 'teamTodoStart', idx: activeItem.index, worker: model });
           this._panel.webview.postMessage({ type: 'teamMemberStart', id, model, color, task: activeItem.task });
-          if (failedItem) {
-            // Show reassignment notice
-            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `🔄 重新指派任務給 ${model}...\n` });
+          if (activeItem.retries > 0) {
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `\uD83D\uDD04 \u7b2c ${activeItem.retries} \u6b21\u91cd\u8a66\uff0c\u6539\u7528 ${getDisplay(model)}...\n` });
           }
 
           try {
@@ -2282,26 +2330,29 @@ export class OllamaChatPanel {
             results.push({ model, response });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[錯誤] ${msg}` });
-            activeItem.status = 'failed';
-            // Orchestrator monitors: notify about failure and mark for reassignment
-            this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n⚠️ 協調員偵測到 [任務#${activeItem.index}] 失敗（${model}），標記重新指派...\n` });
+            this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `[\u932f\u8aa4] ${msg}` });
+            activeItem.retries++;
+            if (activeItem.retries < 2) {
+              activeItem.status = 'pending'; // re-queue for retry with different worker
+              this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n\u26a0\ufe0f \u4efb\u52d9#${activeItem.index} \u5931\u6557\uff0c\u6392\u5165\u7b2c ${activeItem.retries} \u6b21\u91cd\u8a66...\n` });
+            } else {
+              activeItem.status = 'failed';
+              results.push({ model, response: `\u932f\u8aa4: ${msg}` });
+              this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n\u274c \u4efb\u52d9#${activeItem.index} \u5df2\u9054\u91cd\u8a66\u4e0a\u9650\uff0c\u8df3\u904e\u3002\n` });
+            }
           }
           this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
-          if (activeItem.status === 'done') {
+          if (activeItem.status === 'done' || activeItem.status === 'failed') {
             this._panel.webview.postMessage({ type: 'teamTodoDone', idx: activeItem.index });
           }
+        }
 
-          // Safety: if all workers have tried and all remaining tasks are failed, give up
-          const allFailed = tTasks.every(t => t.status === 'done' || t.status === 'failed');
-          if (allFailed && tTasks.some(t => t.status === 'failed')) {
-            // Push failed tasks as error results and break
-            for (const ft of tTasks.filter(t => t.status === 'failed')) {
-              results.push({ model: ft.assignedTo ?? thinkModel, response: `[任務#${ft.index} 最終失敗，無法完成]` });
-              this._panel.webview.postMessage({ type: 'teamTodoDone', idx: ft.index });
-            }
-            break;
-          }
+        // Cascade-fail: pending tasks blocked by failed deps
+        for (const t of tTasks.filter(t => t.status === 'pending')) {
+          t.status = 'failed';
+          results.push({ model: thinkModel, response: `[\u4efb\u52d9#${t.index} \u56e0\u4f9d\u8cf4\u4efb\u52d9\u672a\u5b8c\u6210\u800c\u8df3\u904e]` });
+          this._panel.webview.postMessage({ type: 'teamTodoDone', idx: t.index });
+          this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `\n\u26d4 \u4efb\u52d9#${t.index}\uff08${t.task.slice(0, 30)}\uff09\u56e0\u524d\u7f6e\u4efb\u52d9\u672a\u5b8c\u6210\u800c\u8df3\u904e\u3002\n` });
         }
 
         if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
