@@ -1517,14 +1517,14 @@ export class OllamaChatPanel {
         txt = escHtml(txt);
         // $$...$$ → 行內數學（保護，避免後面 $...$ 匹配）
         var PH = '\x02';
-        txt = txt.replace(/\$\$([^$\n]+?)\$\$/g, function(_,m){ return '<code class="math-inline">'+m+'</code>'; });
+        txt = txt.replace(/\\$\\$([^$\\n]+?)\\$\\$/g, function(_,m){ return '<code class="math-inline">'+m+'</code>'; });
         // $...$ → 行內數學
-        txt = txt.replace(/\$([^$\n]{1,80}?)\$/g, function(_,m){ return '<code class="math-inline">'+m+'</code>'; });
+        txt = txt.replace(/\\$([^$\\n]{1,80}?)\\$/g, function(_,m){ return '<code class="math-inline">'+m+'</code>'; });
         // **bold**
-        txt = txt.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
-        txt = txt.replace(/__([^_\n]+?)__/g, '<strong>$1</strong>');
+        txt = txt.replace(/\\*\\*([^*\\n]+?)\\*\\*/g, '<strong>$1</strong>');
+        txt = txt.replace(/__([^_\\n]+?)__/g, '<strong>$1</strong>');
         // *italic*  (skip *** and **)
-        txt = txt.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
+        txt = txt.replace(/(?<!\\*)\\*([^*\\n]+?)\\*(?!\\*)/g, '<em>$1</em>');
         // inline code (backtick)
         var BTCK = String.fromCharCode(96);
         var btRe = new RegExp(BTCK + '([^' + BTCK + '\\n]+?)' + BTCK, 'g');
@@ -1547,21 +1547,21 @@ export class OllamaChatPanel {
           if(ln.trim()==='$$'){ if(!inMath){inMath=true;mathBuf='';i++;continue;}else{inMath=false;html+='<code class="math-block">'+escHtml(mathBuf.trim())+'</code>';mathBuf='';i++;continue;} }
           if(inMath){mathBuf+=ln+'\n';i++;continue;}
           // 表格
-          if(ln.includes('|')&&i+1<lines.length&&/^\|?[\s:|-]+\|/.test(lines[i+1])){
+          if(ln.includes('|')&&i+1<lines.length&&/^\\|?[\\s:|-]+\\|/.test(lines[i+1])){
             var tl=[ln],j=i+1; while(j<lines.length&&lines[j].includes('|')){tl.push(lines[j]);j++;}
             html+=renderMdTable(tl); i=j; continue;
           }
           // 任務清單
-          var tm=ln.match(/^(\s*)-\s+\[([ xX])\]\s*(.*)/);
+          var tm=ln.match(/^(\\s*)-\\s+\\[([ xX])\\]\\s*(.*)/);
           if(tm){ var ck=tm[2].toLowerCase()==='x'; html+='<div class="task-item"><span style="font-family:monospace;color:'+(ck?'#4ec94e':'rgba(128,128,128,0.55)')+'">'+(ck?'[x]':'[ ]')+'</span> <span style="'+(ck?'text-decoration:line-through;opacity:0.55':'')+'">'+renderInline(tm[3])+'</span></div>'; i++;continue; }
           // 無序清單
-          var um=ln.match(/^(\s*)[-*+] (.*)/);
+          var um=ln.match(/^(\\s*)[-*+] (.*)/);
           if(um){ html+='<div style="padding-left:'+(um[1].length*8+14)+'px;margin:1px 0">&bull; '+renderInline(um[2])+'</div>'; i++;continue; }
           // 有序清單
-          var om=ln.match(/^(\s*)(\d+)\. (.*)/);
+          var om=ln.match(/^(\\s*)(\\d+)\\. (.*)/);
           if(om){ html+='<div style="padding-left:'+(om[1].length*8+16)+'px;margin:1px 0">'+om[2]+'. '+renderInline(om[3])+'</div>'; i++;continue; }
           // 標題
-          var hm=ln.match(/^(#{1,4})\s+(.*)/);
+          var hm=ln.match(/^(#{1,4})\\s+(.*)/);
           if(hm){ var lv=hm[1].length,fs=['1.2em','1.1em','1em','0.95em'][lv-1]; html+='<div style="font-weight:700;font-size:'+fs+';margin:6px 0 2px;'+(lv<=2?'border-bottom:1px solid rgba(128,128,128,0.2)':'')+'">'+renderInline(hm[2])+'</div>'; i++;continue; }
           // 空行
           if(!ln.trim()){html+='<div style="height:5px"></div>';i++;continue;}
