@@ -110,10 +110,10 @@
 - [x] **Agent 模式使用錯誤模型**：`handleAgent` 回退到 `cfg.get('model')` 讀到舊的 `'llama3'` → 已在切換模型時同步寫入 `cfg.update()` `commit 560b90b`
 - [x] **Thinking 視窗不顯示**：`supportsThinking` 未涵蓋 `hf.co/` 模型；串流 thinkChunk 有 80ms 延遲導致 think block 在回應後才出現 → 已改為即時發送、think block 插入 bubble 最前面、擴充模型偵測模式 `commit 3efc77d`
 - [x] **Ask 模式沒有 token 數字**：`streamEnd` 備份路徑因 `_lastStreamTokens=0` 的 falsy 判斷失敗 → 已改為必定建立 badge，無 eval_count 時從文字長度估算；同時更新至 statusBar `commit ca88419`
-- [ ] **Copilot 模型切換延遲**：快速切換模型時偶爾出現舊模型回應
-- [ ] **大型檔案讀取崩潰**：`read_file` 讀取 >10MB 檔案時 webview 凍結 → 限制檔案大小或分段讀取
-- [ ] **終端機輸出截斷**：`run_terminal` 執行超過 5 秒的命令輸出可能不完整
-- [ ] **中文字數計算錯誤**：Token limit 計算未考慮中文字元實際佔用
+- [x] **Copilot 模型切換延遲**：快速切換模型時偶爾出現舊模型回應 → 新增 `_pendingSendCts`，新請求送出時先 cancel 前一個 Copilot CTS `commit eff0945`
+- [x] **大型檔案讀取崩潰**：`read_file` 讀取 >10MB 檔案時 webview 凍結 → 加入 5 MB 上限，超過直接拒絕並回傳提示訊息 `commit eff0945`
+- [x] **終端機輸出截斷**：`run_terminal` 執行超過 5 秒的命令輸出可能不完整 → 改以 `exec()` 執行（120s timeout）實際回傳 stdout/stderr，同時保留 terminal UI 可見性 `commit eff0945`
+- [x] **中文字數計算錯誤**：Token limit 計算未考慮中文字元實際佔用 → webview 估算邏輯改為 CJK > 0x2E7F 算 1 token、ASCII 算 0.25 token，與後端 `estimateTokens` 一致 `commit eff0945`
 
 ---
 
