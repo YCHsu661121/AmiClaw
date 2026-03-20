@@ -114,6 +114,8 @@
 - [x] **大型檔案讀取崩潰**：`read_file` 讀取 >10MB 檔案時 webview 凍結 → 加入 5 MB 上限，超過直接拒絕並回傳提示訊息 `commit eff0945`
 - [x] **終端機輸出截斷**：`run_terminal` 執行超過 5 秒的命令輸出可能不完整 → 改以 `exec()` 執行（120s timeout）實際回傳 stdout/stderr，同時保留 terminal UI 可見性 `commit eff0945`
 - [x] **中文字數計算錯誤**：Token limit 計算未考慮中文字元實際佔用 → webview 估算邏輯改為 CJK > 0x2E7F 算 1 token、ASCII 算 0.25 token，與後端 `estimateTokens` 一致 `commit eff0945`
+- [x] **Agent/Ask 模式完成後 token 資訊消失**：`agentStatus{running:false}` 緊接在 `streamEnd` 之後，把 statusBar 覆寫成「🤖 Agent 模式」清掉 token 數字；Ask 模式因備份路徑未儲存 `_lastTokenInfo` 亦未顯示 → 新增 `_lastTokenInfo` 變數於 `streamEnd` 儲存 token 文字，`agentStatus{running:false}` 時恢復該文字；純思考型模型（無 `.response-body`）fallback 改抓 `details.think pre.think-stream` 文字估算 `commit 188321d`
+- [x] **Markdown 新增後 webview 卡在「連線：檢查中…」（regression）**：`0b34950` Markdown rendering commit 在 TS template literal 裡的 regex 及字串使用單反斜線跳脫（`\n`/`\*`/`\$`/`\s`/`\d`/`\|`），TS template literal evaluation 把 `\n` 變成真正換行字元、`\*\*` 變成非法 quantifier 等，導致 webview `<script>` 整體 SyntaxError，`webviewReady` 永遠不送出 → 全部加倍為 `\\n`/`\\*` 等 `commit ec182ba`；`split('\n')` / `mathBuf+=ln+'\n'` 兩處字串字面值同樣加倍 `commit e364265`
 
 ---
 
