@@ -1,6 +1,6 @@
 # Ami Ai C# ToDo.md — AMI-AiClaw Feature Roadmap
 
-> 最後更新：2026-03-21
+> 最後更新：2026-03-21 (auto-summarize)
 
 ---
 
@@ -53,6 +53,7 @@
 - [x] **訊息編輯功能**：允許使用者修改已送出的訊息並重新產生 → hover 顯示 ✏️ 按鈕；內嵌 textarea 編輯覆蓋層；後端截斷歷史並重新送出 `commit 4abe1f1`
 - [x] **對話分支**：在歷史訊息中建立分支對話（類似 ChatGPT）→ 助手訊息上加 🌿 Fork 按鈕；後端複製歷史切片建立新 session；前端 `forkSessionDone` 處理器 `commit 4abe1f1`
 - [x] **快捷鍵自訂**：允許使用者自訂開啟面板、送出訊息等快捷鍵 → `Ctrl+Shift+I` 開啟面板；`Ctrl+L` 聚焦輸入框；`amiAiClaw.sendKey` 設定（Enter / Ctrl+Enter）`commit 4abe1f1`
+- [x] **自動摘要長對話**：Agent 模式歷史 token 超過閾值時自動呼叫 AI 壓縮舊訊息 → `_autoSummarizeHistory()`；每步主動偵測，超過閾值（預設 8000 tokens，`amiAiClaw.autoSummarizeThreshold` 可調）則保留最近 4 則＋AI 摘要其餘對話為 1 則；`amiAiClaw.autoSummarizeHistory` 可關閉（降級為直接裁剪）`commit d0645f9`
 
 ### 8. 整合開發工具
 - [x] **ESLint/Prettier 整合**：Agent 自動修正程式碼風格 → `lint_fix` 工具：執行 `npx eslint --fix` 和/或 `npx prettier --write`，`tool` 參數可選 `eslint`/`prettier`/`both` `commit 7855767`
