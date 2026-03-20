@@ -3595,15 +3595,11 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
 
         if (resp.tool_calls && resp.tool_calls.length > 0) {
           this._agentMessages.push({ role: 'assistant', content: resp.content ?? null, tool_calls: resp.tool_calls });
-          // 解析所有工具呼叫並立即回報步驟開始（並行執行）
-          const toolCallData = resp.tool_calls.map(tc => {
+          // 循序執行工具（保持 _agentStepNode 追蹤正確 + requestPermission 單一 pending 不衝突）
+          for (const tc of resp.tool_calls) {
             const fn = tc.function;
             const args = (typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments) as Record<string, unknown>;
             this._panel.webview.postMessage({ type: 'agentStep', icon: getToolIcon(fn.name), title: formatToolTitle(fn.name, args), fullPath: (args.path as string) || (args.command as string) || '' });
-            return { tc, fn, args };
-          });
-          // 並行執行所有工具（多工具同時進行）
-          const toolResults = await Promise.all(toolCallData.map(async ({ tc, fn, args }) => {
             let result: string;
             let isError = false;
             try {
@@ -3612,10 +3608,6 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
               result = '錯誤：' + (e instanceof Error ? e.message : String(e));
               isError = true;
             }
-            return { tc, fn, result, isError };
-          }));
-          // 依序回報結果並推入訊息記錄
-          for (const { tc, fn, result, isError } of toolResults) {
             const preview = result.length > 400 ? result.slice(0, 400) + '\n…（已截斷）' : result;
             this._panel.webview.postMessage({ type: 'agentStepDone', result: preview, isError });
             this._agentMessages.push({ role: 'tool', content: result, tool_call_id: tc.id ?? fn.name });
