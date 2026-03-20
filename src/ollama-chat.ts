@@ -45,6 +45,8 @@ export class OllamaChatPanel {
   private static readonly TOOL_CACHE_TTL = 30_000;
   /** 使用量統計：各 model 累計 token 與 Copilot 費率 */
   private _usageStats: Record<string, { tokens: number; isCopilot: boolean; multiplier: string }> = {};
+  /** Debate 即時換模型：key='A'|'B'|'J'，value=新 model id，每次 handleDebateSend 開始時重置 */
+  private _debateSwap: { A?: string; B?: string; J?: string } = {};
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   private _context!: vscode.ExtensionContext;
   private _chatHistories: Record<string, ChatMessage[]> = { default: [] };
@@ -210,6 +212,11 @@ export class OllamaChatPanel {
             this._usageStats = {};
             this._context.globalState.update('amiAiClaw.usageStats', {});
             this._panel.webview.postMessage({ type: 'usageUpdate', stats: {} });
+            break;
+          case 'debateSwapModel':
+            if (message.speaker === 'A' || message.speaker === 'B' || message.speaker === 'J') {
+              this._debateSwap[message.speaker as 'A' | 'B' | 'J'] = message.modelId;
+            }
             break;
           case 'memoryConsolidate':
             await this.handleMemoryConsolidate(message.sessionId);
@@ -514,6 +521,10 @@ export class OllamaChatPanel {
       .usage-table th{opacity:0.6;font-weight:600;text-align:left;padding:2px 6px;border-bottom:1px solid rgba(128,128,128,0.25)}
       .usage-table td{padding:2px 6px;border-bottom:1px solid rgba(128,128,128,0.1);word-break:break-all}
       .usage-copilot td{color:var(--vscode-editorInfo-foreground,#4fc1ff)}
+      /* 棋盤視覺化 */
+      .debate-board{background:var(--vscode-editor-background,#1e1e1e);border:1px solid rgba(128,128,128,0.25);border-radius:4px;padding:6px 10px;font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.4;white-space:pre;overflow-x:auto;margin:4px 0;color:var(--vscode-editor-foreground,#d4d4d4)}
+      #debateSwapBar{padding:6px 8px;border-top:1px solid rgba(128,128,128,0.2);display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+      #debateSwapBar select{font-size:11px;padding:2px 4px;border-radius:3px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));max-width:130px}
       /* LTM 條目編輯器 */
       .ltm-tabs{display:flex;gap:2px;margin-bottom:0}
       .ltm-tab-btn{font-size:11px;padding:3px 12px;border-radius:4px 4px 0 0;background:rgba(128,128,128,0.1);border:1px solid rgba(128,128,128,0.25);cursor:pointer;color:inherit;opacity:0.65}
@@ -612,11 +623,19 @@ export class OllamaChatPanel {
               <option value="30">30</option>
               <option value="150">150</option>
               <option value="infinite">無限</option>
+              <option value="custom">自訂…</option>
             </select>
+            <input type="number" id="debateRoundsCustomInput" min="1" max="9999" style="display:none;font-size:11px;width:56px;padding:2px 4px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4))" placeholder="輪數">
             <span style="flex:1"></span>
             <span id="debatePickerCount">0/3 已選</span>
         </div>
         <div id="debatePickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
+        <div id="debateSwapBar" style="display:none">
+          <span style="font-size:11px;opacity:0.7">&#x2699;&#xFE0F; 即時換模型：</span>
+          <label style="font-size:11px">A:</label><select id="debateSwapA"><option value="">─ 保持 ─</option></select>
+          <label style="font-size:11px">B:</label><select id="debateSwapB"><option value="">─ 保持 ─</option></select>
+          <label style="font-size:11px">J:</label><select id="debateSwapJ"><option value="">─ 保持 ─</option></select>
+        </div>
       </div>
       <div id="inputRow">
         <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
@@ -739,12 +758,12 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamTodoList')  { createTodoPanel(msg.tasks); }
           else if (msg.type === 'teamTodoStart') { updateTodo(msg.idx, 'running', msg.worker); }
           else if (msg.type === 'teamTodoDone')  { updateTodo(msg.idx, 'done'); }
-          else if (msg.type === 'debateStart')   { createDebateHeader(msg.labelA, msg.labelB, msg.labelJ, msg.colorA, msg.colorB, msg.colorJ); }
+          else if (msg.type === 'debateStart')   { _debateRunning = true; var _dsBar = document.getElementById('debateSwapBar'); if (_dsBar) _dsBar.style.display = 'flex'; createDebateHeader(msg.labelA, msg.labelB, msg.labelJ, msg.colorA, msg.colorB, msg.colorJ, msg.gameType); }
           else if (msg.type === 'debateTurnStart') { startDebateTurn(msg.speaker, msg.round, msg.label, msg.color); }
           else if (msg.type === 'debateChunk')   { appendDebateChunk(msg.speaker, msg.chunk); }
           else if (msg.type === 'debateThinkChunk') { appendDebateThinkChunk(msg.speaker, msg.chunk); }
           else if (msg.type === 'debateTurnEnd') { finalizeDebateTurn(msg.speaker, msg.tokens, msg.tps); }
-          else if (msg.type === 'debateEnd')     { finalizeDebate(msg.consensus); setSendEnabled(true); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f'; }
+          else if (msg.type === 'debateEnd')     { _debateRunning = false; var _dsBar2 = document.getElementById('debateSwapBar'); if (_dsBar2) _dsBar2.style.display = 'none'; finalizeDebate(msg.consensus); setSendEnabled(true); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f'; }
           else if (msg.type === 'agentStatus')   {
             if (statusBar) statusBar.textContent = msg.running ? '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026' : (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             setSendEnabled(!msg.running);
@@ -793,6 +812,7 @@ export class OllamaChatPanel {
       let agentMode = true;
       let teamMode = false;
       let debateMode = false;
+      let _debateRunning = false;
       let _agentStepNode = null;
       const _teamNodes = {}; // id -> { node, bubble, thinkNode, responseNode, charCount, thinkStart, thinkTimer }
       var _todosPanel = null;
@@ -1020,6 +1040,10 @@ export class OllamaChatPanel {
             var debSel = getSelectedDebateModels();
             var roundsElD = document.getElementById('debateRoundsSelect');
             var roundsValD = roundsElD ? roundsElD.value : '20';
+            if (roundsValD === 'custom') {
+              var customRoundsEl = document.getElementById('debateRoundsCustomInput');
+              roundsValD = (customRoundsEl && customRoundsEl.value) ? customRoundsEl.value : '20';
+            }
             vscode.postMessage({ type: 'debateSend', prompt: buildPromptWithFiles(text), models: debSel, rounds: roundsValD, sessionId: _activeChatSessionId });
             prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
             if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u4e2d\u2026';
@@ -1098,6 +1122,17 @@ export class OllamaChatPanel {
       });
       var dpr = document.getElementById('debatePickerRefresh');
       if (dpr) dpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
+      var debateRoundsSelEl = document.getElementById('debateRoundsSelect');
+      if (debateRoundsSelEl) debateRoundsSelEl.addEventListener('change', function() {
+        var ci = document.getElementById('debateRoundsCustomInput');
+        if (ci) ci.style.display = this.value === 'custom' ? '' : 'none';
+      });
+      ['A', 'B', 'J'].forEach(function(sp) {
+        var swapSel = document.getElementById('debateSwap' + sp);
+        if (swapSel) swapSel.addEventListener('change', function() {
+          if (this.value) vscode.postMessage({ type: 'debateSwapModel', speaker: sp, modelId: this.value });
+        });
+      });
 
       document.getElementById('stopAgent').addEventListener('click', function() { vscode.postMessage({ type: 'agentStop' }); vscode.postMessage({ type: 'teamStop' }); });
 
@@ -1638,6 +1673,25 @@ export class OllamaChatPanel {
           row.appendChild(cb); row.appendChild(lbl); list.appendChild(row);
         });
         updateDebatePickerCount();
+        // 更新即時換模型下拉選單
+        var _optBase = '<option value="">\u2500 \u4fdd持 \u2500</option>';
+        ['A', 'B', 'J'].forEach(function(sp) {
+          var ss = document.getElementById('debateSwap' + sp); if (!ss) return;
+          var curVal = ss.value;
+          ss.innerHTML = _optBase;
+          _teamAvailModels.forEach(function(m) {
+            var opt = document.createElement('option'); opt.value = m.id;
+            opt.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label;
+            ss.appendChild(opt);
+          });
+          if (curVal) ss.value = curVal;
+        });
+        // 預設選揇現在對話模型
+        var curSel = getSelectedDebateModels();
+        ['A', 'B', 'J'].forEach(function(sp, i) {
+          var ss = document.getElementById('debateSwap' + sp);
+          if (ss && curSel[i]) ss.value = curSel[i];
+        });
       }
       function updateDebatePickerCount() {
         var cbs = document.querySelectorAll('#debatePickerList input[type=checkbox]');
@@ -1652,7 +1706,7 @@ export class OllamaChatPanel {
       }
 
       // ── Debate bubble functions ──────────────────────────────────────────
-      function createDebateHeader(labelA, labelB, labelJ, colorA, colorB, colorJ) {
+      function createDebateHeader(labelA, labelB, labelJ, colorA, colorB, colorJ, gameType) {
         _debateLabelA = labelA; _debateLabelB = labelB; _debateLabelJ = labelJ || '';
         _debateColorA = colorA; _debateColorB = colorB; _debateColorJ = colorJ;
         Object.keys(_debateNodes).forEach(function(k) { delete _debateNodes[k]; });
@@ -1660,8 +1714,9 @@ export class OllamaChatPanel {
         hdr.style.cssText = 'text-align:center;font-size:0.82em;font-weight:700;margin:10px 0 4px;padding:5px 0;border-top:1px dashed rgba(128,128,128,0.3);border-bottom:1px dashed rgba(128,128,128,0.3)';
         var tagA = '<span style="color:' + colorA + '">' + labelA + '</span>';
         var tagB = '<span style="color:' + colorB + '">' + labelB + '</span>';
-        var tagJ = labelJ ? ' &#x00B7; <span style="color:' + colorJ + '">[' + labelJ + ' \u88c1\u5224]</span>' : '';
-        hdr.innerHTML = '\u2694\ufe0f \u5c0d\u8a71\u6a21\u5f0f\uff1a' + tagA + ' vs ' + tagB + tagJ;
+        var tagJ = labelJ ? ' &#x00B7; <span style="color:' + colorJ + '">[' + labelJ + ' \u88c1\u5244]</span>' : '';
+        var gameTag = (gameType && gameType !== 'discussion' && gameType !== 'generic') ? ' <span style="opacity:0.55;font-size:0.9em">[' + gameType + ']</span>' : '';
+        hdr.innerHTML = '\u2694\ufe0f \u5c0d\u8a71\u6a21\u5f0f\uff1a' + tagA + ' vs ' + tagB + tagJ + gameTag;
         chat.appendChild(hdr); chat.scrollTop = chat.scrollHeight;
       }
       function startDebateTurn(speaker, round) {
@@ -1674,10 +1729,11 @@ export class OllamaChatPanel {
         var h = document.createElement('div'); h.className = 'debate-turn-header';
         h.style.color = color;
         h.innerHTML = roleIcon + ' <strong>' + label + '</strong>' + (round >= 0 ? ' <span style="opacity:0.5;font-weight:normal">\u7b2c ' + (round + 1) + ' \u8f2a</span>' : '');
+        var boardNode = document.createElement('pre'); boardNode.className = 'debate-board'; boardNode.style.display = 'none';
         var body = document.createElement('div'); body.className = 'debate-turn-body';
-        bub.appendChild(h); bub.appendChild(body); node.appendChild(bub);
+        bub.appendChild(h); bub.appendChild(boardNode); bub.appendChild(body); node.appendChild(bub);
         chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
-        _debateNodes[speaker] = { node: node, bub: bub, body: body, thinkNode: null, thinkChars: 0, thinkStart: 0, thinkTimer: null };
+        _debateNodes[speaker] = { node: node, bub: bub, body: body, boardNode: boardNode, rawBuf: '', thinkNode: null, thinkChars: 0, thinkStart: 0, thinkTimer: null };
       }
       function appendDebateThinkChunk(speaker, chunk) {
         var d = _debateNodes[speaker]; if (!d) return;
@@ -1714,7 +1770,14 @@ export class OllamaChatPanel {
           var tok = Math.round((d.thinkChars || 0) / 4); var secs = Math.round((Date.now() - d.thinkStart) / 1000);
           if (lbl) lbl.textContent = '🧠 思考過程 (~' + tok + ' tokens, 耗時 ' + secs + 's)';
         }
-        d.body.textContent += chunk; chat.scrollTop = chat.scrollHeight;
+        d.rawBuf = (d.rawBuf || '') + chunk;
+        var boardMatch = d.rawBuf.match(/\[BOARD\]([\s\S]*?)\[\/BOARD\]/);
+        if (boardMatch && d.boardNode) {
+          d.boardNode.textContent = boardMatch[1].replace(/^\n/, '').replace(/\n$/, '');
+          d.boardNode.style.display = '';
+        }
+        d.body.textContent = d.rawBuf.replace(/\[BOARD\][\s\S]*?\[\/BOARD\]/g, '').replace(/\[BOARD\][\s\S]*$/, '').trim();
+        chat.scrollTop = chat.scrollHeight;
       }
       function finalizeDebateTurn(speaker, tokens, tps) {
         var d = _debateNodes[speaker]; if (!d) return;
@@ -2896,6 +2959,7 @@ export class OllamaChatPanel {
     }
     const COLORS = ['#4fc1ff', '#ce9178', '#89d185'];
     this._teamCancel = false;
+    this._debateSwap = {};
     // Parse rounds parameter (default 20)
     const roundsSelected = rounds ?? '20';
     const maxRounds = String(roundsSelected) === 'infinite' ? Infinity : Number(roundsSelected) || 20;
@@ -2968,13 +3032,25 @@ export class OllamaChatPanel {
     };
 
     // Determine context type from prompt keywords
-    const isGame = /五子棋|圍棋|象棋|將棋|西洋棋|chess|go\b|tic.tac|gomoku|shogi|遊戲|下棋/i.test(prompt);
+    const isGame = /五子棋|圍棋|象棋|將棋|西洋棋|chess|go\b|tic.tac|gomoku|shogi|遊戲|下棋|黑白棋|othello|reversi|跳棋|checkers|draughts|橋牌/i.test(prompt);
+    const gameType = /黑白棋|othello|reversi/i.test(prompt) ? 'othello'
+      : /跳棋|checkers|draughts/i.test(prompt) ? 'checkers'
+      : /橋牌/i.test(prompt) ? 'bridge'
+      : /五子棋|gomoku/i.test(prompt) ? 'gomoku'
+      : /圍棋/i.test(prompt) ? 'go'
+      : /象棋|xiangqi/i.test(prompt) ? 'xiangqi'
+      : /將棋|shogi/i.test(prompt) ? 'shogi'
+      : /西洋棋/i.test(prompt) ? 'chess'
+      : 'generic';
 
     // ── Game mode: A & B take turns, A's move is passed to B as board state ──
     if (isGame) {
-      this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
-      const gameSystemA = '你是棋手，正在進行以下棋局。每次只說明你這一步的落子位置（使用標準座標）和簡短理由，不要發表其他評論。';
-      const gameSystemB = '你是棋手，正在進行以下棋局。根據對手的上一步，回應你的落子位置（使用標準座標）和簡短理由，不要發表其他評論。';
+      this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2], gameType });
+      const _boardInstr = gameType !== 'bridge' ? ` 每次落子後，請在回應末尾用 [BOARD] 和 [/BOARD] 標記輸出完整 ASCII 棋盤，格式：[BOARD]\n棋盤內容\n[/BOARD]。` : '';
+      const _gA: Record<string, string> = { gomoku: '五子棋棋手（●黑方）', othello: '黑白棋棋手（●黑方），8x8棋盤，指定落子座標如 d3', checkers: '跳棋棋手（紅方），指定移動如 c3→d4', bridge: `橋牌玩家（${labelA}）`, go: '圍棋棋手（●黑方），指定落子座標', xiangqi: '象棋紅方，用標準記譜法如：馬2進3', chess: '西洋棋白方，用代數記法如：e2-e4', shogi: '将棋先手番、標準記法使用' };
+      const _gB: Record<string, string> = { gomoku: '五子棋棋手（○白方）', othello: '黑白棋棋手（○白方），8x8棋盤，指定落子座標如 d3', checkers: '跳棋棋手（黑方），指定移動如 c3→d4', bridge: `橋牌玩家（${labelB}）`, go: '圍棋棋手（○白方），指定落子座標', xiangqi: '象棋黑方，用標準記譜法', chess: '西洋棋黑方，用代數記法如：e7-e5', shogi: '将棋後手番、標準記法使用' };
+      const gameSystemA = `你是${_gA[gameType] ?? '棋手，正在進行棋局'}。每次只說明你這一步的落子位置和簡短理由，不要發表其他評論。${_boardInstr}`;
+      const gameSystemB = `你是${_gB[gameType] ?? '棋手，正在進行棋局'}。根據對手的上一步，回應你的落子位置和簡短理由，不要發表其他評論。${_boardInstr}`;
       const initPrompt = prompt;
       // historyA = A's own turns; gameMoves = shared move log passed to B each turn
       const historyA: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: initPrompt + '\n\n請下第一手。' }];
@@ -2988,7 +3064,7 @@ export class OllamaChatPanel {
         let moveA = '';
         let statsA: { tokens?: number; tps?: number } = {};
         try {
-          const rA = await callModel(modelA, gameSystemA, historyA,
+          const rA = await callModel(this._debateSwap.A ?? modelA, gameSystemA, historyA,
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: c }); },
             (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); });
           moveA = rA.text; statsA = { tokens: rA.tokens, tps: rA.tps };
@@ -3007,7 +3083,7 @@ export class OllamaChatPanel {
         let statsB: { tokens?: number; tps?: number } = {};
         const boardState = initPrompt + '\n\n目前棋譜：\n' + gameMoves.join('\n') + '\n\n請回應你的下一手。';
         try {
-          const rB = await callModel(modelB, gameSystemB, [{ role: 'user', content: boardState }],
+          const rB = await callModel(this._debateSwap.B ?? modelB, gameSystemB, [{ role: 'user', content: boardState }],
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: c }); },
             (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'B', chunk: t }); });
           moveB = rB.text; statsB = { tokens: rB.tokens, tps: rB.tps };
@@ -3023,12 +3099,13 @@ export class OllamaChatPanel {
       }
 
       // Judge summarizes the game if present
-      if (judgeModel && !this._teamCancel) {
+      const _effectiveJudgeGame = this._debateSwap.J ?? judgeModel;
+      if (_effectiveJudgeGame && !this._teamCancel) {
         this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'J', round: -1 });
         const gameSummary = initPrompt + '\n\n完整棋譜：\n' + gameMoves.join('\n') + '\n\n請分析這場對局，說明雙方的策略與得失。';
         let statsJ: { tokens?: number; tps?: number } = {};
         try {
-          const rJ = await callModel(judgeModel, '你是棋局分析師，請客觀分析以下對局。', [{ role: 'user', content: gameSummary }],
+          const rJ = await callModel(_effectiveJudgeGame, '你是棋局分析師，請客觀分析以下對局。', [{ role: 'user', content: gameSummary }],
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); });
           statsJ = { tokens: rJ.tokens, tps: rJ.tps };
           finalDebateSummary = rJ.text || '';
@@ -3059,7 +3136,7 @@ export class OllamaChatPanel {
     const roleJDesc = '請整合以下多份針對同一議題的分析，做出客觀的綜合總結：';
 
     // Announce start
-    this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
+    this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2], gameType: 'discussion' });
 
     // Each model has fully independent context — they don't know each other exists
     // historyA/B only contains that model's own [user, assistant, user, assistant, ...] turns
@@ -3076,7 +3153,7 @@ export class OllamaChatPanel {
       let statsDA: { tokens?: number; tps?: number } = {};
       try {
         const rA = await callModel(
-          modelA, roleADesc, historyA,
+          this._debateSwap.A ?? modelA, roleADesc, historyA,
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'A', chunk: c }); },
           (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'A', chunk: t }); }
         );
@@ -3098,7 +3175,7 @@ export class OllamaChatPanel {
       let statsDB: { tokens?: number; tps?: number } = {};
       try {
         const rB = await callModel(
-          modelB, roleBDesc, historyB,
+          this._debateSwap.B ?? modelB, roleBDesc, historyB,
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'B', chunk: c }); },
           (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateThinkChunk', speaker: 'B', chunk: t }); }
         );
@@ -3116,7 +3193,8 @@ export class OllamaChatPanel {
     }
 
     // Judge sees a plain-text summary of all responses — no cross-model raw content
-    if (judgeModel && !this._teamCancel) {
+    const _effectiveJudge = this._debateSwap.J ?? judgeModel;
+    if (_effectiveJudge && !this._teamCancel) {
       const judgeMsgs: { role: 'user' | 'assistant'; content: string }[] = [
         { role: 'user', content: summaryLines.join('\n\n---\n\n') + '\n\n請做出綜合總結。' }
       ];
@@ -3125,7 +3203,7 @@ export class OllamaChatPanel {
       let judgeSummary = '';
       try {
         const rJ = await callModel(
-          judgeModel, roleJDesc, judgeMsgs,
+          _effectiveJudge, roleJDesc, judgeMsgs,
           (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: 'J', chunk: c }); }
         );
         statsDJ = { tokens: rJ.tokens, tps: rJ.tps };
