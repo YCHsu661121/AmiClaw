@@ -1800,7 +1800,7 @@ export class OllamaChatPanel {
         var q = ltmSearch.value.trim().toLowerCase();
         if (!q) { ltmSearch.style.color = ''; ltmSearch.title = ''; return; }
         var area = document.getElementById('ltmArea');
-        var lines = area ? area.value.split('\n') : [];
+        var lines = area ? area.value.split('\\n') : [];
         var matched = lines.filter(function(l) { return l.toLowerCase().indexOf(q) >= 0; });
         ltmSearch.style.color = matched.length > 0 ? '' : 'var(--vscode-inputValidation-errorBorder,#f48771)';
         ltmSearch.title = matched.length > 0 ? matched.length + ' \u884c\u7b26\u5408' : '\u7121\u7b26\u5408\u7d50\u679c';
@@ -1844,7 +1844,7 @@ export class OllamaChatPanel {
       // ── LTM 條目編輯器 與 分類標籤 ──────────────────────────────────────────
       var _ltmFilterTag = '';
       function parseLtmToEntries(text) {
-        var lines = (text || '').split('\n'), entries = [];
+        var lines = (text || '').split('\\n'), entries = [];
         for (var i = 0; i < lines.length; i++) {
           var line = lines[i].trim(); if (!line) continue;
           var m = line.match(/^#(\S+)\s+([\s\S]*)$/);
@@ -1854,7 +1854,7 @@ export class OllamaChatPanel {
         return entries;
       }
       function entriesToLtm(entries) {
-        return entries.map(function(e) { return e.tag ? '#' + e.tag + ' ' + e.text : e.text; }).join('\n');
+        return entries.map(function(e) { return e.tag ? '#' + e.tag + ' ' + e.text : e.text; }).join('\\n');
       }
       function renderLtmEntries() {
         var area = document.getElementById('ltmArea');
