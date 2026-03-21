@@ -3465,6 +3465,15 @@ export class OllamaChatPanel {
     // _mgrWsContext 仍保留，用於 system prompt（人格描述）中說明工作區路徑
     const _mgrWsContext = _mgrBaseCtx;
 
+    // Phase-0a 專用輕量歷史（僅含路徑清單，不含程式碼內容）
+    // 避免把幾百 KB 原始碼一次送給大型模型造成長時間無反應
+    const _mgrLightHist: { role: 'user'|'assistant'; content: string }[] = [
+      { role: 'user', content: `${_mgrBaseCtx}
+
+以上是工作區所有檔案的路徑清單（共 ${_mgrAllRelPaths.length} 個），請記住此專案結構。` },
+      { role: 'assistant', content: `已記住工作區結構，共 ${_mgrAllRelPaths.length} 個檔案。請提出任務或問題。` }
+    ];
+
     const managerModel   = allModels[0];
     const memberModels   = allModels.slice(1);
     const managerDisplay = '🏢 主管 (' + getDisplay(managerModel) + ')';
@@ -3548,31 +3557,32 @@ export class OllamaChatPanel {
       `3. 針對以下需求，你認為最相關的檔案與入口點為何？\n\n需求：${prompt}`;
 
     const understandings: string[] = [];
-    // 主任先閱讀
+    // 主任先閱讀（使用輕量歷史，僅送路徑清單，避免大型模型處理幾百 KB 而卡住）
     this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${managerDisplay} — 閱讀工作區` });
     let managerUnderstanding = '';
     try {
-      managerUnderstanding = await callModel(managerModel, managerPersona, managerHist, _readUnderstandMsg,
+      managerUnderstanding = await callModel(managerModel, managerPersona, _mgrLightHist, _readUnderstandMsg,
         (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); } },
         (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); } });
     } catch (e) {
       managerUnderstanding = '[主任閱讀失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
       this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: managerUnderstanding });
     }
+    // Phase-0a 結果 push 進完整歷史（Phase-0b 以後用含程式碼內容的完整 context）
     managerHist.push({ role: 'user', content: _readUnderstandMsg });
     managerHist.push({ role: 'assistant', content: managerUnderstanding });
     understandings.push(`【${managerDisplay}】\n${managerUnderstanding}`);
     this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
     if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-    // 工程師們閱讀
+    // 工程師們閱讀（同樣使用輕量歷史）
     for (let mi = 0; mi < memberModels.length && !this._teamCancel; mi++) {
       const id = `mgr_read_m${mi}`;
       const color = COLORS[(mi + 1) % COLORS.length];
       this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `${memberDisplays[mi]} — 閱讀工作區`, color, task: '閱讀工作區' });
       let memberUnderstanding = '';
       try {
-        memberUnderstanding = await callModel(memberModels[mi], memberPersona(mi), memberHists[mi], _readUnderstandMsg,
+        memberUnderstanding = await callModel(memberModels[mi], memberPersona(mi), _mgrLightHist, _readUnderstandMsg,
           (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); } },
           (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: t }); } });
       } catch (e) {
