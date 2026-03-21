@@ -3149,41 +3149,66 @@ export class OllamaChatPanel {
     const _filteredUris = _allUris.filter(uri => !_SKIP_EXT.has(path.extname(uri.fsPath).toLowerCase()));
     const _allRelPaths = _filteredUris.map(uri => path.relative(_wsRoot, uri.fsPath).replace(/\\/g, '/'));
     const _fileListBlock = `【工作區檔案清單（${_allRelPaths.length} 個）】\n${_allRelPaths.map(p => `  - ${p}`).join('\n')}`;
-    // Pass 2：讀取原始碼內容（有上限；單檔降至 15KB 讓更多不同目錄的檔案納入）
-    const _wsFileParts: string[] = [];
-    let _totalBytes = 0;
-    const _MAX_TOTAL = 120000;
+    // Pass 2：讀取原始碼內容，分批（每批 80KB），無法一口氣讀完則分批拼湊
+    const _BATCH_SIZE = 80000;
     const _MAX_FILE = 15000;
+    const _discBatches: string[][] = [];
+    let _discCurBatch: string[] = [];
+    let _discCurBatchBytes = 0;
+    let _totalBytes = 0;
     for (const uri of _filteredUris) {
-      if (_totalBytes >= _MAX_TOTAL) { break; }
       const rel = path.relative(_wsRoot, uri.fsPath).replace(/\\/g, '/');
       try {
         const bytes = await vscode.workspace.fs.readFile(uri);
         let text = Buffer.from(bytes).toString('utf-8');
         if (text.length > _MAX_FILE) { text = text.slice(0, _MAX_FILE) + `\n...（${rel} 已截斷，僅顯示前段）`; }
+        const entry = `### ${rel}\n\`\`\`\n${text}\n\`\`\``;
+        if (_discCurBatchBytes + entry.length > _BATCH_SIZE && _discCurBatch.length > 0) {
+          _discBatches.push(_discCurBatch);
+          _discCurBatch = []; _discCurBatchBytes = 0;
+        }
+        _discCurBatch.push(entry);
+        _discCurBatchBytes += entry.length;
         _totalBytes += text.length;
-        _wsFileParts.push(`### ${rel}\n\`\`\`\n${text}\n\`\`\``);
       } catch { /* 略過無法讀取的二進位檔 */ }
     }
-    const _wsFileBlock = [
-      _fileListBlock,
-      _wsFileParts.length > 0 ? `【原始碼內容（${_wsFileParts.length}/${_allRelPaths.length} 檔已讀取）】\n\n${_wsFileParts.join('\n\n')}` : ''
-    ].filter(Boolean).join('\n\n');
-    this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `✅ 掃描完成：找到 ${_allRelPaths.length} 個檔案，讀取 ${_wsFileParts.length} 個內容（${Math.round(_totalBytes/1024)}KB）\n` });
-    const _wsContextParts = [
+    if (_discCurBatch.length > 0) _discBatches.push(_discCurBatch);
+    const _discReadCount = _discBatches.reduce((s, b) => s + b.length, 0);
+    this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `✅ 掃描完成：找到 ${_allRelPaths.length} 個檔案，分 ${_discBatches.length} 批讀取 ${_discReadCount} 個內容（${Math.round(_totalBytes/1024)}KB）\n` });
+
+    // 建立多輪批次注入的初始對話歷史
+    const _discBaseCtx = [
       `【工作區路徑】${_wsRoot}`,
       _teamsCtxContent ? `【teamscontext.md — 先前討論紀錄】\n${_teamsCtxContent}` : '',
-      _wsFileBlock
-    ].filter(Boolean);
-    const _wsContext = _wsContextParts.join('\n\n');
-    const _promptWithCtx = _wsContext ? `${_wsContext}\n\n---\n\n${prompt}` : prompt;
+      _fileListBlock,
+    ].filter(Boolean).join('\n\n');
+    const _batchedInitHist: { role: 'user'|'assistant'; content: string }[] = [];
+    if (_discBatches.length > 0) {
+      _batchedInitHist.push({ role: 'user', content:
+        `${_discBaseCtx}\n\n【第 1/${_discBatches.length} 批原始碼（${_discBatches[0].length} 個檔案）】\n\n${_discBatches[0].join('\n\n')}`
+      });
+      for (let _bi = 1; _bi < _discBatches.length; _bi++) {
+        _batchedInitHist.push({ role: 'assistant', content: `已閱讀第 ${_bi}/${_discBatches.length} 批（${_discBatches[_bi-1].length} 個檔案），繼續接收下一批。` });
+        _batchedInitHist.push({ role: 'user', content:
+          `【第 ${_bi+1}/${_discBatches.length} 批原始碼（${_discBatches[_bi].length} 個檔案）】\n\n${_discBatches[_bi].join('\n\n')}`
+        });
+      }
+      _batchedInitHist.push({ role: 'assistant', content: `已完整閱讀全部 ${_discBatches.length} 批共 ${_allRelPaths.length} 個檔案（${Math.round(_totalBytes/1024)}KB）。請提出問題。` });
+    } else {
+      _batchedInitHist.push({ role: 'user', content: _discBaseCtx });
+      _batchedInitHist.push({ role: 'assistant', content: '已閱讀工作區資訊。請提出問題。' });
+    }
+    _batchedInitHist.push({ role: 'user', content: prompt });
+    // Copilot 走單字串路徑（copilotStream API 不支援多輪注入）
+    const _copilotBatchCtx = [_discBaseCtx, ..._discBatches.map((b,i) => `【第 ${i+1}/${_discBatches.length} 批原始碼】\n\n${b.join('\n\n')}`)].join('\n\n');
+    const _promptWithCtx = _copilotBatchCtx ? `${_copilotBatchCtx}\n\n---\n\n${prompt}` : prompt;
 
     const roundsLimit = isFinite(maxRounds) ? maxRounds : 4; // 討論模式無限預設 4 輪
     const summaryLines: string[] = [];
 
     // Each model has independent context; cross-model responses injected after each round
     const histories: Map<string, { role: 'user'|'assistant'; content: string }[]> = new Map();
-    for (const m of allModels) { histories.set(m, [{ role: 'user', content: _promptWithCtx }]); }
+    for (const m of allModels) { histories.set(m, [..._batchedInitHist]); }
 
     for (let round = 0; round < roundsLimit && !this._teamCancel; round++) {
       const roundResponses: { mi: number; display: string; response: string }[] = [];
@@ -3391,34 +3416,54 @@ export class OllamaChatPanel {
     const _mgrFilteredUris = _mgrAllUris.filter(uri => !_mgrSKIP_EXT.has(path.extname(uri.fsPath).toLowerCase()));
     const _mgrAllRelPaths = _mgrFilteredUris.map(uri => path.relative(_mgrWsRoot, uri.fsPath).replace(/\\/g, '/'));
     const _mgrFileListBlock = `【工作區檔案清單（${_mgrAllRelPaths.length} 個）】\n${_mgrAllRelPaths.map(p => `  - ${p}`).join('\n')}`;
-    // Pass 2：讀取原始碼內容（有上限；單檔降至 15KB 讓更多不同目錄的檔案納入）
-    const _mgrFileParts: string[] = [];
-    let _mgrTotalBytes = 0;
-    const _mgrMAX_TOTAL = 120000;
+    // Pass 2：讀取原始碼內容，分批（每批 80KB），無法一口氣讀完則分批拼湊
+    const _mgrBATCH_SIZE = 80000;
     const _mgrMAX_FILE = 15000;
+    const _mgrBatches: string[][] = [];
+    let _mgrCurBatch: string[] = [];
+    let _mgrCurBatchBytes = 0;
+    let _mgrTotalBytes = 0;
     for (const uri of _mgrFilteredUris) {
-      if (_mgrTotalBytes >= _mgrMAX_TOTAL) { break; }
       const rel = path.relative(_mgrWsRoot, uri.fsPath).replace(/\\/g, '/');
       try {
         const bytes = await vscode.workspace.fs.readFile(uri);
         let text = Buffer.from(bytes).toString('utf-8');
         if (text.length > _mgrMAX_FILE) { text = text.slice(0, _mgrMAX_FILE) + `\n...（${rel} 已截斷，僅顯示前段）`; }
+        const entry = `### ${rel}\n\`\`\`\n${text}\n\`\`\``;
+        if (_mgrCurBatchBytes + entry.length > _mgrBATCH_SIZE && _mgrCurBatch.length > 0) {
+          _mgrBatches.push(_mgrCurBatch);
+          _mgrCurBatch = []; _mgrCurBatchBytes = 0;
+        }
+        _mgrCurBatch.push(entry);
+        _mgrCurBatchBytes += entry.length;
         _mgrTotalBytes += text.length;
-        _mgrFileParts.push(`### ${rel}\n\`\`\`\n${text}\n\`\`\``);
       } catch { /* 略過二進位檔 */ }
     }
-    const _mgrWsFileBlock = [
-      _mgrFileListBlock,
-      _mgrFileParts.length > 0 ? `【原始碼內容（${_mgrFileParts.length}/${_mgrAllRelPaths.length} 檔已讀取）】\n\n${_mgrFileParts.join('\n\n')}` : ''
-    ].filter(Boolean).join('\n\n');
-    this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `✅ 掃描完成：找到 ${_mgrAllRelPaths.length} 個檔案，讀取 ${_mgrFileParts.length} 個內容（${Math.round(_mgrTotalBytes/1024)}KB）\n` });
+    if (_mgrCurBatch.length > 0) _mgrBatches.push(_mgrCurBatch);
+    const _mgrReadCount = _mgrBatches.reduce((s, b) => s + b.length, 0);
+    this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `✅ 掃描完成：找到 ${_mgrAllRelPaths.length} 個檔案，分 ${_mgrBatches.length} 批讀取 ${_mgrReadCount} 個內容（${Math.round(_mgrTotalBytes/1024)}KB）\n` });
     this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
-    const _mgrWsContextParts = [
+    // 建構 manager/member 多輪批次注入的初始歷史（所有成員共用相同的工作區閱讀序列）
+    const _mgrBaseCtx = [
       `【工作區路徑】${_mgrWsRoot}`,
       _mgrTeamsCtxContent ? `【teamscontext.md — 先前討論紀錄】\n${_mgrTeamsCtxContent}` : '',
-      _mgrWsFileBlock
-    ].filter(Boolean);
-    const _mgrWsContext = _mgrWsContextParts.join('\n\n');
+      _mgrFileListBlock,
+    ].filter(Boolean).join('\n\n');
+    const _mgrBatchedInitHist: { role: 'user'|'assistant'; content: string }[] = [];
+    if (_mgrBatches.length > 0) {
+      _mgrBatchedInitHist.push({ role: 'user', content:
+        `${_mgrBaseCtx}\n\n【第 1/${_mgrBatches.length} 批原始碼（${_mgrBatches[0].length} 個檔案）】\n\n${_mgrBatches[0].join('\n\n')}`
+      });
+      for (let _bi = 1; _bi < _mgrBatches.length; _bi++) {
+        _mgrBatchedInitHist.push({ role: 'assistant', content: `已閱讀第 ${_bi}/${_mgrBatches.length} 批（${_mgrBatches[_bi-1].length} 個檔案），繼續接收下一批。` });
+        _mgrBatchedInitHist.push({ role: 'user', content:
+          `【第 ${_bi+1}/${_mgrBatches.length} 批原始碼（${_mgrBatches[_bi].length} 個檔案）】\n\n${_mgrBatches[_bi].join('\n\n')}`
+        });
+      }
+      _mgrBatchedInitHist.push({ role: 'assistant', content: `已完整閱讀全部 ${_mgrBatches.length} 批共 ${_mgrAllRelPaths.length} 個檔案（${Math.round(_mgrTotalBytes/1024)}KB）。請提出任務。` });
+    }
+    // _mgrWsContext 仍保留，用於 system prompt（人格描述）中說明工作區路徑
+    const _mgrWsContext = _mgrBaseCtx;
 
     const managerModel   = allModels[0];
     const memberModels   = allModels.slice(1);
@@ -3439,9 +3484,9 @@ export class OllamaChatPanel {
       `你是工程師 #${i + 1}。職責：根據主管指示提出具體實作方案與程式碼修改建議。\n` +
       `重要：你只看得到自己的對話歷史，不知道其他工程師的內容。繁體中文回答。${_wsBlock}`;
 
-    // ─ 記憶分離：各自獨立的對話歷史
-    const managerHist: { role: 'user' | 'assistant'; content: string }[] = [];
-    const memberHists: { role: 'user' | 'assistant'; content: string }[][] = memberModels.map(() => []);
+    // ─ 記憶分離：各自獨立的對話歷史，以批次閱讀歷史預填
+    const managerHist: { role: 'user' | 'assistant'; content: string }[] = [..._mgrBatchedInitHist];
+    const memberHists: { role: 'user' | 'assistant'; content: string }[][] = memberModels.map(() => [..._mgrBatchedInitHist]);
 
     // Helper：用各自 persona + 獨立 history 呼叫模型
     const callModel = async (
