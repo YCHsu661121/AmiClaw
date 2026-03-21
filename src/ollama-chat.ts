@@ -3478,21 +3478,71 @@ export class OllamaChatPanel {
 
     this._teamCancel = false;
 
-    // ── Phase-0  主管架構分析 ────────────────────────────────────────────────
-    this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: managerDisplay });
-    const p0 = `【任務需求】\n${prompt}\n\n請進行架構分析：\n` +
-      `1. 分析問題範圍與技術要點\n` +
-      `2. 列出需要完成的子任務` +
+    // ── Phase-0a  全員閱讀理解工作區（主任 + 所有工程師）────────────────────────
+    // 先讓每個 LLM 門閱讀工作區，確認充分理解後才開始分配工作
+    const _readUnderstandMsg =
+      `請仔細閱讀以上工作區所有原始碼，然後簡要說明：\n` +
+      `1. 你理解了哪些主要模組？（列出檔案路徑）\n` +
+      `2. 現有程式碼的架構為何？\n` +
+      `3. 針對以下需求，你認為最相關的檔案與入口點為何？\n\n需求：${prompt}`;
+
+    const understandings: string[] = [];
+    // 主任先閱讀
+    this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${managerDisplay} — 閱讀工作區` });
+    let managerUnderstanding = '';
+    try {
+      managerUnderstanding = await callModel(managerModel, managerPersona, managerHist, _readUnderstandMsg,
+        (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); } },
+        (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); } });
+    } catch (e) {
+      managerUnderstanding = '[主任閱讀失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
+      this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: managerUnderstanding });
+    }
+    managerHist.push({ role: 'user', content: _readUnderstandMsg });
+    managerHist.push({ role: 'assistant', content: managerUnderstanding });
+    understandings.push(`【${managerDisplay}】\n${managerUnderstanding}`);
+    this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // 工程師們閱讀
+    for (let mi = 0; mi < memberModels.length && !this._teamCancel; mi++) {
+      const id = `mgr_read_m${mi}`;
+      const color = COLORS[(mi + 1) % COLORS.length];
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `${memberDisplays[mi]} — 閱讀工作區`, color, task: '閱讀工作區' });
+      let memberUnderstanding = '';
+      try {
+        memberUnderstanding = await callModel(memberModels[mi], memberPersona(mi), memberHists[mi], _readUnderstandMsg,
+          (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); } },
+          (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: t }); } });
+      } catch (e) {
+        memberUnderstanding = '[閱讀失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
+        this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: memberUnderstanding });
+      }
+      memberHists[mi].push({ role: 'user', content: _readUnderstandMsg });
+      memberHists[mi].push({ role: 'assistant', content: memberUnderstanding });
+      understandings.push(`【${memberDisplays[mi]}】\n${memberUnderstanding}`);
+      this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+    }
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // ── Phase-0b  主任整合理解並提出架構計劃 ──────────────────────────────────
+    this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${managerDisplay} — 架構計劃` });
+    const p0 =
+      `【所有成員的工作區理解】\n${understandings.join('\n\n')}\n\n` +
+      `【任務需求】\n${prompt}\n\n` +
+      `所有成員已充分閱讀工作區。請提出架構計劃：\n` +
+      `1. 基於大家對原始碼的共同理解，說明架構方向\n` +
+      `2. 列出需要修改的具體檔案（附路徑）\n` +
       (memberModels.length > 0
-        ? `\n3. 為 ${memberModels.length} 位工程師分配具體工作項目\n4. 說明技術限制與注意事項`
-        : '');
+        ? `3. 為 ${memberModels.length} 位工程師分配具體子任務（指定檔案與函式）\n4. 說明技術限制與注意事項`
+        : `3. 列出子任務清單`);
     let managerAnalysis = '';
     try {
       managerAnalysis = await callModel(managerModel, managerPersona, managerHist, p0,
         (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); } },
         (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); } });
     } catch (e) {
-      managerAnalysis = '[主管分析失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
+      managerAnalysis = '[主任架構計劃失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
       this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: managerAnalysis });
     }
     managerHist.push({ role: 'user', content: p0 });
