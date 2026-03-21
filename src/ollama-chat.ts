@@ -1002,7 +1002,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamTodoList')  { createTodoPanel(msg.tasks); }
           else if (msg.type === 'teamTodoStart') { updateTodo(msg.idx, 'running', msg.worker); }
           else if (msg.type === 'teamTodoDone')  { updateTodo(msg.idx, 'done'); }
-          else if (msg.type === 'debateStart')   { _debateRunning = true; var _dsBar = document.getElementById('debateSwapBar'); if (_dsBar) _dsBar.style.display = 'flex'; createDebateHeader(msg.labelA, msg.labelB, msg.labelJ, msg.colorA, msg.colorB, msg.colorJ, msg.gameType); }
+          else if (msg.type === 'debateStart')   { _debateRunning = true; var _dsBar = document.getElementById('debateSwapBar'); if (_dsBar) _dsBar.style.display = 'flex'; createDebateHeader(msg.labelA, msg.labelB, msg.labelJ, msg.colorA, msg.colorB, msg.colorJ, msg.gameType, msg.speakerLabels, msg.speakerColors); }
           else if (msg.type === 'debateTurnStart') { startDebateTurn(msg.speaker, msg.round, msg.label, msg.color); }
           else if (msg.type === 'debateChunk')   { appendDebateChunk(msg.speaker, msg.chunk); }
           else if (msg.type === 'debateThinkChunk') { appendDebateThinkChunk(msg.speaker, msg.chunk); }
@@ -1126,6 +1126,8 @@ export class OllamaChatPanel {
       const _debateNodes = {}; // speaker -> { node, body, thinkNode, thinkChars, thinkStart, thinkTimer }
       let _debateLabelA = '', _debateLabelB = '', _debateLabelJ = '';
       let _debateColorA = '#4fc1ff', _debateColorB = '#ce9178', _debateColorJ = '#89d185';
+      let _speakerLabels = {}; // speaker key -> display label (supports N-model discussion)
+      let _speakerColors = {}; // speaker key -> color
 
       const sendBtn = document.getElementById('sendBtn');
       const statusBar = document.getElementById('statusBar');
@@ -2261,23 +2263,35 @@ export class OllamaChatPanel {
       }
 
       // ── Debate bubble functions ──────────────────────────────────────────
-      function createDebateHeader(labelA, labelB, labelJ, colorA, colorB, colorJ, gameType) {
+      function createDebateHeader(labelA, labelB, labelJ, colorA, colorB, colorJ, gameType, speakerLabels, speakerColors) {
         _debateLabelA = labelA; _debateLabelB = labelB; _debateLabelJ = labelJ || '';
         _debateColorA = colorA; _debateColorB = colorB; _debateColorJ = colorJ;
+        _speakerLabels = speakerLabels || {};
+        _speakerColors = speakerColors || {};
         Object.keys(_debateNodes).forEach(function(k) { delete _debateNodes[k]; });
         var hdr = document.createElement('div');
         hdr.style.cssText = 'text-align:center;font-size:0.82em;font-weight:700;margin:10px 0 4px;padding:5px 0;border-top:1px dashed rgba(128,128,128,0.3);border-bottom:1px dashed rgba(128,128,128,0.3)';
-        var tagA = '<span style="color:' + colorA + '">' + labelA + '</span>';
-        var tagB = '<span style="color:' + colorB + '">' + labelB + '</span>';
-        var tagJ = labelJ ? ' &#x00B7; <span style="color:' + colorJ + '">[' + labelJ + ' \u88c1\u5244]</span>' : '';
-        var gameTag = (gameType && gameType !== 'discussion' && gameType !== 'generic') ? ' <span style="opacity:0.55;font-size:0.9em">[' + gameType + ']</span>' : '';
-        hdr.innerHTML = '\u2694\ufe0f \u5c0d\u8a71\u6a21\u5f0f\uff1a' + tagA + ' vs ' + tagB + tagJ + gameTag;
+        if (gameType === 'team-discussion') {
+          // N-model discussion: show all members as a list
+          var memberTags = Object.keys(_speakerLabels).sort(function(a,b){return Number(a)-Number(b);}).map(function(k) {
+            return '<span style="color:' + (_speakerColors[k] || colorA) + '">' + _speakerLabels[k] + '</span>';
+          });
+          hdr.innerHTML = '\uD83D\uDCAC \u8a0e\u8ad6\u6a21\u5f0f\uff1a' + memberTags.join(' \u00B7 ');
+        } else {
+          var tagA = '<span style="color:' + colorA + '">' + labelA + '</span>';
+          var tagB = '<span style="color:' + colorB + '">' + labelB + '</span>';
+          var tagJ = labelJ ? ' &#x00B7; <span style="color:' + colorJ + '">[' + labelJ + ' \u88c1\u5244]</span>' : '';
+          var gameTag = (gameType && gameType !== 'discussion' && gameType !== 'generic') ? ' <span style="opacity:0.55;font-size:0.9em">[' + gameType + ']</span>' : '';
+          hdr.innerHTML = '\u2694\ufe0f \u5c0d\u8a71\u6a21\u5f0f\uff1a' + tagA + ' vs ' + tagB + tagJ + gameTag;
+        }
         chat.appendChild(hdr); chat.scrollTop = chat.scrollHeight;
       }
-      function startDebateTurn(speaker, round) {
-        var label = speaker === 'A' ? _debateLabelA : speaker === 'B' ? _debateLabelB : _debateLabelJ + ' (\u88c1\u5224)';
-        var color = speaker === 'A' ? _debateColorA : speaker === 'B' ? _debateColorB : _debateColorJ;
-        var roleIcon = speaker === 'A' ? '\ud83d\udfe6' : speaker === 'B' ? '\ud83d\udfe7' : '\u2696\ufe0f';
+      function startDebateTurn(speaker, round, overrideLabel, overrideColor) {
+        var _ICONS = ['\uD83D\uDFE6','\uD83D\uDFE7','\uD83D\uDFE9','\uD83D\uDFE8','\uD83D\uDFEA','\uD83D\uDFEB'];
+        var label = overrideLabel || _speakerLabels[speaker] || (speaker === 'A' ? _debateLabelA : speaker === 'B' ? _debateLabelB : (_debateLabelJ || '') + ' (\u88c1\u5224)');
+        var color = overrideColor || _speakerColors[speaker] || (speaker === 'A' ? _debateColorA : speaker === 'B' ? _debateColorB : _debateColorJ);
+        var _idx = isNaN(Number(speaker)) ? (speaker === 'A' ? 0 : speaker === 'B' ? 1 : 2) : Number(speaker);
+        var roleIcon = (speaker === 'J') ? '\u2696\ufe0f' : (_ICONS[_idx] || '\uD83D\uDFE6');
         var node = document.createElement('div'); node.className = 'msg assistant';
         var bub = document.createElement('div'); bub.className = 'bubble debate-turn';
         bub.style.borderLeft = '3px solid ' + color;
@@ -2295,7 +2309,7 @@ export class OllamaChatPanel {
         if (!d.thinkNode) {
           var det = document.createElement('details'); det.className = 'think'; det.setAttribute('open', '');
           var s = document.createElement('summary');
-          var color = speaker === 'A' ? _debateColorA : speaker === 'B' ? _debateColorB : _debateColorJ;
+          var color = _speakerColors[speaker] || (speaker === 'A' ? _debateColorA : speaker === 'B' ? _debateColorB : _debateColorJ);
           var icon = document.createElement('span'); icon.className = 'think-icon pulse'; icon.style.background = color;
           var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '🧠 思考中…';
           s.appendChild(icon); s.appendChild(lbl);
@@ -3110,16 +3124,23 @@ export class OllamaChatPanel {
     const roundsLimit = isFinite(maxRounds) ? maxRounds : 4; // 討論模式無限預設 4 輪
     const summaryLines: string[] = [];
 
+    const _discussionSpeakerLabels: Record<string, string> = {};
+    const _discussionSpeakerColors: Record<string, string> = {};
+    allModels.forEach((m, i) => { _discussionSpeakerLabels[String(i)] = getDisplay(m); _discussionSpeakerColors[String(i)] = COLORS[i % COLORS.length]; });
     this._panel.webview.postMessage({ type: 'debateStart',
       labelA: getDisplay(allModels[0]), labelB: getDisplay(allModels[1] ?? allModels[0]),
       labelJ: allModels[2] ? getDisplay(allModels[2]) : null,
-      colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2] });
+      colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2],
+      gameType: 'team-discussion',
+      speakerLabels: _discussionSpeakerLabels,
+      speakerColors: _discussionSpeakerColors });
 
-    // Each model has independent context (historyX[model])
+    // Each model has independent context; cross-model responses injected after each round
     const histories: Map<string, { role: 'user'|'assistant'; content: string }[]> = new Map();
     for (const m of allModels) { histories.set(m, [{ role: 'user', content: prompt }]); }
 
     for (let round = 0; round < roundsLimit && !this._teamCancel; round++) {
+      const roundResponses: { mi: number; display: string; response: string }[] = [];
       for (let mi = 0; mi < allModels.length && !this._teamCancel; mi++) {
         const model = allModels[mi];
         const color = COLORS[mi % COLORS.length];
@@ -3151,10 +3172,23 @@ export class OllamaChatPanel {
           this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: response });
         }
         this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: speakerKey });
-        // Update this model's own history
+        // Append own assistant turn; cross-model context injected after all models complete this round
         hist.push({ role: 'assistant', content: response });
-        hist.push({ role: 'user', content: '請繼續補充或回應其他觀點。' });
+        roundResponses.push({ mi, display, response });
         summaryLines.push(`【${display} 第${round+1}輪】\n${response}`);
+      }
+      // Cross-feed: inject other members' responses as the next user turn for each model
+      if (!this._teamCancel) {
+        for (let mi = 0; mi < allModels.length; mi++) {
+          const hist = histories.get(allModels[mi])!;
+          const others = roundResponses.filter(r => r.mi !== mi);
+          if (others.length > 0) {
+            const crossContext = others.map(o => `【${o.display}】：\n${o.response}`).join('\n\n---\n\n');
+            hist.push({ role: 'user', content: `以下是其他成員在第 ${round + 1} 輪的觀點：\n\n${crossContext}\n\n請回應或補充上述觀點，提出你的反駁或延伸論點。` });
+          } else {
+            hist.push({ role: 'user', content: '請進一步補充說明。' });
+          }
+        }
       }
     }
 
@@ -3697,16 +3731,19 @@ export class OllamaChatPanel {
     // Announce start
     this._panel.webview.postMessage({ type: 'debateStart', labelA, labelB, labelJ, colorA: COLORS[0], colorB: COLORS[1], colorJ: COLORS[2], gameType: 'discussion' });
 
-    // Each model has fully independent context — they don't know each other exists
-    // historyA/B only contains that model's own [user, assistant, user, assistant, ...] turns
-    const historyA: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: prompt }];
-    const historyB: { role: 'user' | 'assistant'; content: string }[] = [{ role: 'user', content: prompt }];
+    // True cross-model debate: A's response is fed to B before B speaks, and vice versa
+    // historyA/B grow as [user, assistant, user(B's rebuttal), assistant, ...]
+    const historyA: { role: 'user' | 'assistant'; content: string }[] = [];
+    const historyB: { role: 'user' | 'assistant'; content: string }[] = [];
     // Collected responses for judge summary
     const summaryLines: string[] = [];
     const MAX_ROUNDS = maxRounds;
 
     for (let round = 0; round < MAX_ROUNDS && !this._teamCancel; round++) {
-      // A speaks — only sees its own prior turns
+      // Prime A's turn: round 0 gets original prompt; round 1+ already has B's rebuttal appended
+      if (round === 0) { historyA.push({ role: 'user', content: prompt }); }
+
+      // A speaks
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'A', round });
       let responseA = '';
       let statsDA: { tokens?: number; tps?: number } = {};
@@ -3723,12 +3760,17 @@ export class OllamaChatPanel {
       }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'A', tokens: statsDA.tokens, tps: statsDA.tps });
       if (this._teamCancel) break;
-      // A's own memory: append its answer, then prime next user turn
       historyA.push({ role: 'assistant', content: responseA });
-      historyA.push({ role: 'user', content: '請進一步說明。' });
       summaryLines.push(`【${labelA}】\n${responseA}`);
 
-      // B speaks — only sees its own prior turns
+      // Feed A's response to B as context before B speaks (cross-model injection)
+      if (round === 0) {
+        historyB.push({ role: 'user', content: `議題：${prompt}\n\n【${labelA}】的論點：\n${responseA}\n\n請提出你的立場，如有不同意見請明確指出。` });
+      } else {
+        historyB.push({ role: 'user', content: `【${labelA}】反駁道：\n${responseA}\n\n請回應上述論點，維護你的立場或提出新論據。` });
+      }
+
+      // B speaks (now sees A's latest response)
       this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: 'B', round });
       let responseB = '';
       let statsDB: { tokens?: number; tps?: number } = {};
@@ -3745,10 +3787,11 @@ export class OllamaChatPanel {
       }
       this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: 'B', tokens: statsDB.tokens, tps: statsDB.tps });
       if (this._teamCancel) break;
-      // B's own memory: append its answer, then prime next user turn
       historyB.push({ role: 'assistant', content: responseB });
-      historyB.push({ role: 'user', content: '請進一步說明。' });
       summaryLines.push(`【${labelB}】\n${responseB}`);
+
+      // Feed B's response to A as context for next round (cross-model injection)
+      historyA.push({ role: 'user', content: `【${labelB}】反駁道：\n${responseB}\n\n請回應上述論點，維護你的立場或提出新論據。` });
     }
 
     // Judge sees a plain-text summary of all responses — no cross-model raw content
