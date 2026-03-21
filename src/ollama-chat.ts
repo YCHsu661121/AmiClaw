@@ -3121,6 +3121,27 @@ export class OllamaChatPanel {
       try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; }
     };
 
+    // ── 讀取工作區上下文 ──────────────────────────────────────────────────────
+    const _wsFolders = vscode.workspace.workspaceFolders ?? [];
+    const _wsRoot = _wsFolders.map(f => f.uri.fsPath).join(', ') || process.cwd();
+    const _activeEditor = vscode.window.activeTextEditor;
+    const _activeFilePath = _activeEditor?.document.uri.fsPath ?? '';
+    let _activeFileContent = '';
+    if (_activeEditor && _activeFilePath) {
+      const raw = _activeEditor.document.getText();
+      _activeFileContent = raw.length > 60000 ? raw.slice(0, 60000) + '\n...[已截斷，僅顯示前 60KB]' : raw;
+    }
+    const _openFilePaths = vscode.workspace.textDocuments
+      .filter(d => !d.isUntitled && d.uri.scheme === 'file' && d.uri.fsPath !== _activeFilePath)
+      .map(d => d.uri.fsPath);
+    const _wsContextParts = [
+      `【工作區路徑】${_wsRoot}`,
+      _activeFilePath ? `【作用中檔案】${_activeFilePath}\n\`\`\`\n${_activeFileContent}\n\`\`\`` : '',
+      _openFilePaths.length ? `【其他開啟中的檔案】\n${_openFilePaths.join('\n')}` : ''
+    ].filter(Boolean);
+    const _wsContext = _wsContextParts.join('\n\n');
+    const _promptWithCtx = _wsContext ? `${_wsContext}\n\n---\n\n${prompt}` : prompt;
+
     const roundsLimit = isFinite(maxRounds) ? maxRounds : 4; // 討論模式無限預設 4 輪
     const summaryLines: string[] = [];
 
@@ -3137,7 +3158,7 @@ export class OllamaChatPanel {
 
     // Each model has independent context; cross-model responses injected after each round
     const histories: Map<string, { role: 'user'|'assistant'; content: string }[]> = new Map();
-    for (const m of allModels) { histories.set(m, [{ role: 'user', content: prompt }]); }
+    for (const m of allModels) { histories.set(m, [{ role: 'user', content: _promptWithCtx }]); }
 
     for (let round = 0; round < roundsLimit && !this._teamCancel; round++) {
       const roundResponses: { mi: number; display: string; response: string }[] = [];
@@ -3153,12 +3174,12 @@ export class OllamaChatPanel {
         try {
           if (model.startsWith('copilot::')) {
             const family = model.slice('copilot::'.length);
-            response = await this.copilotStream(family, prompt,
+            response = await this.copilotStream(family, _promptWithCtx,
               (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); });
           } else {
             const { url, model: mName } = decodeOllamaModel(model, urls);
             const messages: ChatMessage[] = [
-              { role: 'system', content: `你是 ${display}，正在和其他 AI 討論以下問題。每次回答請根據前幾輪的對話內容延伸，不要重複，請提出新觀點或補充說明。` },
+              { role: 'system', content: `你是 ${display}，正在和其他 AI 討論以下問題。你可以參考工作區檔案內容進行分析。每次回答請根據前幾輪的對話內容延伸，不要重複，請提出新觀點或補充說明。` },
               ...hist.map(h => ({ role: h.role as 'user'|'assistant', content: h.content }))
             ];
             if (messages[messages.length - 1].role !== 'user') messages.push({ role: 'user', content: '請繼續。' });
@@ -3307,12 +3328,33 @@ export class OllamaChatPanel {
       return;
     }
 
+    // ── 讀取工作區上下文 ──────────────────────────────────────────────────────
+    const _mgrWsFolders = vscode.workspace.workspaceFolders ?? [];
+    const _mgrWsRoot = _mgrWsFolders.map(f => f.uri.fsPath).join(', ') || process.cwd();
+    const _mgrActiveEditor = vscode.window.activeTextEditor;
+    const _mgrActiveFilePath = _mgrActiveEditor?.document.uri.fsPath ?? '';
+    let _mgrActiveFileContent = '';
+    if (_mgrActiveEditor && _mgrActiveFilePath) {
+      const raw = _mgrActiveEditor.document.getText();
+      _mgrActiveFileContent = raw.length > 60000 ? raw.slice(0, 60000) + '\n...[已截斷，僅顯示前 60KB]' : raw;
+    }
+    const _mgrOpenFilePaths = vscode.workspace.textDocuments
+      .filter(d => !d.isUntitled && d.uri.scheme === 'file' && d.uri.fsPath !== _mgrActiveFilePath)
+      .map(d => d.uri.fsPath);
+    const _mgrWsContextParts = [
+      `【工作區路徑】${_mgrWsRoot}`,
+      _mgrActiveFilePath ? `【作用中檔案】${_mgrActiveFilePath}\n\`\`\`\n${_mgrActiveFileContent}\n\`\`\`` : '',
+      _mgrOpenFilePaths.length ? `【其他開啟中的檔案】\n${_mgrOpenFilePaths.join('\n')}` : ''
+    ].filter(Boolean);
+    const _mgrWsContext = _mgrWsContextParts.join('\n\n');
+
     const managerModel   = allModels[0];
     const memberModels   = allModels.slice(1);
     const managerDisplay = '🏢 主管 (' + getDisplay(managerModel) + ')';
     const memberDisplays = memberModels.map((m, i) => `👨‍💻 工程師 #${i + 1} (${getDisplay(m)})`);
 
-    // ─ 人格設定（分離）
+    // ─ 人格設定（分離，含工作區資訊）
+    const _wsBlock = _mgrWsContext ? `\n\n你可以參考以下工作區資訊進行分析：\n${_mgrWsContext}` : '';
     const managerPersona =
       `你是資深技術主管兼架構師。職責：\n` +
       `1. 分析技術需求與架構\n` +
@@ -3320,10 +3362,10 @@ export class OllamaChatPanel {
       `3. 審查提案並給出具體改進意見\n` +
       `4. 確認方案無誤後才核准（回覆末尾輸出 [APPROVED]）\n` +
       `5. 對執行結果進行最終 Review\n` +
-      `風格：嚴謹簡潔，繁體中文回答。`;
+      `風格：嚴謹簡潔，繁體中文回答。${_wsBlock}`;
     const memberPersona = (i: number) =>
       `你是工程師 #${i + 1}。職責：根據主管指示提出具體實作方案與程式碼修改建議。\n` +
-      `重要：你只看得到自己的對話歷史，不知道其他工程師的內容。繁體中文回答。`;
+      `重要：你只看得到自己的對話歷史，不知道其他工程師的內容。繁體中文回答。${_wsBlock}`;
 
     // ─ 記憶分離：各自獨立的對話歷史
     const managerHist: { role: 'user' | 'assistant'; content: string }[] = [];
