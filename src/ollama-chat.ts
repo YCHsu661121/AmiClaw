@@ -3123,7 +3123,7 @@ export class OllamaChatPanel {
 
     // ── 讀取工作區上下文 ──────────────────────────────────────────────────────
     const _wsFolders = vscode.workspace.workspaceFolders ?? [];
-    const _wsRoot = _wsFolders.map(f => f.uri.fsPath).join(', ') || process.cwd();
+    const _wsRoot = _wsFolders.length > 0 ? _wsFolders[0].uri.fsPath : process.cwd();
     const _activeEditor = vscode.window.activeTextEditor;
     const _activeFilePath = _activeEditor?.document.uri.fsPath ?? '';
     let _activeFileContent = '';
@@ -3134,10 +3134,18 @@ export class OllamaChatPanel {
     const _openFilePaths = vscode.workspace.textDocuments
       .filter(d => !d.isUntitled && d.uri.scheme === 'file' && d.uri.fsPath !== _activeFilePath)
       .map(d => d.uri.fsPath);
+    // 讀取 teamscontext.md（若存在）
+    const _teamsCtxPath = path.join(_wsRoot, 'teamscontext.md');
+    let _teamsCtxContent = '';
+    try {
+      const _tcBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(_teamsCtxPath));
+      _teamsCtxContent = Buffer.from(_tcBytes).toString('utf-8').trim();
+    } catch { /* 不存在則略過 */ }
     const _wsContextParts = [
       `【工作區路徑】${_wsRoot}`,
       _activeFilePath ? `【作用中檔案】${_activeFilePath}\n\`\`\`\n${_activeFileContent}\n\`\`\`` : '',
-      _openFilePaths.length ? `【其他開啟中的檔案】\n${_openFilePaths.join('\n')}` : ''
+      _openFilePaths.length ? `【其他開啟中的檔案】\n${_openFilePaths.join('\n')}` : '',
+      _teamsCtxContent ? `【teamscontext.md — 先前討論紀錄】\n${_teamsCtxContent}` : ''
     ].filter(Boolean);
     const _wsContext = _wsContextParts.join('\n\n');
     const _promptWithCtx = _wsContext ? `${_wsContext}\n\n---\n\n${prompt}` : prompt;
@@ -3238,6 +3246,22 @@ export class OllamaChatPanel {
         this._chatHistories[this._activeSessionId] = this._chatHistory;
         this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
       }
+      // 儲存討論結果到 teamscontext.md
+      const _discFinal = synthResult || summaryLines.join('\n\n---\n\n');
+      if (_discFinal.trim()) {
+        try {
+          const _now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+          const _existing = _teamsCtxContent ? `${_teamsCtxContent}\n\n---\n\n` : '';
+          const _newEntry = `## 討論紀錄 ${_now}\n\n**議題：** ${prompt.slice(0, 200)}${prompt.length > 200 ? '…' : ''}\n\n${_discFinal}`;
+          await vscode.workspace.fs.writeFile(
+            vscode.Uri.file(_teamsCtxPath),
+            Buffer.from(_existing + _newEntry, 'utf-8')
+          );
+          this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `\n\n---\n📝 討論結果已儲存至 teamscontext.md` });
+        } catch (e) {
+          this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `\n\n⚠️ 無法儲存 teamscontext.md: ${e instanceof Error ? e.message : String(e)}` });
+        }
+      }
     }
     this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
     this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
@@ -3330,7 +3354,7 @@ export class OllamaChatPanel {
 
     // ── 讀取工作區上下文 ──────────────────────────────────────────────────────
     const _mgrWsFolders = vscode.workspace.workspaceFolders ?? [];
-    const _mgrWsRoot = _mgrWsFolders.map(f => f.uri.fsPath).join(', ') || process.cwd();
+    const _mgrWsRoot = _mgrWsFolders.length > 0 ? _mgrWsFolders[0].uri.fsPath : process.cwd();
     const _mgrActiveEditor = vscode.window.activeTextEditor;
     const _mgrActiveFilePath = _mgrActiveEditor?.document.uri.fsPath ?? '';
     let _mgrActiveFileContent = '';
@@ -3341,10 +3365,18 @@ export class OllamaChatPanel {
     const _mgrOpenFilePaths = vscode.workspace.textDocuments
       .filter(d => !d.isUntitled && d.uri.scheme === 'file' && d.uri.fsPath !== _mgrActiveFilePath)
       .map(d => d.uri.fsPath);
+    // 讀取 teamscontext.md（若存在）
+    const _mgrTeamsCtxPath = path.join(_mgrWsRoot, 'teamscontext.md');
+    let _mgrTeamsCtxContent = '';
+    try {
+      const _mgrTcBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(_mgrTeamsCtxPath));
+      _mgrTeamsCtxContent = Buffer.from(_mgrTcBytes).toString('utf-8').trim();
+    } catch { /* 不存在則略過 */ }
     const _mgrWsContextParts = [
       `【工作區路徑】${_mgrWsRoot}`,
       _mgrActiveFilePath ? `【作用中檔案】${_mgrActiveFilePath}\n\`\`\`\n${_mgrActiveFileContent}\n\`\`\`` : '',
-      _mgrOpenFilePaths.length ? `【其他開啟中的檔案】\n${_mgrOpenFilePaths.join('\n')}` : ''
+      _mgrOpenFilePaths.length ? `【其他開啟中的檔案】\n${_mgrOpenFilePaths.join('\n')}` : '',
+      _mgrTeamsCtxContent ? `【teamscontext.md — 先前討論紀錄】\n${_mgrTeamsCtxContent}` : ''
     ].filter(Boolean);
     const _mgrWsContext = _mgrWsContextParts.join('\n\n');
 
@@ -3575,6 +3607,29 @@ export class OllamaChatPanel {
       this._chatHistory.push({ role: 'assistant', content: finalSummary });
       this._chatHistories[this._activeSessionId] = this._chatHistory;
       this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+      // 儲存主管模式結果到 teamscontext.md
+      try {
+        const _mgrNow = new Date().toISOString().replace('T', ' ').slice(0, 19);
+        const _mgrExisting = _mgrTeamsCtxContent ? `${_mgrTeamsCtxContent}\n\n---\n\n` : '';
+        const _mgrEntry =
+          `## 主管模式紀錄 ${_mgrNow}\n\n` +
+          `**議題：** ${prompt.slice(0, 200)}${prompt.length > 200 ? '…' : ''}\n\n` +
+          `**執行狀態：** ${execResult}\n\n` +
+          `**全員 Review：**\n${finalSummary}`;
+        await vscode.workspace.fs.writeFile(
+          vscode.Uri.file(_mgrTeamsCtxPath),
+          Buffer.from(_mgrExisting + _mgrEntry, 'utf-8')
+        );
+        const _saveId = 'mgr_save_ctx';
+        this._panel.webview.postMessage({ type: 'teamMemberStart', id: _saveId, model: '📝 teamscontext.md', color: '#aaaaaa', task: '儲存討論紀錄' });
+        this._panel.webview.postMessage({ type: 'teamResponseChunk', id: _saveId, chunk: `✅ 主管模式結果已儲存至 teamscontext.md` });
+        this._panel.webview.postMessage({ type: 'teamMemberEnd', id: _saveId });
+      } catch (e) {
+        const _saveErrId = 'mgr_save_err';
+        this._panel.webview.postMessage({ type: 'teamMemberStart', id: _saveErrId, model: '⚠️ teamscontext.md', color: '#ce9178', task: '儲存失敗' });
+        this._panel.webview.postMessage({ type: 'teamResponseChunk', id: _saveErrId, chunk: `無法儲存 teamscontext.md: ${e instanceof Error ? e.message : String(e)}` });
+        this._panel.webview.postMessage({ type: 'teamMemberEnd', id: _saveErrId });
+      }
     }
     this._agentMessages = [];
     this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
