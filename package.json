@@ -234,6 +234,26 @@
             "type": "string",
             "default": "v20.0",
             "description": "Meta Graph API 版本（預設 v20.0）。建議使用 Meta 目前支援的最新穩定版本。"
+          },
+          "amiAiClaw.jenkinsUrl": {
+            "type": "string",
+            "default": "http://localdev.visualebios",
+            "description": "Jenkins 伺服器 URL（預設 http://localdev.visualebios）。可使用 http 或 https，結尾不需要斜線。"
+          },
+          "amiAiClaw.jenkinsUser": {
+            "type": "string",
+            "default": "",
+            "description": "Jenkins 使用者名稱（用於 HTTP Basic Auth）。搭配 jenkinsToken 使用。留空則以匿名模式連線（需要 Jenkins 允許匿名 Build）。"
+          },
+          "amiAiClaw.jenkinsToken": {
+            "type": "string",
+            "default": "",
+            "description": "Jenkins 使用者 API Token（非密碼）。在 Jenkins → 使用者設定 → API Token → 新增 Token 取得。"
+          },
+          "amiAiClaw.jenkinsDefaultJob": {
+            "type": "string",
+            "default": "SeamlessBuild",
+            "description": "jenkins_build / jenkins_status 工具未指定 job 時使用的預設 Job 名稱（預設 SeamlessBuild）。"
           }
         }
       }

@@ -5859,6 +5859,178 @@ except Exception as e:
           wtReq.end();
         });
       }
+      case 'jenkins_build': {
+        const jbCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const jbUrl = jbCfg.get<string>('jenkinsUrl', 'http://localdev.visualebios').replace(/\/+$/, '');
+        const jbUser = jbCfg.get<string>('jenkinsUser', '').trim();
+        const jbToken = jbCfg.get<string>('jenkinsToken', '').trim();
+        const jbDefaultJob = jbCfg.get<string>('jenkinsDefaultJob', 'SeamlessBuild').trim();
+        const jbJob = ((args.job as string) || jbDefaultJob).trim();
+        const jbParams = args.params as Record<string, string> | undefined;
+        const jbWait = args.wait !== false; // 預設等待 30s 驗收結果
+        const jbAllowed = await this.requestPermission('run', `觸發 Jenkins 樣式: ${jbUrl}/job/${jbJob}${jbParams ? ' (' + JSON.stringify(jbParams).slice(0, 80) + ')' : ''}`, 'jenkins_build');
+        if (!jbAllowed) return '使用者已拒絕 Jenkins Build';
+        const jbAuth = (jbUser && jbToken) ? 'Basic ' + Buffer.from(`${jbUser}:${jbToken}`).toString('base64') : '';
+        // 取得 CSRF Crumb
+        const jbGetCrumb = (): Promise<{ field: string; value: string } | null> => new Promise(res => {
+          const cu = new URL('/crumbIssuer/api/json', jbUrl);
+          const isHttps = cu.protocol === 'https:';
+          const proto = isHttps ? https : http;
+          const crumbOpts = {
+            hostname: cu.hostname, port: cu.port || (isHttps ? 443 : 80),
+            path: cu.pathname, method: 'GET',
+            headers: { 'Accept': 'application/json', ...(jbAuth ? { 'Authorization': jbAuth } : {}) }
+          };
+          let cb = ''; const cReq = proto.request(crumbOpts, r => {
+            r.setEncoding('utf8'); r.on('data', (d: string) => { cb += d; });
+            r.on('end', () => {
+              try { const j = JSON.parse(cb) as Record<string, string>; res({ field: j.crumbRequestField, value: j.crumb }); }
+              catch { res(null); }
+            });
+          });
+          cReq.on('error', () => res(null)); cReq.setTimeout(5000, () => { cReq.destroy(); res(null); }); cReq.end();
+        });
+        // 發送 HTTP 請求的通用函數
+        const jbHttp = (urlStr: string, method: string, postBody?: string, extraHdrs: Record<string, string> = {}): Promise<{ status: number; body: string; location?: string }> =>
+          new Promise(res => {
+            let pu: URL; try { pu = new URL(urlStr); } catch { res({ status: 0, body: '無效 URL: ' + urlStr }); return; }
+            const isHttps = pu.protocol === 'https:';
+            const proto = isHttps ? https : http;
+            const bodyBuf = postBody ? Buffer.from(postBody, 'utf8') : undefined;
+            const opts = {
+              hostname: pu.hostname, port: pu.port || (isHttps ? 443 : 80),
+              path: pu.pathname + pu.search, method,
+              headers: {
+                'Accept': 'application/json',
+                ...(jbAuth ? { 'Authorization': jbAuth } : {}),
+                ...(bodyBuf ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': bodyBuf.length } : {}),
+                ...extraHdrs
+              }
+            };
+            let rb = '';
+            const req = proto.request(opts, r => {
+              r.setEncoding('utf8'); r.on('data', (d: string) => { rb += d; });
+              r.on('end', () => res({ status: r.statusCode ?? 0, body: rb, location: r.headers.location as string | undefined }));
+            });
+            req.on('error', (e: Error) => res({ status: 0, body: '網路錯誤: ' + e.message }));
+            req.setTimeout(15000, () => { req.destroy(); res({ status: 0, body: '超時 (15s)' }); });
+            if (bodyBuf) { req.write(bodyBuf); }
+            req.end();
+          });
+        const crumb = await jbGetCrumb();
+        const crumbHdr: Record<string, string> = crumb ? { [crumb.field]: crumb.value } : {};
+        // 建立對應的觸發端點
+        let jbTriggerPath: string;
+        let jbPostBody: string | undefined;
+        if (jbParams && Object.keys(jbParams).length > 0) {
+          jbTriggerPath = `${jbUrl}/job/${encodeURIComponent(jbJob)}/buildWithParameters`;
+          jbPostBody = Object.entries(jbParams).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+        } else {
+          jbTriggerPath = `${jbUrl}/job/${encodeURIComponent(jbJob)}/build`;
+        }
+        const triggerResp = await jbHttp(jbTriggerPath, 'POST', jbPostBody, crumbHdr);
+        if (triggerResp.status === 0) return `無法連線 Jenkins: ${triggerResp.body}`;
+        if (triggerResp.status >= 400) return `Jenkins Build 觸發失敗 HTTP ${triggerResp.status}: ${triggerResp.body.slice(0, 300)}`;
+        const queueUrl = triggerResp.location;
+        let queueMsg = queueUrl ? `\n排隊位置: ${queueUrl}` : '';
+        let buildNumber: number | null = null;
+        // 如果要求等待，輪詢 queue item
+        if (jbWait && queueUrl) {
+          const jbPoll = async (): Promise<number | null> => {
+            for (let i = 0; i < 12; i++) {
+              await new Promise(r => setTimeout(r, 5000));
+              const qa = queueUrl.replace(/\/?$/, '/api/json');
+              const qr = await jbHttp(qa, 'GET');
+              if (qr.status === 200) {
+                try {
+                  const qj = JSON.parse(qr.body) as Record<string, unknown>;
+                  const ex = qj.executable as Record<string, unknown> | undefined;
+                  if (ex?.number) { return ex.number as number; }
+                } catch { /* continue polling */ }
+              }
+            }
+            return null;
+          };
+          this._panel.webview.postMessage({ type: 'agentStep', icon: '⏳', title: `等待 Jenkins [${jbJob}] 第 one 次輪詢 Job 開始…`, fullPath: '' });
+          buildNumber = await jbPoll();
+          if (buildNumber) {
+            const statusResp = await jbHttp(`${jbUrl}/job/${encodeURIComponent(jbJob)}/${buildNumber}/api/json`, 'GET');
+            if (statusResp.status === 200) {
+              try {
+                const sj = JSON.parse(statusResp.body) as Record<string, unknown>;
+                const result = (sj.result as string | null) ?? '進行中';
+                const dur = sj.duration ? ` | 耗時: ${Math.round(Number(sj.duration) / 1000)}s` : '';
+                queueMsg += `\n編號: #${buildNumber} | 狀態: ${result}${dur}`;
+              } catch { /* ignore */ }
+            }
+          }
+        }
+        return `✅ Jenkins Build 已觸發: ${jbUrl}/job/${jbJob}${queueMsg}${buildNumber ? `\n建置詳情: ${jbUrl}/job/${encodeURIComponent(jbJob)}/${buildNumber}` : '\n提示: 可用 jenkins_status 工具查詢建置結果'}`;
+      }
+      case 'jenkins_status': {
+        const jsCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const jsUrl = jsCfg.get<string>('jenkinsUrl', 'http://localdev.visualebios').replace(/\/+$/, '');
+        const jsUser = jsCfg.get<string>('jenkinsUser', '').trim();
+        const jsToken = jsCfg.get<string>('jenkinsToken', '').trim();
+        const jsDefaultJob = jsCfg.get<string>('jenkinsDefaultJob', 'SeamlessBuild').trim();
+        const jsJob = ((args.job as string) || jsDefaultJob).trim();
+        const jsBuildNum = args.build_number ? String(args.build_number) : 'lastBuild';
+        const jsIncludeLog = args.include_log !== false;
+        const jsLogLines = Math.min(Number(args.log_lines || 100), 500);
+        const jsAuth = (jsUser && jsToken) ? 'Basic ' + Buffer.from(`${jsUser}:${jsToken}`).toString('base64') : '';
+        const jsHttp = (urlStr: string): Promise<{ status: number; body: string }> =>
+          new Promise(res => {
+            let pu: URL; try { pu = new URL(urlStr); } catch { res({ status: 0, body: '無效 URL' }); return; }
+            const isHttps = pu.protocol === 'https:';
+            const proto = isHttps ? https : http;
+            let rb = '';
+            const req = proto.request({
+              hostname: pu.hostname, port: pu.port || (isHttps ? 443 : 80),
+              path: pu.pathname + pu.search, method: 'GET',
+              headers: { 'Accept': 'application/json, text/plain, */*', ...(jsAuth ? { 'Authorization': jsAuth } : {}) }
+            }, r => {
+              r.setEncoding('utf8'); r.on('data', (d: string) => { rb += d; if (rb.length > 200000) r.destroy(); });
+              r.on('end', () => res({ status: r.statusCode ?? 0, body: rb }));
+            });
+            req.on('error', (e: Error) => res({ status: 0, body: '網路錯誤: ' + e.message }));
+            req.setTimeout(15000, () => { req.destroy(); res({ status: 0, body: '超時' }); });
+            req.end();
+          });
+        const infoResp = await jsHttp(`${jsUrl}/job/${encodeURIComponent(jsJob)}/${jsBuildNum}/api/json`);
+        if (infoResp.status === 0) return `無法連線 Jenkins: ${infoResp.body}`;
+        if (infoResp.status === 404) return `建置不存在: ${jsUrl}/job/${jsJob}/${jsBuildNum}`;
+        if (infoResp.status >= 400) return `Jenkins API 錯誤 HTTP ${infoResp.status}: ${infoResp.body.slice(0, 200)}`;
+        let statusOut = '';
+        try {
+          const bj = JSON.parse(infoResp.body) as Record<string, unknown>;
+          const result = (bj.result as string | null) ?? '進行中';
+          const building = bj.building as boolean | undefined;
+          const dur = bj.duration ? Math.round(Number(bj.duration) / 1000) + 's' : (bj.estimatedDuration ? '預估 ' + Math.round(Number(bj.estimatedDuration) / 1000) + 's' : 'N/A');
+          const ts = bj.timestamp ? new Date(Number(bj.timestamp)).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) : 'N/A';
+          const causes = ((bj.actions as Array<Record<string, unknown>>) ?? []).flatMap(a => (a.causes as Array<Record<string, string>>) ?? []).map(c => c.shortDescription ?? c.userName ?? '').filter(Boolean).join(', ');
+          statusOut = [
+            `=== Jenkins Build: ${jsUrl}/job/${jsJob}/${bj.number ?? jsBuildNum} ===`,
+            `狀態: ${building ? '⚙️ 建置中' : (result === 'SUCCESS' ? '✅ ' : result === 'FAILURE' ? '❌ ' : result === 'ABORTED' ? '⛔ ' : '⏳ ') + result}`,
+            `起始時間: ${ts}  | 耗時: ${dur}`,
+            causes ? `觸發原因: ${causes}` : '',
+            `建置編號: #${bj.number ?? jsBuildNum}  | URL: ${bj.url ?? ''}`,
+          ].filter(Boolean).join('\n');
+        } catch {
+          statusOut = `HTTP ${infoResp.status}: ${infoResp.body.slice(0, 500)}`;
+        }
+        let consoleOut = '';
+        if (jsIncludeLog) {
+          const logResp = await jsHttp(`${jsUrl}/job/${encodeURIComponent(jsJob)}/${jsBuildNum}/consoleText`);
+          if (logResp.status === 200) {
+            const lines = logResp.body.split('\n');
+            const tail = lines.slice(-jsLogLines);
+            consoleOut = '\n\n--- Console 輸出 (最後 ' + tail.length + ' 行) ---\n' + tail.join('\n').slice(0, 15000);
+          } else {
+            consoleOut = `\n(Console 輸出無法檢索 HTTP ${logResp.status})`;
+          }
+        }
+        return statusOut + consoleOut;
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -5978,10 +6150,12 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'refactor_suggest', description: '讀取指定原始碼檔案，執行 ESLint 複雜度/品質分析，並回傳含行號的原始碼供 AI 提供重構建議。分析包含循環複雜度、函式長度、巢狀深度等指標。', parameters: { type: 'object', properties: { path: { type: 'string', description: '要分析的原始碼檔案路徑（必填）' }, focus: { type: 'string', enum: ['all', 'complexity', 'naming', 'duplication', 'solid'], description: '分析重點方向（預設 all，AI 會依此強調對應建議）' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'whatsapp_send', description: '透過 Meta WhatsApp Business Cloud API 發送文字訊息至指定手機號碼。適用於 24 小時內看過訊息的聯絡人。需要先在設定配置 whatsappAccessToken 和 whatsappPhoneNumberId。', parameters: { type: 'object', properties: { to: { type: 'string', description: '收件人手機號碼，必須含國碼，例如 +886912345678' }, message: { type: 'string', description: '要發送的文字訊息內容' } }, required: ['to', 'message'] } } },
   { type: 'function', function: { name: 'whatsapp_send_template', description: '透過 Meta WhatsApp Business Cloud API 發送已審核的樣板訊息。適用於初次聯絡或 24 小時窗口外的訊息（不受 24 小時限制）。需要先建立並審核樣板。', parameters: { type: 'object', properties: { to: { type: 'string', description: '收件人手機號碼，必須含國碼' }, template_name: { type: 'string', description: 'Meta 商業管理平台已審核的樣板名稱' }, language_code: { type: 'string', description: '樣板語言碼（預設 zh_TW，可選 en_US、zh_CN 等）' }, body_params: { type: 'array', items: { type: 'string' }, description: '樣板主體 {{1}} {{2}} 參數列表（可選）' } }, required: ['to', 'template_name'] } } },
+  { type: 'function', function: { name: 'jenkins_build', description: '觸發 Jenkins 任動建置（Build）並回傳排隊 / 映射編號。依設定自動取得 CSRF Crumb。預設連接 localdev.visualebios 。', parameters: { type: 'object', properties: { job: { type: 'string', description: 'Jenkins Job 名稱（預設使用 amiAiClaw.jenkinsDefaultJob，未設定則 SeamlessBuild）' }, params: { type: 'object', description: 'Build 參數（key-value，可選），有參數自動使用 buildWithParameters 端點', additionalProperties: { type: 'string' } }, wait: { type: 'boolean', description: '是否等待 Job 開始建置並回傳編號/狀態（預設 true，最多等待 60s）' } }, required: [] } } },
+  { type: 'function', function: { name: 'jenkins_status', description: '查詢 Jenkins Job 最新 Build 或指定 Build 編號的狀態及 Console 輸出。預設連接 localdev.visualebios 。', parameters: { type: 'object', properties: { job: { type: 'string', description: 'Jenkins Job 名稱（預設使用 amiAiClaw.jenkinsDefaultJob）' }, build_number: { type: 'number', description: 'Build 編號（可選，預設 lastBuild）' }, include_log: { type: 'boolean', description: '是否包含 Console 輸出（預設 true）' }, log_lines: { type: 'number', description: 'Console 輸出最後幾行（預設 100，最大 500）' } }, required: [] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_send: '💬', whatsapp_send_template: '📣' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊' };
   return m[name] ?? '🔧';
 }
 
@@ -6025,6 +6199,8 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'refactor_suggest': return `重構分析: ${args.path}${args.focus && args.focus !== 'all' ? ' (' + args.focus + ')' : ''}`;
     case 'whatsapp_send': return `💬 WhatsApp 發送至 ${args.to}: ${(args.message as string || '').slice(0, 60)}`;
     case 'whatsapp_send_template': return `📣 WhatsApp 樣板 [${args.template_name}] 至 ${args.to}`;
+    case 'jenkins_build': return `🛠️ Jenkins Build: ${args.job || '(default job)'}${args.params ? ' ' + JSON.stringify(args.params).slice(0, 50) : ''}`;
+    case 'jenkins_status': return `📊 Jenkins 狀態: ${args.job || '(default job)'}${args.build_number ? ' #' + args.build_number : ' (lastBuild)'}`;
     default: return name;
   }
 }
