@@ -3142,26 +3142,34 @@ export class OllamaChatPanel {
     // 掃描工作區所有原始碼
     const _SKIP_EXT = new Set(['.png','.jpg','.jpeg','.gif','.ico','.svg','.woff','.woff2','.ttf','.eot','.vsix','.zip','.tar','.gz','.exe','.dll','.pdf','.db','.sqlite','.lock']);
     const _SKIP_DIRS = '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/build/**,**/.vscode-test/**,**/coverage/**}';
-    const _allUris = await vscode.workspace.findFiles('**/*', _SKIP_DIRS, 300);
+    // 上限提高至 2000，確保深層子目錄也能收集到；按路徑排序確保各子目錄均勻分布
+    const _allUris = await vscode.workspace.findFiles('**/*', _SKIP_DIRS, 2000);
+    _allUris.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
+    // Pass 1：生成完整路徑清單（不論內容是否被讀取，AI 至少知道所有檔案存在）
+    const _filteredUris = _allUris.filter(uri => !_SKIP_EXT.has(path.extname(uri.fsPath).toLowerCase()));
+    const _allRelPaths = _filteredUris.map(uri => path.relative(_wsRoot, uri.fsPath).replace(/\\/g, '/'));
+    const _fileListBlock = `【工作區檔案清單（${_allRelPaths.length} 個）】\n${_allRelPaths.map(p => `  - ${p}`).join('\n')}`;
+    // Pass 2：讀取原始碼內容（有上限；單檔降至 15KB 讓更多不同目錄的檔案納入）
     const _wsFileParts: string[] = [];
     let _totalBytes = 0;
-    const _MAX_TOTAL = 120000; // 全體原始碼上限 120KB
-    const _MAX_FILE = 30000;   // 單檔上限 30KB
-    for (const uri of _allUris) {
-      if (_totalBytes >= _MAX_TOTAL) { _wsFileParts.push('...（已達工作區上下文上限，略過剩餘檔案）'); break; }
-      const ext = path.extname(uri.fsPath).toLowerCase();
-      if (_SKIP_EXT.has(ext)) { continue; }
+    const _MAX_TOTAL = 120000;
+    const _MAX_FILE = 15000;
+    for (const uri of _filteredUris) {
+      if (_totalBytes >= _MAX_TOTAL) { break; }
       const rel = path.relative(_wsRoot, uri.fsPath).replace(/\\/g, '/');
       try {
         const bytes = await vscode.workspace.fs.readFile(uri);
         let text = Buffer.from(bytes).toString('utf-8');
-        if (text.length > _MAX_FILE) { text = text.slice(0, _MAX_FILE) + `\n...（${rel} 已截斷，略去後半）`; }
+        if (text.length > _MAX_FILE) { text = text.slice(0, _MAX_FILE) + `\n...（${rel} 已截斷，僅顯示前段）`; }
         _totalBytes += text.length;
         _wsFileParts.push(`### ${rel}\n\`\`\`\n${text}\n\`\`\``);
       } catch { /* 略過無法讀取的二進位檔 */ }
     }
-    const _wsFileBlock = _wsFileParts.length > 0 ? `【工作區原始碼（${_wsFileParts.length} 檔）】\n\n${_wsFileParts.join('\n\n')}` : '';
-    this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `✅ 掃描完成，共 ${_wsFileParts.length} 個檔案（${Math.round(_totalBytes/1024)}KB）\n` });
+    const _wsFileBlock = [
+      _fileListBlock,
+      _wsFileParts.length > 0 ? `【原始碼內容（${_wsFileParts.length}/${_allRelPaths.length} 檔已讀取）】\n\n${_wsFileParts.join('\n\n')}` : ''
+    ].filter(Boolean).join('\n\n');
+    this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `✅ 掃描完成：找到 ${_allRelPaths.length} 個檔案，讀取 ${_wsFileParts.length} 個內容（${Math.round(_totalBytes/1024)}KB）\n` });
     const _wsContextParts = [
       `【工作區路徑】${_wsRoot}`,
       _teamsCtxContent ? `【teamscontext.md — 先前討論紀錄】\n${_teamsCtxContent}` : '',
@@ -3376,26 +3384,34 @@ export class OllamaChatPanel {
     // 掃描工作區所有原始碼
     const _mgrSKIP_EXT = new Set(['.png','.jpg','.jpeg','.gif','.ico','.svg','.woff','.woff2','.ttf','.eot','.vsix','.zip','.tar','.gz','.exe','.dll','.pdf','.db','.sqlite','.lock']);
     const _mgrSKIP_DIRS = '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/build/**,**/.vscode-test/**,**/coverage/**}';
-    const _mgrAllUris = await vscode.workspace.findFiles('**/*', _mgrSKIP_DIRS, 300);
+    // 上限提高至 2000，確保深層子目錄也能收集到；按路徑排序確保各子目錄均勻分布
+    const _mgrAllUris = await vscode.workspace.findFiles('**/*', _mgrSKIP_DIRS, 2000);
+    _mgrAllUris.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
+    // Pass 1：生成完整路徑清單（不論內容是否被讀取，AI 至少知道所有檔案存在）
+    const _mgrFilteredUris = _mgrAllUris.filter(uri => !_mgrSKIP_EXT.has(path.extname(uri.fsPath).toLowerCase()));
+    const _mgrAllRelPaths = _mgrFilteredUris.map(uri => path.relative(_mgrWsRoot, uri.fsPath).replace(/\\/g, '/'));
+    const _mgrFileListBlock = `【工作區檔案清單（${_mgrAllRelPaths.length} 個）】\n${_mgrAllRelPaths.map(p => `  - ${p}`).join('\n')}`;
+    // Pass 2：讀取原始碼內容（有上限；單檔降至 15KB 讓更多不同目錄的檔案納入）
     const _mgrFileParts: string[] = [];
     let _mgrTotalBytes = 0;
     const _mgrMAX_TOTAL = 120000;
-    const _mgrMAX_FILE = 30000;
-    for (const uri of _mgrAllUris) {
-      if (_mgrTotalBytes >= _mgrMAX_TOTAL) { _mgrFileParts.push('...（已達工作區上下文上限，略過剩餘檔案）'); break; }
-      const ext = path.extname(uri.fsPath).toLowerCase();
-      if (_mgrSKIP_EXT.has(ext)) { continue; }
+    const _mgrMAX_FILE = 15000;
+    for (const uri of _mgrFilteredUris) {
+      if (_mgrTotalBytes >= _mgrMAX_TOTAL) { break; }
       const rel = path.relative(_mgrWsRoot, uri.fsPath).replace(/\\/g, '/');
       try {
         const bytes = await vscode.workspace.fs.readFile(uri);
         let text = Buffer.from(bytes).toString('utf-8');
-        if (text.length > _mgrMAX_FILE) { text = text.slice(0, _mgrMAX_FILE) + `\n...（${rel} 已截斷）`; }
+        if (text.length > _mgrMAX_FILE) { text = text.slice(0, _mgrMAX_FILE) + `\n...（${rel} 已截斷，僅顯示前段）`; }
         _mgrTotalBytes += text.length;
         _mgrFileParts.push(`### ${rel}\n\`\`\`\n${text}\n\`\`\``);
       } catch { /* 略過二進位檔 */ }
     }
-    const _mgrWsFileBlock = _mgrFileParts.length > 0 ? `【工作區原始碼（${_mgrFileParts.length} 檔）】\n\n${_mgrFileParts.join('\n\n')}` : '';
-    this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `✅ 掃描完成，共 ${_mgrFileParts.length} 個檔案（${Math.round(_mgrTotalBytes/1024)}KB）\n` });
+    const _mgrWsFileBlock = [
+      _mgrFileListBlock,
+      _mgrFileParts.length > 0 ? `【原始碼內容（${_mgrFileParts.length}/${_mgrAllRelPaths.length} 檔已讀取）】\n\n${_mgrFileParts.join('\n\n')}` : ''
+    ].filter(Boolean).join('\n\n');
+    this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `✅ 掃描完成：找到 ${_mgrAllRelPaths.length} 個檔案，讀取 ${_mgrFileParts.length} 個內容（${Math.round(_mgrTotalBytes/1024)}KB）\n` });
     this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
     const _mgrWsContextParts = [
       `【工作區路徑】${_mgrWsRoot}`,
