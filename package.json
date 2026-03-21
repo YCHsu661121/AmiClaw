@@ -219,6 +219,21 @@
             "type": "number",
             "default": 8000,
             "description": "自動摘要觸發 token 閾值（預設 8000）。Agent 歷史估算 token 數超過此值時啟動摘要壓縮。建議設為模型 context window 的 50%-70%。"
+          },
+          "amiAiClaw.whatsappAccessToken": {
+            "type": "string",
+            "default": "",
+            "description": "Meta WhatsApp Business Cloud API 存取權杖（Access Token）。在 Meta for Developers → 你的 App → WhatsApp → API Setup 取得。請勿分享此設定。"
+          },
+          "amiAiClaw.whatsappPhoneNumberId": {
+            "type": "string",
+            "default": "",
+            "description": "WhatsApp Business 電話號碼 ID（Phone Number ID）。在 Meta for Developers → WhatsApp → API Setup 的「From」欄位下方取得，格式為純數字。"
+          },
+          "amiAiClaw.whatsappApiVersion": {
+            "type": "string",
+            "default": "v20.0",
+            "description": "Meta Graph API 版本（預設 v20.0）。建議使用 Meta 目前支援的最新穩定版本。"
           }
         }
       }

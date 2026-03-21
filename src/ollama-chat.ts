@@ -5742,6 +5742,123 @@ except Exception as e:
         ].join('\n');
         return rsReport.slice(0, 20000);
       }
+      case 'whatsapp_send': {
+        const waToCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const waToken = waToCfg.get<string>('whatsappAccessToken', '').trim();
+        const waPhoneId = waToCfg.get<string>('whatsappPhoneNumberId', '').trim();
+        const waApiVer = waToCfg.get<string>('whatsappApiVersion', 'v20.0').trim();
+        if (!waToken) return '請先在設定中配置 amiAiClaw.whatsappAccessToken（Meta WhatsApp Business 存取權斜殇）';
+        if (!waPhoneId) return '請先在設定中配置 amiAiClaw.whatsappPhoneNumberId（Meta 商業管理平台 Phone Number ID）';
+        const waTo = ((args.to as string) || '').replace(/[\s\-()]/g, '');
+        if (!waTo) return '請提供收件人電話號碼（to），含國碼，例如 +886912345678';
+        const waMsg = (args.message as string || '').trim();
+        if (!waMsg) return '請提供訊息內容（message）';
+        const waAllowed = await this.requestPermission('run', `發送 WhatsApp 訊息至 ${waTo}: ${waMsg.slice(0, 80)}`, 'whatsapp_send');
+        if (!waAllowed) return '使用者已拒絕發送 WhatsApp 訊息';
+        const waBody = JSON.stringify({
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: waTo,
+          type: 'text',
+          text: { preview_url: false, body: waMsg }
+        });
+        return new Promise<string>(resolve => {
+          const waBuf = Buffer.from(waBody, 'utf8');
+          const waOpts = {
+            hostname: 'graph.facebook.com',
+            port: 443,
+            path: `/${waApiVer}/${waPhoneId}/messages`,
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${waToken}`,
+              'Content-Type': 'application/json',
+              'Content-Length': waBuf.length
+            }
+          };
+          let waBufResp = '';
+          const waReq = https.request(waOpts, res => {
+            res.setEncoding('utf8');
+            res.on('data', (d: string) => { waBufResp += d; });
+            res.on('end', () => {
+              try {
+                const j = JSON.parse(waBufResp) as Record<string, unknown>;
+                if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                  const msgs = j.messages as Array<{ id: string }> | undefined;
+                  resolve(`✅ WhatsApp 訊息已發送成功至 ${waTo}${msgs?.[0]?.id ? ' (message_id: ' + msgs[0].id + ')' : ''}`);
+                } else {
+                  const err = j.error as Record<string, unknown> | undefined;
+                  resolve(`發送失敗 HTTP ${res.statusCode}: ${err?.message ?? waBufResp.slice(0, 300)}`);
+                }
+              } catch { resolve(`HTTP ${res.statusCode} 回應解析失敗: ${waBufResp.slice(0, 300)}`); }
+            });
+          });
+          waReq.on('error', (e: Error) => resolve(`網路錯誤: ${e.message}`));
+          waReq.setTimeout(15000, () => { waReq.destroy(); resolve('超時 (15s)'); });
+          waReq.write(waBuf);
+          waReq.end();
+        });
+      }
+      case 'whatsapp_send_template': {
+        const wtCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const wtToken = wtCfg.get<string>('whatsappAccessToken', '').trim();
+        const wtPhoneId = wtCfg.get<string>('whatsappPhoneNumberId', '').trim();
+        const wtApiVer = wtCfg.get<string>('whatsappApiVersion', 'v20.0').trim();
+        if (!wtToken) return '請先在設定中配置 amiAiClaw.whatsappAccessToken';
+        if (!wtPhoneId) return '請先在設定中配置 amiAiClaw.whatsappPhoneNumberId';
+        const wtTo = ((args.to as string) || '').replace(/[\s\-()]/g, '');
+        if (!wtTo) return '請提供收件人電話號碼（to）';
+        const wtTpl = (args.template_name as string || '').trim();
+        if (!wtTpl) return '請提供樣板名稱（template_name）';
+        const wtLang = (args.language_code as string || 'zh_TW').trim();
+        const wtParams = args.body_params as string[] | undefined;
+        const wtAllowed = await this.requestPermission('run', `發送 WhatsApp 樣板 [${wtTpl}] 至 ${wtTo}`, 'whatsapp_send_template');
+        if (!wtAllowed) return '使用者已拒絕發送 WhatsApp 樣板訊息';
+        const wtBodyComp: Record<string, unknown>[] = [];
+        if (wtParams && wtParams.length > 0) {
+          wtBodyComp.push({ type: 'body', parameters: wtParams.map(v => ({ type: 'text', text: v })) });
+        }
+        const wtPayload: Record<string, unknown> = {
+          messaging_product: 'whatsapp',
+          to: wtTo,
+          type: 'template',
+          template: {
+            name: wtTpl,
+            language: { code: wtLang },
+            ...(wtBodyComp.length > 0 ? { components: wtBodyComp } : {})
+          }
+        };
+        return new Promise<string>(resolve => {
+          const wtBuf = Buffer.from(JSON.stringify(wtPayload), 'utf8');
+          const wtOpts = {
+            hostname: 'graph.facebook.com',
+            port: 443,
+            path: `/${wtApiVer}/${wtPhoneId}/messages`,
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${wtToken}`, 'Content-Type': 'application/json', 'Content-Length': wtBuf.length }
+          };
+          let wtResp = '';
+          const wtReq = https.request(wtOpts, res => {
+            res.setEncoding('utf8');
+            res.on('data', (d: string) => { wtResp += d; });
+            res.on('end', () => {
+              try {
+                const j = JSON.parse(wtResp) as Record<string, unknown>;
+                if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                  const msgs = j.messages as Array<{ id: string }> | undefined;
+                  resolve(`✅ WhatsApp 樣板 [${wtTpl}] 已發送成功至 ${wtTo}${msgs?.[0]?.id ? ' (message_id: ' + msgs[0].id + ')' : ''}`);
+                } else {
+                  const err = j.error as Record<string, unknown> | undefined;
+                  resolve(`發送失敗 HTTP ${res.statusCode}: ${err?.message ?? wtResp.slice(0, 300)}`);
+                }
+              } catch { resolve(`HTTP ${res.statusCode} 回應解析失敗: ${wtResp.slice(0, 300)}`); }
+            });
+          });
+          wtReq.on('error', (e: Error) => resolve(`網路錯誤: ${e.message}`));
+          wtReq.setTimeout(15000, () => { wtReq.destroy(); resolve('超時 (15s)'); });
+          wtReq.write(wtBuf);
+          wtReq.end();
+        });
+      }
       default:
         return `未知工具: ${name}`;
     }
@@ -5859,10 +5976,12 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'browser_script', description: '執行 Python Playwright 自動化腳本（適合表單填寫、點擊、多步驟操作等複雜流程）。腳本中用 print() 輸出結果。需要 Python playwright。', parameters: { type: 'object', properties: { script: { type: 'string', description: 'Python playwright 腳本（sync_api），包含完整邏輯，用 print() 輸出結果' }, description: { type: 'string', description: '一行說明腳本用途（顯示在步驟列）' } }, required: ['script'] } } },
   { type: 'function', function: { name: 'generate_docs', description: '為專案或指定檔案自動產生 API 文件。自動偵測 TypeDoc（TypeScript）或 JSDoc（JavaScript），若都未安裝則嘗試 TypeDoc。', parameters: { type: 'object', properties: { path: { type: 'string', description: '要產生文件的原始碼檔案或目錄路徑（可選，預設工作區根目錄）' }, tool: { type: 'string', enum: ['auto', 'typedoc', 'jsdoc'], description: '文件工具（預設 auto，自動從 package.json 偵測）' }, output: { type: 'string', description: '輸出目錄名稱（預設 docs）' } }, required: [] } } },
   { type: 'function', function: { name: 'refactor_suggest', description: '讀取指定原始碼檔案，執行 ESLint 複雜度/品質分析，並回傳含行號的原始碼供 AI 提供重構建議。分析包含循環複雜度、函式長度、巢狀深度等指標。', parameters: { type: 'object', properties: { path: { type: 'string', description: '要分析的原始碼檔案路徑（必填）' }, focus: { type: 'string', enum: ['all', 'complexity', 'naming', 'duplication', 'solid'], description: '分析重點方向（預設 all，AI 會依此強調對應建議）' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'whatsapp_send', description: '透過 Meta WhatsApp Business Cloud API 發送文字訊息至指定手機號碼。適用於 24 小時內看過訊息的聯絡人。需要先在設定配置 whatsappAccessToken 和 whatsappPhoneNumberId。', parameters: { type: 'object', properties: { to: { type: 'string', description: '收件人手機號碼，必須含國碼，例如 +886912345678' }, message: { type: 'string', description: '要發送的文字訊息內容' } }, required: ['to', 'message'] } } },
+  { type: 'function', function: { name: 'whatsapp_send_template', description: '透過 Meta WhatsApp Business Cloud API 發送已審核的樣板訊息。適用於初次聯絡或 24 小時窗口外的訊息（不受 24 小時限制）。需要先建立並審核樣板。', parameters: { type: 'object', properties: { to: { type: 'string', description: '收件人手機號碼，必須含國碼' }, template_name: { type: 'string', description: 'Meta 商業管理平台已審核的樣板名稱' }, language_code: { type: 'string', description: '樣板語言碼（預設 zh_TW，可選 en_US、zh_CN 等）' }, body_params: { type: 'array', items: { type: 'string' }, description: '樣板主體 {{1}} {{2}} 參數列表（可選）' } }, required: ['to', 'template_name'] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_send: '💬', whatsapp_send_template: '📣' };
   return m[name] ?? '🔧';
 }
 
@@ -5904,6 +6023,8 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'browser_script': return `Playwright: ${(args.description as string) || (args.script as string || '').split('\n')[0].slice(0, 60)}`;
     case 'generate_docs': return `產生 API 文件: ${args.path || '(工作區)'} [${args.tool || 'auto'}] → ${args.output || 'docs'}`;
     case 'refactor_suggest': return `重構分析: ${args.path}${args.focus && args.focus !== 'all' ? ' (' + args.focus + ')' : ''}`;
+    case 'whatsapp_send': return `💬 WhatsApp 發送至 ${args.to}: ${(args.message as string || '').slice(0, 60)}`;
+    case 'whatsapp_send_template': return `📣 WhatsApp 樣板 [${args.template_name}] 至 ${args.to}`;
     default: return name;
   }
 }
