@@ -6987,10 +6987,15 @@ async function copilotChatCallWithCts(
 }
 
 function supportsThinking(model: string): boolean {
-  if (model.toLowerCase().includes('hf.co/')) return true; // HuggingFace 模型通常是現代模型
-  const m = model.toLowerCase().replace(/.*\//, ''); // strip hf.co/user/ prefix
+  // strip registry prefix (hf.co/user/) 後取純模型名稱
+  const m = model.toLowerCase().replace(/^hf\.co\/[^/]+\//i, '').replace(/^.*\//, '');
+  // 明確不支援 thinking 的關鍵字（coder / instruct 變體）
+  if (m.includes('coder') || m.includes('-instruct') || m.includes(':instruct')) { return false; }
+  // 明確支援 thinking 的模型
   return m.startsWith('deepseek-r1') || m.startsWith('deepseek-r2') ||
-    m.startsWith('qwq') || m.startsWith('qwen3') ||
+    m.startsWith('qwq') ||
+    // qwen3 只有 thinking 系列才支援，判斷方式：名稱不含 coder/instruct 且根模型就叫 qwen3
+    (m.startsWith('qwen3') && !m.includes('coder')) ||
     m.includes(':thinking') || m.includes('-thinking') ||
     m.includes('think') || m.includes('-r1') || m.includes(':r1') ||
     m.includes('r1-') || /^r1[:.-]/.test(m);
