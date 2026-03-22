@@ -4399,6 +4399,19 @@ ${historyText}
     const persona = cfg.get<string>('systemPrompt') ?? '';
     const ltm = this.getLongTermMemory();
     let content = persona.trim();
+
+    // 工作區資訊（每次對話固定注入）
+    const wsFolders = vscode.workspace.workspaceFolders ?? [];
+    const wsRoot = wsFolders.length > 0 ? wsFolders.map(f => f.uri.fsPath).join(', ') : process.cwd();
+    const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? '';
+    const openFiles = vscode.window.tabGroups?.activeTabGroup?.tabs
+      .map(t => (t.input as { uri?: vscode.Uri })?.uri?.fsPath ?? '')
+      .filter(Boolean) ?? [];
+    let wsInfo = `\n\n## 工作區資訊\n【工作區路徑】${wsRoot}`;
+    if (activeFile) { wsInfo += `\n【作用中檔案】${activeFile}`; }
+    if (openFiles.length) { wsInfo += `\n【開啟的檔案】\n` + openFiles.map(f => `  - ${f}`).join('\n'); }
+    content += wsInfo;
+
     if (ltm.trim()) {
       content += '\n\n## 長期記憶（關於使用者的重要資訊）\n' + ltm.trim();
     }
