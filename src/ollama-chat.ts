@@ -58,6 +58,7 @@ export class OllamaChatPanel {
   private _chatHistory: ChatMessage[] = this._chatHistories.default;
 
   private static log(msg: string): void {
+    if (!vscode.workspace.getConfiguration('amiAiClaw').get<boolean>('enableDebugLog', false)) { return; }
     if (!OllamaChatPanel._log) {
       OllamaChatPanel._log = vscode.window.createOutputChannel('AMI-AiClaw');
     }
