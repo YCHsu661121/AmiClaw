@@ -5693,6 +5693,65 @@ except Exception as e:
           });
         } finally { try { fs.unlinkSync(dbTmpFile); } catch { /* ignore */ } }
       }
+      case 'agentic_file_search': {
+        const afQuery = ((args.query as string) ?? '').trim();
+        if (!afQuery) return '請提供 query 參數';
+        const afInclude = (args.include as string) || '**/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,vue,svelte}';
+        const afTopK = Math.min(Math.max(Number(args.top_k) || 10, 1), 30);
+        // 從 query 中抽取關鍵字（切 camelCase/snake_case，小寫，去掉停用詞）
+        const afStopWords = new Set(['的','在','裡','中','使用','處理','負責','找出','哪個','檔案','函式','類別','實作','實現','相關','所有','一個','如何','為何','what','which','file','for','the','and','or','that','with','from','this','how','where','when']);
+        const afKeywords = afQuery
+          .replace(/([a-z])([A-Z])/g, '$1 $2') // camelCase
+          .replace(/[_\-./]/g, ' ')
+          .toLowerCase().split(/\s+/)
+          .filter(w => w.length >= 2 && !afStopWords.has(w));
+        const SKIP_BINARY = new Set(['.png','.jpg','.jpeg','.gif','.ico','.svg','.woff','.woff2','.ttf','.eot','.vsix','.zip','.tar','.gz','.exe','.dll','.pdf','.db','.sqlite','.lock','.wasm']);
+        // 宣告抽取：函式/類別/介面/const/export
+        const afDeclRe = /^(?:export\s+)?(?:(?:async\s+)?function\s+([\w$]+)|class\s+([\w$]+)|interface\s+([\w$]+)|type\s+([\w$]+)\s*=|(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[\w$]+)\s*=>|def\s+([\w_]+)|func\s+([\w_]+)|public\s+(?:static\s+)?(?:\w+\s+)?([\w_]+)\s*\()/m;
+        const afDeclReLines = /^\s*(?:export\s+)?(?:(?:async\s+)?function\*?\s+([\w$]+)|class\s+([\w$]+)|interface\s+([\w$]+)|type\s+([\w$]+)\s*(?:<[^>]*>)?\s*=|(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>|def\s+([\w_]+)|func\s+([\w_]+)\s*\(|public\s+(?:static\s+)?\S+\s+([\w_]+)\s*\()/;
+        const afAllUris = await vscode.workspace.findFiles(afInclude, '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/build/**}', 1000);
+        const afScores: { rel: string; score: number; decls: string[] }[] = [];
+        for (const uri of afAllUris) {
+          const ext = path.extname(uri.fsPath).toLowerCase();
+          if (SKIP_BINARY.has(ext)) continue;
+          const rel = path.relative(wsRoot, uri.fsPath).replace(/\\/g, '/');
+          // filename match
+          const relLower = rel.toLowerCase();
+          let score = afKeywords.reduce((s, kw) => s + (relLower.includes(kw) ? 3 : 0), 0);
+          let decls: string[] = [];
+          try {
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const text = Buffer.from(bytes).toString('utf8').slice(0, 60000);
+            const lines = text.split('\n');
+            for (let li = 0; li < lines.length; li++) {
+              const m2 = afDeclReLines.exec(lines[li]);
+              if (m2) {
+                const declName = m2.slice(1).find(Boolean) ?? '';
+                if (declName) decls.push(`L${li+1} ${declName}`);
+              }
+            }
+            // content keyword score
+            const contentLower = text.toLowerCase();
+            score += afKeywords.reduce((s, kw) => {
+              const occurrences = (contentLower.match(new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+              return s + Math.min(occurrences, 5);
+            }, 0);
+            // bonus: declaration name matches keyword
+            score += decls.reduce((s, d) => s + afKeywords.reduce((ss, kw) => ss + (d.toLowerCase().includes(kw) ? 4 : 0), 0), 0);
+          } catch { /* skip binary */ }
+          if (score > 0 || decls.length > 0) afScores.push({ rel, score, decls });
+        }
+        afScores.sort((a, b) => b.score - a.score);
+        const afTop = afScores.slice(0, afTopK);
+        if (afTop.length === 0) return `找不到與「${afQuery}」相關的檔案`;
+        const afOut = afTop.map((f, i) => {
+          const declStr = f.decls.length > 0
+            ? `\n  宣告: ${f.decls.slice(0, 20).join(', ')}${f.decls.length > 20 ? ` …(+${f.decls.length-20})` : ''}`
+            : '';
+          return `${i+1}. ${f.rel} (相關度:${f.score})${declStr}`;
+        }).join('\n');
+        return `=== 語意搜尋「${afQuery}」結果 (前 ${afTop.length}/${afScores.length} 個相關檔案) ===\n${afOut}`;
+      }
       case 'search_regex': {
         const pattern = (args.pattern as string || '').trim();
         if (!pattern) return '請提供 pattern 參數';
@@ -6426,6 +6485,7 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'http_request', description: '發送 HTTP 請求（GET/POST/PUT/DELETE/PATCH）並回傳回應內容。適合呼叫 REST API、切換 Webhook、測試端點。非 GET 請求需使用者確認。', parameters: { type: 'object', properties: { method: { type: 'string', enum: ['GET','POST','PUT','DELETE','PATCH','HEAD'], description: 'HTTP 方法（預設 GET）' }, url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, headers: { type: 'object', description: '自訂請求標頭（可選）', additionalProperties: { type: 'string' } }, body: { type: 'string', description: '請求本文（POST/PUT 用，JSON 字串或純文字）' }, timeout: { type: 'number', description: '超時毫秒（預設 15000）' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'db_query', description: '對 SQLite 資料庫執行 SQL 查詢（SELECT/INSERT/UPDATE/DELETE）並回傳結果表格。寫入操作需使用者確認。', parameters: { type: 'object', properties: { db_path: { type: 'string', description: 'SQLite 資料庫檔案路徑（.db 檔）' }, query: { type: 'string', description: '要執行的 SQL 語句' }, params: { type: 'array', items: {}, description: 'SQL 參數（防止 SQL injection，? 佔位符對應）' } }, required: ['db_path', 'query'] } } },
   { type: 'function', function: { name: 'search_regex', description: '使用正規表達式在工作區搜尋檔案內容。支援 glob 檔案樣式、大小寫、multiline 等 flag。', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'JavaScript 正規表達式字串（不包括 //）' }, include: { type: 'string', description: 'glob 檔案樣式（預設 **/*），如 **/*.ts' }, flags: { type: 'string', description: 'regex flags（預設 i，可用 g/i/m）' } }, required: ['pattern'] } } },
+  { type: 'function', function: { name: 'agentic_file_search', description: '智慧語意搜尋：根據自然語言描述找出最相關的原始碼檔案，並回傳每個檔案的函式/類別/介面/匯出宣告摘要。適合「找處理 authentication 的檔案」、「哪個檔案負責 WebSocket 連線」等情況，比 search_workspace 更能理解功能意圖。', parameters: { type: 'object', properties: { query: { type: 'string', description: '用自然語言描述你要找的功能或責任，例如「處理使用者登入的邏輯」' }, include: { type: 'string', description: 'glob 檔案樣式（預設 **/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h}）' }, top_k: { type: 'number', description: '回傳最相關的前 N 個檔案（預設 10，最多 30）' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'lint_fix', description: '對指定路徑的檔案或目錄執行 ESLint --fix 和/或 Prettier --write 修正程式碼風格問題', parameters: { type: 'object', properties: { path: { type: 'string', description: '要格式化的檔案或目錄路徑（可選，預設工作區根目錄）' }, tool: { type: 'string', enum: ['eslint', 'prettier', 'both'], description: '要執行的工具（預設 both）' } }, required: [] } } },
   { type: 'function', function: { name: 'run_tests', description: '執行專案測試套件（自動偵測 jest/vitest/mocha/pytest），回傳測試結果輸出', parameters: { type: 'object', properties: { path: { type: 'string', description: '測試目錄路徑（可選，預設工作區根目錄）' }, filter: { type: 'string', description: '測試名稱過濾（-t / -k pattern，可選）' } }, required: [] } } },
   { type: 'function', function: { name: 'browser_navigate', description: '使用 Playwright 無頭瀏覽器訪問網頁，回傳頁面標題、文字內容與連結清單。適合需要執行 JavaScript 的 SPA 或動態頁面（靜態頁面請用 fetch_url）。需要 Python playwright：pip install playwright && playwright install chromium', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, selector: { type: 'string', description: '等待此 CSS selector 出現後再擷取內容（可選）' }, wait_for: { type: 'string', enum: ['load', 'networkidle', 'domcontentloaded'], description: '等待頁面事件（預設 networkidle）' }, timeout_ms: { type: 'number', description: '超時毫秒（預設 20000，最大 60000）' } }, required: ['url'] } } },
@@ -6440,7 +6500,7 @@ const AGENT_TOOLS = [
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', agentic_file_search: '🧠', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊' };
   return m[name] ?? '🔧';
 }
 
@@ -6475,6 +6535,7 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'http_request': return `HTTP ${(args.method as string || 'GET').toUpperCase()}: ${args.url}`;
     case 'db_query': return `SQLite: ${(args.query as string || '').trim().slice(0, 60)}`;
     case 'search_regex': return `RegExp /${args.pattern}/${args.flags || 'i'}`;
+    case 'agentic_file_search': return `語意搜尋: ${args.query}${args.include ? ' [' + args.include + ']' : ''}`;
     case 'lint_fix': return `程式碼格式化: ${args.path || '.'} (${args.tool || 'both'})`;
     case 'run_tests': return `執行測試${args.filter ? ': ' + args.filter : args.path ? ' @ ' + args.path : ''}`;
     case 'browser_navigate': return `瀏覽器訪問: ${args.url}`;
