@@ -37,7 +37,8 @@
       "amiAiClaw": [
         {
           "id": "amiAiClaw.openChat",
-          "name": "聊天記錄"
+          "name": "聊天記錄",
+          "visibility": "hidden"
         }
       ]
     },
