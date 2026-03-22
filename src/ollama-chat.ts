@@ -895,8 +895,8 @@ export class OllamaChatPanel {
       (function(){
         var dp = document.createElement('pre');
         dp.id = 'debugPanel';
-        dp.style.cssText = 'display:block;position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.9);color:#f44;font-size:11px;padding:6px 10px;white-space:pre-wrap;font-family:Consolas,monospace;max-height:200px;overflow:auto;border-bottom:2px solid #f44;';
-        dp.textContent = 'Loading...';
+        dp.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.9);color:#f44;font-size:11px;padding:6px 10px;white-space:pre-wrap;font-family:Consolas,monospace;max-height:200px;overflow:auto;border-bottom:2px solid #f44;';
+        dp.textContent = '';
         document.body.appendChild(dp);
         window._debugLog = [];
         window.onerror = function(msg, src, line, col, err) {
