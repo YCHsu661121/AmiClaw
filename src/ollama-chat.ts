@@ -6923,11 +6923,39 @@ async function copilotChatCallWithCts(
   const lms = await vscode.lm.selectChatModels({ id: modelId });
   const lm = lms[0];
   if (!lm) { throw new Error(`Copilot 找不到模型: ${modelId}`); }
-  const vmMsgs = messages.map(m => {
-    const content = m.content ?? '';
-    if (m.role === 'assistant') { return vscode.LanguageModelChatMessage.Assistant(content); }
-    return vscode.LanguageModelChatMessage.User(content);
-  });
+
+  // 正確轉換每種 role 為 VS Code LM API 對應的 Part 型別
+  const vmMsgs: vscode.LanguageModelChatMessage[] = [];
+  for (const m of messages) {
+    if (m.role === 'system' || m.role === 'user') {
+      // system 沒有對應 role，以 User 訊息注入
+      vmMsgs.push(vscode.LanguageModelChatMessage.User(m.content ?? ''));
+    } else if (m.role === 'assistant') {
+      // 助手訊息可能同時含文字與工具呼叫（Claude Sonnet tool-use 格式）
+      const parts: (vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart)[] = [];
+      if (m.content) { parts.push(new vscode.LanguageModelTextPart(m.content)); }
+      for (const tc of m.tool_calls ?? []) {
+        const args = (typeof tc.function.arguments === 'string'
+          ? JSON.parse(tc.function.arguments)
+          : tc.function.arguments) as Record<string, unknown>;
+        parts.push(new vscode.LanguageModelToolCallPart(tc.id ?? tc.function.name, tc.function.name, args));
+      }
+      if (parts.length === 0) { parts.push(new vscode.LanguageModelTextPart('')); }
+      // 純文字時直接傳 string，避免不必要的 Part 包裝
+      vmMsgs.push(parts.length === 1 && parts[0] instanceof vscode.LanguageModelTextPart
+        ? vscode.LanguageModelChatMessage.Assistant(parts[0].value)
+        : vscode.LanguageModelChatMessage.Assistant(parts));
+    } else if (m.role === 'tool') {
+      // 工具執行結果：用 LanguageModelToolResultPart，讓 Claude Sonnet 正確對應 tool_call_id
+      vmMsgs.push(vscode.LanguageModelChatMessage.User([
+        new vscode.LanguageModelToolResultPart(
+          m.tool_call_id ?? '',
+          [new vscode.LanguageModelTextPart(m.content ?? '')]
+        )
+      ]));
+    }
+  }
+
   type OllamaTool = { function: { name: string; description: string; parameters: object } };
   const vmTools = (tools as OllamaTool[]).map(t => ({
     name: t.function.name,
