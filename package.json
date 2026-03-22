@@ -259,6 +259,7 @@
             "type": "boolean",
             "default": false,
             "description": "開啟延伸除錯日誌，輸出至 VS Code Output Channel \"AMI-AiClaw\"(視窗 → 輸出 → 下拉選 AMI-AiClaw)。無需時請保持關閉以避免額外計算負擔。"
+          }
         }
       }
     ]
