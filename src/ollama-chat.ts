@@ -3497,14 +3497,27 @@ export class OllamaChatPanel {
     const managerHist: { role: 'user' | 'assistant'; content: string }[] = [..._mgrBatchedInitHist];
     const memberHists: { role: 'user' | 'assistant'; content: string }[][] = memberModels.map(() => [..._mgrBatchedInitHist]);
 
-    // Helper：用各自 persona + 獨立 history 呼叫模型
+    // 工程師可使用的工具（讀取 + 寫入，不含破壞性操作）
+    const MGR_MEMBER_TOOLS = [
+      { type: 'function', function: { name: 'read_file',          description: '讀取工作區內的檔案內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '相對或絕對路徑' } }, required: ['path'] } } },
+      { type: 'function', function: { name: 'list_dir',           description: '列出目錄內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '目錄路徑' } }, required: [] } } },
+      { type: 'function', function: { name: 'search_workspace',   description: '在工作區中搜尋關鍵字', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },
+      { type: 'function', function: { name: 'agentic_file_search',description: '語意搜尋最相關的原始碼檔案並回傳宣告清單', parameters: { type: 'object', properties: { query: { type: 'string' }, include: { type: 'string' }, top_k: { type: 'number' } }, required: ['query'] } } },
+      { type: 'function', function: { name: 'write_file',         description: '寫入（建立/覆寫）檔案', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+      { type: 'function', function: { name: 'replace_in_file',    description: '在檔案中替換特定字串', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string' }, new_str: { type: 'string' } }, required: ['path', 'old_str', 'new_str'] } } },
+    ];
+    // 主任用工具（審核階段不需要寫入，但需要能讀取確認）
+    const MGR_MANAGER_TOOLS = MGR_MEMBER_TOOLS.filter(t => !['write_file','replace_in_file'].includes(t.function.name));
+
+    // Helper：用各自 persona + 獨立 history 呼叫模型，支援工具呼叫迴圈
     const callModel = async (
       model: string,
       persona: string,
       hist: { role: 'user' | 'assistant'; content: string }[],
       userMsg: string,
       onChunk: (c: string) => void,
-      onThink?: (c: string) => void
+      onThink?: (c: string) => void,
+      tools: unknown[] = []
     ): Promise<string> => {
       if (model.startsWith('copilot::')) {
         const family = model.slice('copilot::'.length);
@@ -3530,19 +3543,50 @@ export class OllamaChatPanel {
         } finally { clearInterval(cancelTimer); cts.dispose(); }
       } else {
         const { url, model: mName } = decodeOllamaModel(model, urls);
-        let thinkBuf = '';
-        let thinkTimer: ReturnType<typeof setTimeout> | null = null;
-        const flushThink = () => { if (thinkBuf && onThink) { onThink(thinkBuf); thinkBuf = ''; } thinkTimer = null; };
-        const messages: ChatMessage[] = [
-          { role: 'system', content: persona },
-          ...hist.map(h => ({ role: h.role as 'user' | 'assistant', content: h.content })),
-          { role: 'user', content: userMsg }
-        ];
-        const text = await ollamaChatStream(url, mName, messages, onChunk,
-          (tc) => { thinkBuf += tc; if (!thinkTimer) { thinkTimer = setTimeout(flushThink, 80); } },
-          (tokens) => { this.trackUsage(mName, tokens); });
-        if (thinkTimer) { clearTimeout(thinkTimer); } flushThink();
-        return text;
+        if (tools.length === 0) {
+          // 無工具：直接用串流
+          let thinkBuf = '';
+          let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+          const flushThink = () => { if (thinkBuf && onThink) { onThink(thinkBuf); thinkBuf = ''; } thinkTimer = null; };
+          const messages: ChatMessage[] = [
+            { role: 'system', content: persona },
+            ...hist.map(h => ({ role: h.role as 'user' | 'assistant', content: h.content })),
+            { role: 'user', content: userMsg }
+          ];
+          const text = await ollamaChatStream(url, mName, messages, onChunk,
+            (tc) => { thinkBuf += tc; if (!thinkTimer) { thinkTimer = setTimeout(flushThink, 80); } },
+            (tokens) => { this.trackUsage(mName, tokens); });
+          if (thinkTimer) { clearTimeout(thinkTimer); } flushThink();
+          return text;
+        } else {
+          // 有工具：tool-calling 迴圈（最多 12 輪）
+          const messages: ChatMessage[] = [
+            { role: 'system', content: persona },
+            ...hist.map(h => ({ role: h.role as 'user' | 'assistant', content: h.content })),
+            { role: 'user', content: userMsg }
+          ];
+          let finalText = '';
+          for (let _tLoop = 0; _tLoop < 12 && !this._teamCancel; _tLoop++) {
+            const assistantMsg = await ollamaChatCallStream(url, mName, messages, tools,
+              (tc) => { if (onThink && !this._teamCancel) onThink(tc); },
+              (tc) => { if (!this._teamCancel) { onChunk(tc); finalText += tc; } },
+              (tokens) => { this.trackUsage(mName, tokens); });
+            messages.push(assistantMsg as ChatMessage);
+            if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) { break; }
+            // 執行工具
+            for (const tc of assistantMsg.tool_calls) {
+              const fn = tc.function;
+              const args = typeof fn.arguments === 'string' ? (() => { try { return JSON.parse(fn.arguments as string); } catch { return {}; } })() : fn.arguments as Record<string, unknown>;
+              onChunk(`\n🔧 ${fn.name}(${JSON.stringify(args).slice(0, 80)})\n`);
+              let toolResult: string;
+              try { toolResult = await this.executeTool(fn.name, args); }
+              catch (e) { toolResult = `工具錯誤: ${e instanceof Error ? e.message : String(e)}`; }
+              onChunk(`→ ${toolResult.slice(0, 200)}${toolResult.length > 200 ? '…' : ''}\n`);
+              messages.push({ role: 'tool', content: toolResult, tool_call_id: tc.id ?? fn.name });
+            }
+          }
+          return finalText;
+        }
       }
     };
 
@@ -3611,7 +3655,8 @@ export class OllamaChatPanel {
     try {
       managerAnalysis = await callModel(managerModel, managerPersona, managerHist, p0,
         (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); } },
-        (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); } });
+        (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); } },
+        MGR_MANAGER_TOOLS);
     } catch (e) {
       managerAnalysis = '[主任架構計劃失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
       this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: managerAnalysis });
@@ -3634,14 +3679,15 @@ export class OllamaChatPanel {
         const id = `mgr_r${round}_m${mi}`;
         const color = COLORS[(mi + 1) % COLORS.length];
         const taskMsg = round === 0
-          ? `【主管架構分析與任務分配】\n${managerAnalysis}\n\n你是工程師 #${mi + 1}，請根據主管分配給你的工作項目，提出詳細的實作方案（含程式碼或步驟）：`
-          : `【主管第 ${round} 輪審核意見】\n${managerFeedback}\n\n請根據主管意見修改並改進你的方案：`;
+          ? `【主管架構分析與任務分配】\n${managerAnalysis}\n\n你是工程師 #${mi + 1}，請根據主管分配給你的工作項目，直接使用工具讀取相關檔案並實作（write_file / replace_in_file）。若模型不支援工具，請提出含完整程式碼的詳細方案：`
+          : `【主管第 ${round} 輪審核意見】\n${managerFeedback}\n\n請根據主管意見修改並改進，直接使用工具更新檔案：`;
         this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: memberDisplays[mi], color, task: `第 ${round + 1} 輪提案` });
         let proposal = '';
         try {
           proposal = await callModel(memberModels[mi], memberPersona(mi), memberHists[mi], taskMsg,
             (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); } },
-            (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: t }); } });
+            (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: t }); } },
+            MGR_MEMBER_TOOLS);
         } catch (e) {
           proposal = '[錯誤: ' + (e instanceof Error ? e.message : String(e)) + ']';
           this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: proposal });
