@@ -25,10 +25,11 @@
   "activationEvents": ["onCommand:amiAiClaw.chat", "onCommand:amiAiClaw.sendToChat", "onView:amiAiClaw.openChat"],
   "contributes": {
     "viewsContainers": {
-      "panel": [
+      "activitybar": [
         {
           "id": "amiAiClaw",
-          "title": "AMI-AiClaw"
+          "title": "AMI-AiClaw",
+          "icon": "media/ami-ai-claw-activity.svg"
         }
       ]
     },
