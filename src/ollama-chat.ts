@@ -3498,17 +3498,11 @@ export class OllamaChatPanel {
     const managerHist: { role: 'user' | 'assistant'; content: string }[] = [..._mgrBatchedInitHist];
     const memberHists: { role: 'user' | 'assistant'; content: string }[][] = memberModels.map(() => [..._mgrBatchedInitHist]);
 
-    // 工程師可使用的工具（讀取 + 寫入，不含破壞性操作）
-    const MGR_MEMBER_TOOLS = [
-      { type: 'function', function: { name: 'read_file',          description: '讀取工作區內的檔案內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '相對或絕對路徑' } }, required: ['path'] } } },
-      { type: 'function', function: { name: 'list_dir',           description: '列出目錄內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '目錄路徑' } }, required: [] } } },
-      { type: 'function', function: { name: 'search_workspace',   description: '在工作區中搜尋關鍵字', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },
-      { type: 'function', function: { name: 'agentic_file_search',description: '語意搜尋最相關的原始碼檔案並回傳宣告清單', parameters: { type: 'object', properties: { query: { type: 'string' }, include: { type: 'string' }, top_k: { type: 'number' } }, required: ['query'] } } },
-      { type: 'function', function: { name: 'write_file',         description: '寫入（建立/覆寫）檔案', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
-      { type: 'function', function: { name: 'replace_in_file',    description: '在檔案中替換特定字串', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string' }, new_str: { type: 'string' } }, required: ['path', 'old_str', 'new_str'] } } },
-    ];
-    // 主任用工具（審核階段不需要寫入，但需要能讀取確認）
-    const MGR_MANAGER_TOOLS = MGR_MEMBER_TOOLS.filter(t => !['write_file','replace_in_file'].includes(t.function.name));
+    // 工程師可使用與 Agent 模式完全相同的工具集
+    const MGR_MEMBER_TOOLS = AGENT_TOOLS;
+    // 主任用工具：與工程師相同，但排除寫入／執行／破壞性操作（唯讀審核）
+    const _MGR_WRITE_DENY = new Set(['write_file','replace_in_file','delete_file','create_dir','run_terminal','run_command','run_python','git_commit','lint_fix','jenkins_build','whatsapp_send','whatsapp_send_template','browser_script','jira_create','jira_transition','bb_create_pr']);
+    const MGR_MANAGER_TOOLS = AGENT_TOOLS.filter(t => !_MGR_WRITE_DENY.has(t.function.name));
 
     // Helper：用各自 persona + 獨立 history 呼叫模型，支援工具呼叫迴圈
     const callModel = async (
