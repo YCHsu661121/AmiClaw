@@ -30,6 +30,12 @@ export class OllamaChatPanel {
   private _waAgentMode = false;
   /** /model 指令切換的 WA Agent model（記憶體內，優先於設定檔） */
   private _waModelOverride = '';
+  /** 上次發送「正在忙碌」回覆的時間（ms），60s 內只回一次 */
+  private _waBusyRepliedAt = 0;
+  /** extension 主動發出的訊息文字集合：收到 fromMe echo 時略過，避免自觸 Agent */
+  private _waSentTexts = new Set<string>();
+  /** WhatsApp 連線建立的時間（ms），用於過濾連線前的歷史同步訊息 */
+  private _waConnectedAt = 0;
   private _agentMessagesBySession: Record<string, ChatMessage[]> = { default: [] };
   private _agentMessages: ChatMessage[] = this._agentMessagesBySession.default;
   private _agentTodos: { id: number; text: string; done: boolean }[] = [];
@@ -5221,6 +5227,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
               }
               if (connection === 'open') {
                 this._waConnected = true;
+                this._waConnectedAt = Date.now();
                 this._waConnecting = false;
                 try {
                   const creds = (sock as Record<string, unknown>)['authState'] as Record<string, unknown> | undefined;
@@ -5354,6 +5361,19 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     OllamaChatPanel.log(`WA _handleWaIncoming: text="${text.slice(0,50)}" msgKeys=${Object.keys(msgContent).join(',')}`);
     if (!text.trim()) { return; } // 非文字訊息（語音、貼圖等）忽略
 
+    // 過濾連線建立前的歷史同步訊息（type=append 歷史同步）：只處理連線後到達的訊息
+    const msgTs = Number(msg['messageTimestamp'] ?? 0) * 1000; // Baileys 時間戳是秒數
+    if (msgTs > 0 && this._waConnectedAt > 0 && msgTs < this._waConnectedAt - 3000) {
+      OllamaChatPanel.log(`WA _handleWaIncoming: skipping pre-connection message ts=${new Date(msgTs).toISOString()}`);
+      return;
+    }
+
+    // 若是 extension 自己送出訊息的 echo（fromMe=true），略過不處理
+    if (fromMe && this._waSentTexts.has(text)) {
+      OllamaChatPanel.log('WA _handleWaIncoming: skipping self-sent echo');
+      return;
+    }
+
     // ── /module 內建指令（優先於 Agent，白名單前處理）──────────────────────
     const trimmed = text.trim();
     if (/^\/(?:module|model|llm)\b/i.test(trimmed)) {
@@ -5385,18 +5405,35 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     // 自動送入 Agent 執行（若 agent 正在執行中則略過，避免衝突）
     if (this._agentRunning) {
       OllamaChatPanel.log('WA incoming: agent busy, skipping auto-run');
-      // 主動回覆告知對方正在忙碌
-      try {
-        if (this._waSock && remoteJid) {
-          await (this._waSock as Record<string, (j: string, m: Record<string, unknown>) => Promise<void>>)
-            .sendMessage(remoteJid, { text: '⏳ 我目前正在處理另一個任務，請稍候再試。' });
-        }
-      } catch (e) { OllamaChatPanel.log('WA busy-reply error: ' + String(e)); }
+      // 60 秒內只回一次「正在忙碌」，避免連續訊息洗版
+      const now = Date.now();
+      if (now - this._waBusyRepliedAt > 60_000) {
+        this._waBusyRepliedAt = now;
+        try {
+          if (this._waSock && remoteJid) {
+            const busyText = '[AmiClaw] ⏳ 我目前正在處理另一個任務，請稍候再試。';
+            this._waSentTexts.add(busyText);
+            setTimeout(() => { this._waSentTexts.delete(busyText); }, 30_000);
+            await (this._waSock as Record<string, (j: string, m: Record<string, unknown>) => Promise<void>>)
+              .sendMessage(remoteJid, { text: busyText });
+          }
+        } catch (e) { OllamaChatPanel.log('WA busy-reply error: ' + String(e)); }
+      }
       return;
     }
     // 優先使用 _waModelOverride（/model 指令記憶體內切換），其次 waAgentModel 設定，最後 fallback 到 UI 當前 model
     const waAgentModel = this._waModelOverride || pcfg.get<string>('waAgentModel', '') || pcfg.get<string>('model') || '';
     OllamaChatPanel.log(`WA incoming: using model="${waAgentModel}"`);
+    // 先回傳「正在思考」提示，讓對方知道已收到指令
+    try {
+      if (this._waSock && remoteJid) {
+        const thinkingText = '[AmiClaw] 🤔 收到指令，正在處理中…';
+        this._waSentTexts.add(thinkingText);
+        setTimeout(() => { this._waSentTexts.delete(thinkingText); }, 30_000);
+        await (this._waSock as Record<string, (j: string, m: Record<string, unknown>) => Promise<void>>)
+          .sendMessage(remoteJid, { text: thinkingText });
+      }
+    } catch (e) { OllamaChatPanel.log('WA thinking-reply error: ' + String(e)); }
     const agentPrompt = `[WhatsApp 指令，來自 ${displaySender}]\n${text}\n\n請處理此指令。處理完後，使用 whatsapp_send 將結果回覆給 +${senderPhone}。`;
     // waTriggered=true：工具執行時自動允許（不等待 UI 點擊）
     this.handleAgent(agentPrompt, waAgentModel || undefined, true, true).catch(e => OllamaChatPanel.log('WA agent error: ' + String(e)));
@@ -5416,10 +5453,13 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     const msgKey = msg['key'] as Record<string, unknown> | undefined;
     const replyJid = String(msgKey?.['remoteJid'] ?? '');
     const send = async (body: string) => {
+      const prefixed = body.startsWith('[AmiClaw]') ? body : `[AmiClaw] ${body}`;
       try {
         if (this._waSock && replyJid) {
+          this._waSentTexts.add(prefixed);
+          setTimeout(() => { this._waSentTexts.delete(prefixed); }, 30_000);
           await (this._waSock as Record<string, (j: string, m: Record<string, unknown>) => Promise<void>>)
-            .sendMessage(replyJid, { text: body });
+            .sendMessage(replyJid, { text: prefixed });
         }
       } catch (e) { OllamaChatPanel.log(`WA /module reply error: ${String(e)}`); }
     };
@@ -7074,6 +7114,7 @@ except Exception as e:
                   }
                   if (connection === 'open') {
                     this._waConnected = true;
+                    this._waConnectedAt = Date.now();
                     this._waConnecting = false;
                     // 取出自己的號碼並存到 globalState
                     try {
@@ -7219,13 +7260,15 @@ except Exception as e:
         if (!waTo) return '請提供收件人電話號碼（to），含國碼，例如 +886912345678';
         const waMsg = (args.message as string || '').trim();
         if (!waMsg) return '請提供訊息內容（message）';
-        const waAllowed = await this.requestPermission('run', `發送 WhatsApp 訊息至 ${waTo}: ${waMsg.slice(0, 80)}`, 'whatsapp_send');
+        // 加上 [AmiClaw] 標頭（若未包含）
+        const waMsgFinal = waMsg.startsWith('[AmiClaw]') ? waMsg : `[AmiClaw] ${waMsg}`;
+        const waAllowed = await this.requestPermission('run', `發送 WhatsApp 訊息至 ${waTo}: ${waMsgFinal.slice(0, 80)}`, 'whatsapp_send');
         if (!waAllowed) return '使用者已拒絕發送 WhatsApp 訊息';
         // --- WA Web (QR 綁定) 模式優先 ---
         if (this._waConnected && this._waSock) {
           try {
             const jid = `${waTo.replace(/^\+/, '')}@s.whatsapp.net`;
-            await (this._waSock as Record<string, (...a: unknown[]) => unknown>).sendMessage(jid, { text: waMsg });
+            await (this._waSock as Record<string, (...a: unknown[]) => unknown>).sendMessage(jid, { text: waMsgFinal });
             return `✅ WhatsApp 訊息已發送至 ${args.to as string}（透過 QR 綁定連線）`;
           } catch (e) { return `❌ 發送失敗：${String(e)}`; }
         }
@@ -7242,7 +7285,7 @@ except Exception as e:
           recipient_type: 'individual',
           to: waTo,
           type: 'text',
-          text: { preview_url: false, body: waMsg }
+          text: { preview_url: false, body: waMsgFinal }
         });
         return new Promise<string>(resolve => {
           const waBuf = Buffer.from(waBody, 'utf8');
