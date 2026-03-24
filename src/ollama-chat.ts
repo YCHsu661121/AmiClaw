@@ -5517,22 +5517,25 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           setTimeout(() => { this._waSentTexts.delete(prefixed); }, 30_000);
           await (this._waSock as Record<string, (j: string, m: Record<string, unknown>) => Promise<void>>)
             .sendMessage(replyJid, { text: prefixed });
+          OllamaChatPanel.log(`WA /module sent OK (${prefixed.length} chars) -> ${replyJid}`);
         }
       } catch (e) { OllamaChatPanel.log(`WA /module reply error: ${String(e)}`); }
     };
 
-    // 建立完整模型清單（Ollama + Copilot）
+    // 建立完整模型清單（Ollama + Copilot）— Ollama URLs 並行查詢
     const buildModuleList = async (): Promise<{ id: string; label: string }[]> => {
       const cfg = vscode.workspace.getConfiguration('amiAiClaw');
       const urls = getOllamaUrls(cfg);
+      OllamaChatPanel.log(`WA /module buildModuleList: ${urls.length} Ollama URL(s)`);
       const list: { id: string; label: string }[] = [];
-      for (const url of urls) {
-        try {
-          const models = await ollamaListModels(url);
-          for (const m of models) {
-            list.push({ id: encodeOllamaModelId(url, m, urls), label: ollamaDisplayLabel(url, m, urls) });
+      // 並行查詢所有 Ollama URLs（避免串行等待每個 8s timeout）
+      const results = await Promise.allSettled(urls.map(url => ollamaListModels(url).then(models => ({ url, models }))));
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          for (const m of r.value.models) {
+            list.push({ id: encodeOllamaModelId(r.value.url, m, urls), label: ollamaDisplayLabel(r.value.url, m, urls) });
           }
-        } catch { /* server offline */ }
+        }
       }
       try {
         const lms = await vscode.lm.selectChatModels({ vendor: 'copilot' });
@@ -5545,6 +5548,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           }
         }
       } catch { /* Copilot not available */ }
+      OllamaChatPanel.log(`WA /module buildModuleList: ${list.length} models total`);
       return list;
     };
 
