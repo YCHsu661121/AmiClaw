@@ -5436,12 +5436,15 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     const isLidJid = remoteJid.endsWith('@lid');
     // 去除 remoteJid 中的設備號 :N（如 886919327569:5@s.whatsapp.net → 886919327569）
     const rawSenderPhone = remoteJid.replace(/@.+/, '').replace(/:.*/, '');
+    const ownPhone = this._context.globalState.get<string>('amiAiClaw.waPhone', '');
     const senderPhone = (fromMe && isLidJid)
-      ? (this._context.globalState.get<string>('amiAiClaw.waPhone', '') || rawSenderPhone)
+      ? (ownPhone || rawSenderPhone)
       : rawSenderPhone;
+    // @lid JID 無法用於 sendMessage（靜默失敗）；改用自己的 @s.whatsapp.net JID
+    const sendJid = isLidJid && ownPhone ? `${ownPhone}@s.whatsapp.net` : remoteJid;
     const pushName = String(msg['pushName'] ?? '');
     const displaySender = pushName ? `${pushName} (+${senderPhone})` : `+${senderPhone}`;
-    OllamaChatPanel.log(`WA incoming from ${displaySender}${fromMe ? ' [note-to-self]' : ''}: ${text}`);
+    OllamaChatPanel.log(`WA incoming from ${displaySender}${fromMe ? ' [note-to-self]' : ''}: ${text} (sendJid=${sendJid})`);
     // 在聊天視窗顯示收到的訊息（panel 可能已關閉，try-catch 防止拋出）
     try { this._panel.webview.postMessage({ type: 'waIncoming', sender: displaySender, text, remoteJid }); } catch { /* disposed */ }
     // 白名單過濾：fromMe+@lid 必然是本人，直接放行；其他號碼需比對白名單
@@ -5460,12 +5463,12 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       if (now - this._waBusyRepliedAt > 60_000) {
         this._waBusyRepliedAt = now;
         try {
-          if (this._waSock && remoteJid) {
+          if (this._waSock && sendJid) {
             const busyText = '[AmiClaw] ⏳ 我目前正在處理另一個任務，請稍候再試。';
             this._waSentTexts.add(busyText);
             setTimeout(() => { this._waSentTexts.delete(busyText); }, 30_000);
             await (this._waSock as Record<string, (j: string, m: Record<string, unknown>) => Promise<void>>)
-              .sendMessage(remoteJid, { text: busyText });
+              .sendMessage(sendJid, { text: busyText });
           }
         } catch (e) { OllamaChatPanel.log('WA busy-reply error: ' + String(e)); }
       }
@@ -5476,12 +5479,12 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     OllamaChatPanel.log(`WA incoming: using model="${waAgentModel}"`);
     // 先回傳「正在思考」提示，讓對方知道已收到指令
     try {
-      if (this._waSock && remoteJid) {
+      if (this._waSock && sendJid) {
         const thinkingText = '[AmiClaw] 🤔 收到指令，正在處理中…';
         this._waSentTexts.add(thinkingText);
         setTimeout(() => { this._waSentTexts.delete(thinkingText); }, 30_000);
         await (this._waSock as Record<string, (j: string, m: Record<string, unknown>) => Promise<void>>)
-          .sendMessage(remoteJid, { text: thinkingText });
+          .sendMessage(sendJid, { text: thinkingText });
       }
     } catch (e) { OllamaChatPanel.log('WA thinking-reply error: ' + String(e)); }
     const agentPrompt = `[WhatsApp 指令，來自 ${displaySender}]\n${text}\n\n請處理此指令。處理完後，使用 whatsapp_send 將結果回覆給 +${senderPhone}。`;
