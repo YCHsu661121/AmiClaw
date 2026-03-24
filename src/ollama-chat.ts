@@ -5060,12 +5060,33 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         'if not ok: print(json.dumps({"error":"dpapi"})); sys.exit(1)',
         'mk=list(ctypes.string_at(ob.p,ob.n)); ctypes.windll.kernel32.LocalFree(ob.p)',
         'c=sqlite3.connect(db)',
-        'r=c.execute("SELECT value FROM ItemTable WHERE key=?",["atlassian.atlascode"]).fetchone()',
-        'if not r: print(json.dumps({"error":"no_state"})); sys.exit(1)',
-        'st=json.loads(r[0]); sites=st.get("jiraSites",[])',
+        // 嘗試多個 key 名稱，相容舊版 (v2.x) 與新版 (v3+) atlascode
+        'def find_sites(c):',
+        '    for k in ["atlassian.atlascode","atlassian.atlascode.v2","atlascode"]:', 
+        '        r=c.execute("SELECT value FROM ItemTable WHERE key=?",[k]).fetchone()',
+        '        if not r: continue',
+        '        d=json.loads(r[0])',
+        '        if isinstance(d,list) and d and isinstance(d[0],dict) and "baseApiUrl" in d[0]: return d',
+        '        if isinstance(d,dict):', 
+        '            for fld in ["jiraSites","jiraCloudSites","sites"]:',
+        '                lst=d.get(fld)',
+        '                if lst and isinstance(lst,list): return lst',
+        '    # 廣播搜尋包含 atlascode 的所有 key',
+        '    rows=c.execute("SELECT key,value FROM ItemTable WHERE key LIKE ?",["atlassian%"]).fetchall()',
+        '    for _,v in rows:',
+        '        try:',
+        '            d=json.loads(v)',
+        '            for fld in ["jiraSites","jiraCloudSites","sites"]:',
+        '                lst=d.get(fld,[]) if isinstance(d,dict) else []',
+        '                if lst and isinstance(lst[0],dict) and "baseApiUrl" in lst[0]: return lst',
+        '        except: pass',
+        '    return []',
+        'sites=find_sites(c)',
         'if not sites: print(json.dumps({"error":"no_sites"})); sys.exit(1)',
         's=sites[0]',
-        'ck=\'secret://{"extensionId":"atlassian.atlascode","key":"jira-\'+s["credentialId"]+\'"}\'',
+        'cred_id=s.get("credentialId","")',
+        'if not cred_id: print(json.dumps({"error":"no_cred_id"})); sys.exit(1)',
+        'ck=\'secret://{"extensionId":"atlassian.atlascode","key":"jira-\'+cred_id+\'"}\'',
         'er=c.execute("SELECT value FROM ItemTable WHERE key=?",[ck]).fetchone(); c.close()',
         'if not er: print(json.dumps({"error":"no_cred"})); sys.exit(1)',
         'ed=json.loads(er[0])',
@@ -6015,16 +6036,22 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         let authHeader2: string;
         const atlasAuth2 = await this.getAtlascodeJiraAuth();
         if (atlasAuth2) {
-          searchApiUrl = `${atlasAuth2.baseApiUrl}/api/2/search`;
+          searchApiUrl = `${atlasAuth2.baseApiUrl}/api/3/search`;  // v3 API（相容 v2）
           authHeader2 = `Bearer ${atlasAuth2.accessToken}`;
         } else {
           const jiraCfg2 = vscode.workspace.getConfiguration('amiAiClaw');
           const jiraBase2 = (jiraCfg2.get<string>('jiraBaseUrl') ?? '').replace(/\/$/, '');
           const jiraEmail2 = jiraCfg2.get<string>('jiraEmail') ?? '';
           const jiraPat2   = jiraCfg2.get<string>('jiraPat') ?? '';
-          if (!jiraBase2) return '找不到 Jira 設定，請確認 atlassian.atlascode 已登入或填寫 amiAiClaw.jiraBaseUrl';
-          if (!jiraPat2)  return '找不到 Jira 認證，請填寫 amiAiClaw.jiraPat';
-          searchApiUrl = `${jiraBase2}/rest/api/2/search`;
+          if (!jiraBase2) return [
+            '❌ Jira 認證失敗：找不到 atlassian.atlascode 登入資訊，也未設定手動認證。',
+            '請在 VS Code 設定中（Ctrl+, 搜尋 amiAiClaw）設定：',
+            '  amiAiClaw.jiraBaseUrl = "https://yourcompany.atlassian.net"',
+            '  amiAiClaw.jiraEmail   = "your@email.com"',
+            '  amiAiClaw.jiraPat     = "你的 Jira API Token（從 id.atlassian.com/manage-profile/security/api-tokens 產生）"',
+          ].join('\n');
+          if (!jiraPat2)  return '❌ Jira 認證失敗：amiAiClaw.jiraPat 未設定。請到 id.atlassian.com/manage-profile/security/api-tokens 產生 API Token 後填入.';
+          searchApiUrl = `${jiraBase2}/rest/api/3/search`;  // v3 API
           authHeader2 = jiraEmail2
             ? 'Basic ' + Buffer.from(`${jiraEmail2}:${jiraPat2}`).toString('base64')
             : 'Bearer ' + jiraPat2;
@@ -6051,10 +6078,20 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
                 if (res2.statusCode === 400) { resolve(`JQL 語法錯誤: ${data2.substring(0, 300)}`); return; }
                 if (res2.statusCode === 401 || res2.statusCode === 403) {
                   this._atlasJiraCred = null;
-                  resolve(`Jira 認證失敗 (HTTP ${res2.statusCode})，請確認 atlassian.atlascode 已登入。`);
+                  resolve(`❌ Jira 認證失敗 (HTTP ${res2.statusCode})。\n可能原因：(1) atlassian.atlascode 登入 token 已過期，請重新登入擴充功能；(2) API Token 無效，請至 id.atlassian.com/manage-profile/security/api-tokens 重新產生並更新 amiAiClaw.jiraPat。`);
                   return;
                 }
-                if (res2.statusCode !== 200) { resolve(`Jira Search API 回傳 HTTP ${res2.statusCode}: ${data2.substring(0, 200)}`); return; }
+                if (res2.statusCode === 410 || (res2.statusCode === 404 && data2.includes('removed'))) {
+                  // v3 API fallback: 若 v3 端點不存在，嘗試 v2
+                  const fallbackUrl = searchApiUrl.replace('/api/3/search', '/api/2/search');
+                  if (fallbackUrl !== searchApiUrl) {
+                    resolve(`⚠️ Jira API v3 端點回傳 ${res2.statusCode}，請嘗試在訊息中回覆「jira search fallback」以使用 v2 API。`);
+                  } else {
+                    resolve(`❌ Jira API 端點回傳 HTTP ${res2.statusCode}。請確認 amiAiClaw.jiraBaseUrl 設定正確。`);
+                  }
+                  return;
+                }
+                if (res2.statusCode !== 200) { resolve(`❌ Jira Search 失敗 HTTP ${res2.statusCode}：${data2.substring(0, 200)}\n（jiraBaseUrl=${searchApiUrl.split('/rest/')[0]}）`); return; }
                 try {
                   const j2 = JSON.parse(data2);
                   const issues2: Array<Record<string, unknown>> = j2.issues ?? [];
@@ -6088,20 +6125,18 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         let authHeader: string;
         const atlasAuth = await this.getAtlascodeJiraAuth();
         if (atlasAuth) {
-          // atlascode auth：baseApiUrl = https://api.atlassian.com/ex/jira/<id>/rest
           const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,attachment,created,updated';
-          issueApiUrl = `${atlasAuth.baseApiUrl}/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
+          issueApiUrl = `${atlasAuth.baseApiUrl}/api/3/issue/${fetchKey}?fields=${fieldsParam}`;
           authHeader = `Bearer ${atlasAuth.accessToken}`;
         } else {
-          // fallback：手動設定
           const jiraCfg = vscode.workspace.getConfiguration('amiAiClaw');
           const jiraBase = (jiraCfg.get<string>('jiraBaseUrl') ?? '').replace(/\/$/, '');
           const jiraEmail = jiraCfg.get<string>('jiraEmail') ?? '';
           const jiraPat = jiraCfg.get<string>('jiraPat') ?? '';
-          if (!jiraBase) return '找不到 atlassian.atlascode 登入資訊，請在 VS Code 設定中填寫 amiAiClaw.jiraBaseUrl';
-          if (!jiraPat)  return '找不到 atlassian.atlascode 登入資訊，請在 VS Code 設定中填寫 amiAiClaw.jiraPat';
+          if (!jiraBase) return '❌ Jira 認證失敗：找不到 atlassian.atlascode 登入資訊。請設定 amiAiClaw.jiraBaseUrl（例如 https://yourcompany.atlassian.net）及 amiAiClaw.jiraPat（Jira API Token）。';
+          if (!jiraPat)  return '❌ Jira 認證失敗：amiAiClaw.jiraPat 未設定。請至 id.atlassian.com/manage-profile/security/api-tokens 產生並設定。';
           const fieldsParam = 'summary,description,status,assignee,reporter,priority,issuetype,labels,comment,attachment,created,updated';
-          issueApiUrl = `${jiraBase}/rest/api/2/issue/${fetchKey}?fields=${fieldsParam}`;
+          issueApiUrl = `${jiraBase}/rest/api/3/issue/${fetchKey}?fields=${fieldsParam}`;
           authHeader = jiraEmail
             ? 'Basic ' + Buffer.from(`${jiraEmail}:${jiraPat}`).toString('base64')
             : 'Bearer ' + jiraPat;
@@ -6314,15 +6349,15 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           const ltBase = (ltCfg.get<string>('jiraBaseUrl') ?? '').replace(/\/$/, '');
           const ltEmail = ltCfg.get<string>('jiraEmail') ?? '';
           const ltPat = ltCfg.get<string>('jiraPat') ?? '';
-          if (!ltBase) return '找不到 Jira 設定，請確認 atlassian.atlascode 已登入或填寫 amiAiClaw.jiraBaseUrl';
-          if (!ltPat)  return '找不到 Jira 認證，請填寫 amiAiClaw.jiraPat';
+          if (!ltBase) return '❌ Jira 認證失敗：找不到 atlassian.atlascode 登入資訊。請設定 amiAiClaw.jiraBaseUrl 及 amiAiClaw.jiraPat（Jira API Token）。';
+          if (!ltPat)  return '❌ Jira 認證失敗：amiAiClaw.jiraPat 未設定。請至 id.atlassian.com/manage-profile/security/api-tokens 產生並設定。';
           ltApiBase = ltBase + '/rest';
           ltAuth = ltEmail
             ? 'Basic ' + Buffer.from(`${ltEmail}:${ltPat}`).toString('base64')
             : 'Bearer ' + ltPat;
         }
 
-        const worklogUrl = `${ltApiBase}/api/2/issue/${ltKey}/worklog`;
+        const worklogUrl = `${ltApiBase}/api/3/issue/${ltKey}/worklog`;  // v3 worklog API
         const worklogBody = JSON.stringify({
           timeSpentSeconds: Math.round(totalSeconds),
           started,
