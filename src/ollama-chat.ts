@@ -5497,8 +5497,15 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     OllamaChatPanel.log(`WA /module command: "${text}"`);
 
     // 取得回覆 JID（原訊息的 remoteJid）
+    // @lid JID 是 WhatsApp 隱私混淆 ID，sendMessage 到 @lid 靜默失敗；
+    // 改用自己的 @s.whatsapp.net JID（Note-to-self 模式）
     const msgKey = msg['key'] as Record<string, unknown> | undefined;
-    const replyJid = String(msgKey?.['remoteJid'] ?? '');
+    let replyJid = String(msgKey?.['remoteJid'] ?? '');
+    if (replyJid.endsWith('@lid')) {
+      const ownPhone = this._context.globalState.get<string>('amiAiClaw.waPhone', '');
+      if (ownPhone) replyJid = `${ownPhone}@s.whatsapp.net`;
+    }
+    OllamaChatPanel.log(`WA /module replyJid: ${replyJid}`);
     const send = async (body: string) => {
       const prefixed = body.startsWith('[AmiClaw]') ? body : `[AmiClaw] ${body}`;
       try {
