@@ -6062,7 +6062,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         let authHeader2: string;
         const atlasAuth2 = await this.getAtlascodeJiraAuth();
         if (atlasAuth2) {
-          searchApiUrl = `${atlasAuth2.baseApiUrl}/api/3/search`;  // v3 API（相容 v2）
+          searchApiUrl = `${atlasAuth2.baseApiUrl}/api/3/search/jql`;  // v3 search/jql API
           authHeader2 = `Bearer ${atlasAuth2.accessToken}`;
         } else {
           const jiraCfg2 = vscode.workspace.getConfiguration('amiAiClaw');
@@ -6077,7 +6077,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             '  amiAiClaw.jiraPat     = "你的 Jira API Token（從 id.atlassian.com/manage-profile/security/api-tokens 產生）"',
           ].join('\n');
           if (!jiraPat2)  return '❌ Jira 認證失敗：amiAiClaw.jiraPat 未設定。請到 id.atlassian.com/manage-profile/security/api-tokens 產生 API Token 後填入.';
-          searchApiUrl = `${jiraBase2}/rest/api/3/search`;  // v3 API
+          searchApiUrl = `${jiraBase2}/rest/api/3/search/jql`;  // v3 search/jql API
           authHeader2 = jiraEmail2
             ? 'Basic ' + Buffer.from(`${jiraEmail2}:${jiraPat2}`).toString('base64')
             : 'Bearer ' + jiraPat2;
@@ -6108,13 +6108,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
                   return;
                 }
                 if (res2.statusCode === 410 || (res2.statusCode === 404 && data2.includes('removed'))) {
-                  // v3 API fallback: 若 v3 端點不存在，嘗試 v2
-                  const fallbackUrl = searchApiUrl.replace('/api/3/search', '/api/2/search');
-                  if (fallbackUrl !== searchApiUrl) {
-                    resolve(`⚠️ Jira API v3 端點回傳 ${res2.statusCode}，請嘗試在訊息中回覆「jira search fallback」以使用 v2 API。`);
-                  } else {
-                    resolve(`❌ Jira API 端點回傳 HTTP ${res2.statusCode}。請確認 amiAiClaw.jiraBaseUrl 設定正確。`);
-                  }
+                  resolve(`❌ Jira Search API 端點已移除 (HTTP ${res2.statusCode})。請聯繫開發者更新擴充功能。`);
                   return;
                 }
                 if (res2.statusCode !== 200) { resolve(`❌ Jira Search 失敗 HTTP ${res2.statusCode}：${data2.substring(0, 200)}\n（jiraBaseUrl=${searchApiUrl.split('/rest/')[0]}）`); return; }
