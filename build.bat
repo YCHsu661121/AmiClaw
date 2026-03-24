@@ -56,8 +56,8 @@ IF "%HOSTROOT:~-1%"=="\" set "HOSTROOT=%HOSTROOT:~0,-1%"
 docker --version >nul 2>&1
 IF NOT ERRORLEVEL 1 (
   echo Using Docker to run npm commands inside node:20-slim
-  echo Installing dependencies - npm ci...
-  call docker run --rm -v "%HOSTROOT%:/workspace" -w /workspace node:20-slim sh -c "npm ci --no-audit --no-fund"
+  echo Installing dependencies - npm install...
+  call docker run --rm -v "%HOSTROOT%:/workspace" -w /workspace node:20-slim sh -c "apt-get update -qq && apt-get install -y --no-install-recommends git > /dev/null 2>&1 && npm install --no-audit --no-fund"
   IF ERRORLEVEL 1 GOTO fail
   echo Compiling TypeScript...
   call docker run --rm -v "%HOSTROOT%:/workspace" -w /workspace node:20-slim sh -c "npm run compile"
