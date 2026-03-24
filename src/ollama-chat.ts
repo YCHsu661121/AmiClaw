@@ -36,6 +36,8 @@ export class OllamaChatPanel {
   private _waSentTexts = new Set<string>();
   /** WhatsApp 連線建立的時間（ms），用於過濾連線前的歷史同步訊息 */
   private _waConnectedAt = 0;
+  /** 連續收到 440 connectionReplaced 的次數；超過 1 次即放棄重連（代表對方 session 仍存活） */
+  private _wa440RetryCount = 0;
   private _agentMessagesBySession: Record<string, ChatMessage[]> = { default: [] };
   private _agentMessages: ChatMessage[] = this._agentMessagesBySession.default;
   private _agentTodos: { id: number; text: string; done: boolean }[] = [];
@@ -5249,6 +5251,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
               if (connection === 'open') {
                 this._waConnected = true;
                 this._waConnectedAt = Date.now();
+                this._wa440RetryCount = 0;  // 連線成功，重置計數器
                 this._waConnecting = false;
                 try {
                   const creds = (sock as Record<string, unknown>)['authState'] as Record<string, unknown> | undefined;
@@ -5276,18 +5279,25 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
                 }
                 // 440 = connectionReplaced — 同一帳號在另一處開啟了 WA Web，等 30s 後重連
                 if (statusCode === 440) {
-                  OllamaChatPanel.log('WA auto-reconnect: connectionReplaced (440), will retry in 30s...');
+                  this._wa440RetryCount++;
+                  OllamaChatPanel.log(`WA auto-reconnect: connectionReplaced (440), retryCount=${this._wa440RetryCount}`);
                   this._waSock = null;
                   this._waConnected = false;
                   this._waConnecting = false;
                   this._panel.webview.postMessage({ type: 'waDisconnected' });
-                  setTimeout(() => {
-                    if (!this._waConnected && !this._waConnecting) {
-                      OllamaChatPanel.log('WA auto-reconnect: retrying after connectionReplaced...');
-                      this._waConnecting = true;
-                      startSock().catch(e2 => { this._waConnecting = false; OllamaChatPanel.log('WA auto-reconnect 440-retry err: ' + String(e2)); });
-                    }
-                  }, 30_000);
+                  if (this._wa440RetryCount <= 1) {
+                    // 第一次被踢：等 30s 後試一次（對方 tab 可能已關閉）
+                    OllamaChatPanel.log('WA auto-reconnect: will retry once in 30s...');
+                    setTimeout(() => {
+                      if (!this._waConnected && !this._waConnecting) {
+                        this._waConnecting = true;
+                        startSock().catch(e2 => { this._waConnecting = false; OllamaChatPanel.log('WA auto-reconnect 440-retry err: ' + String(e2)); });
+                      }
+                    }, 30_000);
+                  } else {
+                    // 重試也被踢：對方 session 仍存活，放棄不出跨註釋放
+                    OllamaChatPanel.log('WA auto-reconnect: another session still active, giving up to avoid loop (440x' + this._wa440RetryCount + ')');
+                  }
                   return;
                 }
                 this._waSock = null;
@@ -7166,6 +7176,7 @@ except Exception as e:
                   if (connection === 'open') {
                     this._waConnected = true;
                     this._waConnectedAt = Date.now();
+                    this._wa440RetryCount = 0;  // 連線成功，重置計數器
                     this._waConnecting = false;
                     // 取出自己的號碼並存到 globalState
                     try {
@@ -7203,17 +7214,20 @@ except Exception as e:
                     }
                     // 440 = connectionReplaced — 同一帳號在別處開啟 WA Web，等 30s 自動重連
                     if (statusCode === 440) {
-                      OllamaChatPanel.log('WA: connectionReplaced (440), will retry in 30s...');
+                      this._wa440RetryCount++;
+                      OllamaChatPanel.log(`WA: connectionReplaced (440), retryCount=${this._wa440RetryCount}`);
                       this._waSock = null;
                       this._waConnected = false;
                       this._waConnecting = false;
-                      this._panel.webview.postMessage({ type: 'waQrCode', imgDataUrl: '', statusMsg: '⚠️ WhatsApp 連線被其他裝置取代（440 connectionReplaced），30 秒後自動重連...' });
+                      this._panel.webview.postMessage({ type: 'waQrCode', imgDataUrl: '', statusMsg: `⚠️ WhatsApp 連線被其他裝置取代（440）${this._wa440RetryCount <= 1 ? '，30 秒後自動重連...' : '，對方 session 仍存活，停止重連。'}` });
                       setTimeout(() => {
                         this._panel.webview.postMessage({ type: 'waDisconnected' });
-                        if (!this._waConnected && !this._waConnecting && this._waSock === null) {
-                          OllamaChatPanel.log('WA: retrying after connectionReplaced...');
+                        if (this._wa440RetryCount <= 1 && !this._waConnected && !this._waConnecting && this._waSock === null) {
+                          OllamaChatPanel.log('WA: retrying once after connectionReplaced...');
                           this._waConnecting = true;
                           startSock().catch(e2 => { this._waConnecting = false; OllamaChatPanel.log('WA 440-retry error: ' + String(e2)); });
+                        } else if (this._wa440RetryCount > 1) {
+                          OllamaChatPanel.log('WA: another session still active, giving up to avoid loop (440x' + this._wa440RetryCount + ')');
                         }
                       }, 30_000);
                       return;
