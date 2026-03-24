@@ -5458,9 +5458,9 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     // 自動送入 Agent 執行（若 agent 正在執行中則略過，避免衝突）
     if (this._agentRunning) {
       OllamaChatPanel.log('WA incoming: agent busy, skipping auto-run');
-      // 60 秒內只回一次「正在忙碌」，避免連續訊息洗版
+      // fromMe（自己發給自己）不需要回「正在忙碌」，本人自知
       const now = Date.now();
-      if (now - this._waBusyRepliedAt > 60_000) {
+      if (!fromMe && now - this._waBusyRepliedAt > 60_000) {
         this._waBusyRepliedAt = now;
         try {
           if (this._waSock && sendJid) {
