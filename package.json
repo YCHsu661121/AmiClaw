@@ -13,16 +13,20 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -p . -w",
-    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ami-ai-claw.vsix --no-dependencies"
+    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ami-ai-claw.vsix"
   },
   "devDependencies": {
     "typescript": "^5.3.3",
     "@types/node": "^20.4.2",
     "@types/vscode": "^1.90.0",
+    "@types/qrcode": "^1.5.5",
     "vsce": "^2.12.0"
   },
-  "dependencies": {},
-  "activationEvents": ["onCommand:amiAiClaw.chat", "onCommand:amiAiClaw.sendToChat", "onView:amiAiClaw.openChat"],
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "qrcode": "^1.5.4"
+  },
+  "activationEvents": ["*", "onCommand:amiAiClaw.chat", "onCommand:amiAiClaw.sendToChat", "onView:amiAiClaw.openChat"],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -75,6 +79,11 @@
       {
         "command": "amiAiClaw.showAuditLog",
         "title": "AMI-AiClaw: 顯示稽核日誌"
+      },
+      {
+        "command": "amiAiClaw.jira",
+        "title": "AMI-AiClaw: Jira 快速指令",
+        "icon": "$(tasklist)"
       }
     ],
     "keybindings": [
@@ -89,6 +98,11 @@
         "key": "ctrl+l",
         "mac": "cmd+l",
         "when": "activeWebviewPanelId == 'amiAiClaw.chat'"
+      },
+      {
+        "command": "amiAiClaw.jira",
+        "key": "ctrl+shift+j",
+        "mac": "cmd+shift+j"
       }
     ],
     "menus": {
@@ -179,6 +193,22 @@
             "default": true,
             "description": "啟用敏感資訊過濾：自動偵測並遮蔽工具回傳中的 API key、JWT token、密碼等敏感內容，避免模型學習或外洩。"
           },
+          "amiAiClaw.agentAutoApproveWrite": {
+            "type": "boolean",
+            "default": false,
+            "description": "Agent 模式中自動允許鍪案寫入與變更（write_file、replace_in_file），不彈出確認提示。刪除與機密操作仍然需要確認。"
+          },
+          "amiAiClaw.waAgentAllowedSenders": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["886919327569"],
+            "description": "允許透過 WhatsApp 觸發 Agent 的號碼白名單（不含 + 號，例如 \"886919327569\"）。空陣列表示允許所有來源（不建議）。"
+          },
+          "amiAiClaw.waAgentModel": {
+            "type": "string",
+            "default": "",
+            "description": "WhatsApp 觸發 Agent 時使用的模型。支援 Ollama（如 qwen2.5:14b）、GitHub Copilot（如 copilot::gpt-4o）、OpenAI 相容（如 openai::http://host:port||modelname）。空白表示使用目前 UI 選擇的模型（amiAiClaw.model）。"
+          },
           "amiAiClaw.toolAlwaysAllow": {
             "type": "array",
             "items": { "type": "string" },
@@ -220,21 +250,6 @@
             "type": "number",
             "default": 8000,
             "description": "自動摘要觸發 token 閾值（預設 8000）。Agent 歷史估算 token 數超過此值時啟動摘要壓縮。建議設為模型 context window 的 50%-70%。"
-          },
-          "amiAiClaw.whatsappAccessToken": {
-            "type": "string",
-            "default": "",
-            "description": "Meta WhatsApp Business Cloud API 存取權杖（Access Token）。在 Meta for Developers → 你的 App → WhatsApp → API Setup 取得。請勿分享此設定。"
-          },
-          "amiAiClaw.whatsappPhoneNumberId": {
-            "type": "string",
-            "default": "",
-            "description": "WhatsApp Business 電話號碼 ID（Phone Number ID）。在 Meta for Developers → WhatsApp → API Setup 的「From」欄位下方取得，格式為純數字。"
-          },
-          "amiAiClaw.whatsappApiVersion": {
-            "type": "string",
-            "default": "v20.0",
-            "description": "Meta Graph API 版本（預設 v20.0）。建議使用 Meta 目前支援的最新穩定版本。"
           },
           "amiAiClaw.jenkinsUrl": {
             "type": "string",

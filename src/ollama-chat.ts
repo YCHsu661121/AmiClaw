@@ -26,11 +26,21 @@ export class OllamaChatPanel {
   private _streamMode = false;
   private _agentRunning = false;
   private _agentCancel = false;
+  /** WhatsApp 觸發 Agent 時為 true，requestPermission 自動允許（read/write/run），無需 UI 點擊 */
+  private _waAgentMode = false;
+  /** /model 指令切換的 WA Agent model（記憶體內，優先於設定檔） */
+  private _waModelOverride = '';
   private _agentMessagesBySession: Record<string, ChatMessage[]> = { default: [] };
   private _agentMessages: ChatMessage[] = this._agentMessagesBySession.default;
   private _agentTodos: { id: number; text: string; done: boolean }[] = [];
   private _teamCancel = false;
   private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
+  /** WhatsApp Web (Baileys) QR 綁定狀態 */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _waSock: any = null;
+  private _waConnected = false;
+  private _waConnecting = false;
+  private _waPendingQr: ((result: string) => void) | null = null;
   private _rovoDevCache: { url: string; token: string; expiry: number } | undefined = undefined;
   private _rovoDevNullUntil = 0;
   /** 寫入/刪除/執行 永遠允許集合（session 內持續）*/
@@ -158,6 +168,10 @@ export class OllamaChatPanel {
           case 'permissionResponse': {
             if (this._pendingPermission) {
               if (message.always) { this._alwaysAllow.add(message.category as string); }
+              // "本次全允許"：將常見類別全部加入 session allow
+              if (message.alwaysSession) {
+                for (const c of ['write', 'run', 'read', 'delete']) { this._alwaysAllow.add(c); }
+              }
               const resolve = this._pendingPermission;
               this._pendingPermission = null;
               resolve(!!message.allow);
@@ -180,6 +194,9 @@ export class OllamaChatPanel {
             break;
           case 'debateStop':
             this._teamCancel = true;
+            break;
+          case 'waDisconnect':
+            this.disconnectWhatsApp().catch(() => {});
             break;
           case 'switchChatSession':
             this.switchChatSession(message.sessionId);
@@ -408,6 +425,8 @@ export class OllamaChatPanel {
       const r2 = await _webview.postMessage({ type: 'connectionStatus', ok: connOk, url: connUrl, message: connMsg });
       OllamaChatPanel.log('postMessage connectionStatus delivered=' + r2);
     })().catch((e) => { OllamaChatPanel.log('Async IIFE error: ' + (e instanceof Error ? e.message : String(e))); });
+    // 等 webview 完全載入後，嘗試自動恢復 WhatsApp 連線（若有儲存的憑證）
+    setTimeout(() => { this._tryWaAutoReconnect().catch(() => {}); }, 3000);
   }
 
   /** Send any message to the webview from outside the class (e.g. from extension.ts commands) */
@@ -450,6 +469,32 @@ export class OllamaChatPanel {
     );
 
     OllamaChatPanel.currentPanel = new OllamaChatPanel(panel, context);
+  }
+
+  /**
+   * 静默建立（不顯示 panel，不切換焦點）—— VS Code 開啟時自動呼叫，目的是發動 WA 自動重連。
+   * 若 panel 已存在則跳過。
+   */
+  public static createSilent(context: vscode.ExtensionContext) {
+    if (OllamaChatPanel.currentPanel) { return; }
+    const panel = vscode.window.createWebviewPanel(
+      OllamaChatPanel.viewType,
+      'AMI-AiClaw',
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      { enableScripts: true, retainContextWhenHidden: true }
+    );
+    // 收起避免發出邊欄進來干擾使用者
+    panel.reveal(vscode.ViewColumn.Beside, true);
+    try { panel.dispose(); } catch { /* ignore */ }
+    // 重建用 preserveFocus=true + retainContext
+    const silentPanel = vscode.window.createWebviewPanel(
+      OllamaChatPanel.viewType,
+      'AMI-AiClaw',
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      { enableScripts: true, retainContextWhenHidden: true }
+    );
+    OllamaChatPanel.currentPanel = new OllamaChatPanel(silentPanel, context);
+    OllamaChatPanel.log('AMI-AiClaw 已在背景初始化，WhatsApp 自動重連 開始…');
   }
 
   private resolveSessionId(sessionId?: string): string {
@@ -530,8 +575,7 @@ export class OllamaChatPanel {
 <html>
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data: https:;">    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AMI-AiClaw</title>
     <style>
       *{box-sizing:border-box}
@@ -708,10 +752,26 @@ export class OllamaChatPanel {
       .perm-btn{font-size:12px;padding:4px 12px;border-radius:4px;border:1px solid;cursor:pointer;font-weight:600}
       .perm-btn-allow{background:rgba(0,180,0,0.18);border-color:rgba(0,200,0,0.5);color:var(--vscode-terminal-ansiGreen,#4ec94e)}
       .perm-btn-allow:hover{background:rgba(0,180,0,0.32)}
+      .perm-btn-session{background:rgba(0,120,255,0.18);border-color:rgba(0,140,255,0.5);color:var(--vscode-terminal-ansiBlue,#4e9ff5)}
+      .perm-btn-session:hover{background:rgba(0,120,255,0.32)}
       .perm-btn-always{background:rgba(0,122,204,0.2);border-color:rgba(0,140,240,0.5);color:#4fc1ff}
       .perm-btn-always:hover{background:rgba(0,122,204,0.32)}
       .perm-btn-deny{background:rgba(220,30,30,0.18);border-color:rgba(220,50,50,0.5);color:var(--vscode-terminal-ansiRed,#f87070)}
       .perm-btn-deny:hover{background:rgba(220,30,30,0.32)}
+      /* WhatsApp QR 綁定 */
+      #waQrModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:5000;align-items:center;justify-content:center}
+      #waQrModal.visible{display:flex}
+      #waQrBox{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border,rgba(128,128,128,0.3));border-radius:12px;padding:24px 28px;text-align:center;max-width:300px;width:100%}
+      #waQrBox h3{margin:0 0 6px;font-size:14px}
+      #waQrMsg{font-size:12px;color:var(--vscode-descriptionForeground);margin:4px 0 10px;line-height:1.4}
+      #waQrImg{width:220px;height:220px;object-fit:contain;border-radius:6px;background:#fff;padding:6px;margin:0 auto;display:none}
+      #waQrHint{font-size:11px;color:var(--vscode-descriptionForeground);margin:8px 0 10px;opacity:0.8}
+      #waQrCancelBtn{font-size:11px;padding:4px 14px;border-radius:4px;background:rgba(220,50,50,0.15);border:1px solid rgba(220,50,50,0.4);color:var(--vscode-terminal-ansiRed,#f87070);cursor:pointer}
+      #waQrCancelBtn:hover{background:rgba(220,50,50,0.28)}
+      /* WhatsApp 連線狀態 bar */
+      #waStatusBar{display:none;margin:3px 0;padding:4px 10px;background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.35);border-radius:6px;font-size:12px;align-items:center;justify-content:space-between}
+      #waStatusBar.visible{display:flex}
+      #waDiscBtn{font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(220,50,50,0.12);border:1px solid rgba(220,50,50,0.4);color:var(--vscode-terminal-ansiRed,#f87070);cursor:pointer}
       /* 程式碼語法高亮 token（深色主题） */
       .hl-kw{color:#569cd6;font-weight:500}.hl-str{color:#ce9178}.hl-cmt{color:#6a9955;font-style:italic}.hl-num{color:#b5cea8}.hl-fn{color:#dcdcaa}.hl-type{color:#4ec9b0}
       /* 淺色主题覆寫 */
@@ -827,10 +887,24 @@ export class OllamaChatPanel {
         <div id="permissionBtns">
           <button class="perm-btn perm-btn-allow" id="permAllow">✅ 允許（此次）</button>
           <button class="perm-btn perm-btn-always" id="permAlways">♾️ 永遠允許此類</button>
+          <button class="perm-btn perm-btn-session" id="permSession">🚀 本次全允許</button>
           <button class="perm-btn perm-btn-deny" id="permDeny">❌ 拒絕</button>
         </div>
       </div>
+      <div id="waStatusBar">
+        <span>💚 WhatsApp Web 已連線 <span id="waPhoneNum" style="font-weight:600;margin-left:4px"></span></span>
+        <button id="waDiscBtn">斷線</button>
+      </div>
       <div id="statusBar"></div>
+    </div>
+    <div id="waQrModal">
+      <div id="waQrBox">
+        <h3>&#x1F4F1; 掃描 QR Code 綁定 WhatsApp</h3>
+        <p id="waQrMsg">生成 QR Code 中，請稍候&#x2026;</p>
+        <img id="waQrImg" alt="QR Code" />
+        <p id="waQrHint">用 WhatsApp 手機 → 已連結的裝置 → 連結裝置 → 掃描</p>
+        <button id="waQrCancelBtn">&#x274C; 取消連線</button>
+      </div>
     </div>
     <div id="memModal">
       <div id="memBox">
@@ -932,7 +1006,7 @@ export class OllamaChatPanel {
           if (debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
           if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); if (statusBar && msg.tokens) { var _aML = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F'); statusBar.textContent = _aML + '\u2003\u2014\u2003~' + msg.tokens + ' tokens'; } }
           else if (msg.type === 'streamStart')   { _streamNode = null; /* dots stay until first thinkChunk/assistantChunk */ }
-          else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk); }
+          else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk, msg.model); }
           else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
           else if (msg.type === 'streamAbort')   { if (_streamNode && chat.contains(_streamNode)) { _streamNode.remove(); } _streamNode = null; }
           else if (msg.type === 'streamEnd')     { _agentStepNode = null; setSendEnabled(true);
@@ -1021,6 +1095,35 @@ export class OllamaChatPanel {
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
           else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm); }
+          else if (msg.type === 'waQrCode') {
+            var _wqm = document.getElementById('waQrModal');
+            var _wqi = document.getElementById('waQrImg');
+            var _wqmsg = document.getElementById('waQrMsg');
+            if (_wqm) _wqm.classList.add('visible');
+            if (_wqi) {
+              if (msg.imgDataUrl) { _wqi.src = msg.imgDataUrl; _wqi.style.display = 'block'; }
+              else { _wqi.style.display = 'none'; }
+            }
+            if (_wqmsg) _wqmsg.textContent = msg.statusMsg ||
+              (msg.imgDataUrl ? '✅ QR Code 已生成，請用 WhatsApp 手機掃描（60 秒內有效）' : '⏳ 生成 QR Code 中，請稍候…');
+          }
+          else if (msg.type === 'waConnected') {
+            var _wqm2 = document.getElementById('waQrModal');
+            if (_wqm2) _wqm2.classList.remove('visible');
+            var _wsb = document.getElementById('waStatusBar');
+            if (_wsb) _wsb.classList.add('visible');
+            var _wpn = document.getElementById('waPhoneNum');
+            if (_wpn && msg.phone) _wpn.textContent = msg.phone;
+          }
+          else if (msg.type === 'waDisconnected') {
+            var _wqm3 = document.getElementById('waQrModal');
+            if (_wqm3) _wqm3.classList.remove('visible');
+            var _wsb2 = document.getElementById('waStatusBar');
+            if (_wsb2) _wsb2.classList.remove('visible');
+          }
+          else if (msg.type === 'waIncoming') {
+            appendMessage('assistant', '\uD83D\uDCF2 WhatsApp \u4f86\u81ea \u300c' + (msg.sender||'') + '\u300d\uff1a ' + (msg.text||''));
+          }
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
@@ -1827,15 +1930,16 @@ export class OllamaChatPanel {
         return b;
       }
 
-      function appendThinkChunk(chunk) {
+      function appendThinkChunk(chunk, modelName) {
         clearPendingBubble();
         const bubble = getStreamBubble();
         let d = bubble.querySelector('details.think');
+        const _thinkLabel = modelName ? '\u{1F9E0} ' + modelName + ' \u601d\u8003\u4e2d\u2026' : '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
         if (!d) {
           d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
           const s = document.createElement('summary');
           const icon = document.createElement('span'); icon.className = 'think-icon pulse';
-          const label = document.createElement('span'); label.className = 'think-label'; label.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+          const label = document.createElement('span'); label.className = 'think-label'; label.textContent = _thinkLabel;
           s.appendChild(icon); s.appendChild(label);
           const p = document.createElement('pre'); p.className = 'think-stream';
           d.appendChild(s); d.appendChild(p); 
@@ -1843,19 +1947,21 @@ export class OllamaChatPanel {
           if (bubble.firstChild) { bubble.insertBefore(d, bubble.firstChild); } else { bubble.appendChild(d); }
           d._charCount = 0;
           d._thinkStart = Date.now();
+          d._thinkModelName = modelName || '';
           d._thinkTimer = setInterval(function() {
             if (!d.hasAttribute('open')) { clearInterval(d._thinkTimer); return; }
             const secs = Math.round((Date.now() - d._thinkStart) / 1000);
             const approxTok2 = Math.round((d._charCount || 0) / 4);
             const lbl2 = d.querySelector('.think-label');
-            if (lbl2) lbl2.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + approxTok2 + ' tokens, ' + secs + 's)';
+            const _lbl2 = d._thinkModelName ? '\u{1F9E0} ' + d._thinkModelName + ' \u601d\u8003\u4e2d\u2026' : '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+            if (lbl2) lbl2.textContent = _lbl2 + ' (~' + approxTok2 + ' tokens, ' + secs + 's)';
           }, 1000);
         }
         d._charCount = (d._charCount || 0) + chunk.length;
         const approxTok = Math.round(d._charCount / 4);
         const secs = Math.round((Date.now() - (d._thinkStart || Date.now())) / 1000);
         const lbl = d.querySelector('.think-label');
-        if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + approxTok + ' tokens, ' + secs + 's)';
+        if (lbl) lbl.textContent = _thinkLabel + ' (~' + approxTok + ' tokens, ' + secs + 's)';
         const p = d.querySelector('pre.think-stream');
         if (p) { p.textContent = (p.textContent || '') + chunk; p.scrollTop = p.scrollHeight; }
         chat.scrollTop = chat.scrollHeight;
@@ -1873,7 +1979,8 @@ export class OllamaChatPanel {
           const lbl = d.querySelector('.think-label');
           const approxTok = Math.round((d._charCount || 0) / 4);
           const totalSecs = Math.round((Date.now() - (d._thinkStart || Date.now())) / 1000);
-          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (~' + approxTok + ' tokens, \u8017\u6642 ' + totalSecs + 's)';
+          const _doneLabel = d._thinkModelName ? '\u{1F9E0} ' + d._thinkModelName + ' \u601d\u8003\u904e\u7a0b' : '\u{1F9E0} \u601d\u8003\u904e\u7a0b';
+          if (lbl) lbl.textContent = _doneLabel + ' (~' + approxTok + ' tokens, \u8017\u6642 ' + totalSecs + 's)';
         }
         let body = bubble.querySelector('.response-body');
         if (!body) { body = document.createElement('div'); body.className = 'response-body'; body.style.whiteSpace = 'pre-wrap'; bubble.appendChild(body); }
@@ -1927,16 +2034,18 @@ export class OllamaChatPanel {
         if (task) { var tl = document.createElement('div'); tl.className = 'team-task-label'; tl.textContent = '\uD83D\uDCCC ' + task; bub.appendChild(tl); }
         node.appendChild(bub);
         chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
-        _teamNodes[id] = { node: node, bubble: bub, status: st, thinkNode: null, responseNode: null, reviewNode: null, charCount: 0, thinkStart: null, thinkTimer: null };
+        _teamNodes[id] = { node: node, bubble: bub, status: st, thinkNode: null, responseNode: null, reviewNode: null, charCount: 0, thinkStart: null, thinkTimer: null, modelName: model };
       }
 
       function appendTeamThinkChunk(id, color, chunk) {
         var m = _teamNodes[id]; if (!m) return;
+        var _tmLabel = m.modelName ? '\u{1F9E0} ' + m.modelName + ' \u601d\u8003\u4e2d\u2026' : '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+        var _tmDone  = m.modelName ? '\u{1F9E0} ' + m.modelName + ' \u601d\u8003\u904e\u7a0b' : '\u{1F9E0} \u601d\u8003\u904e\u7a0b';
         if (!m.thinkNode) {
           var d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
           var s = document.createElement('summary');
           var icon = document.createElement('span'); icon.className = 'think-icon pulse'; icon.style.background = color;
-          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = _tmLabel;
           s.appendChild(icon); s.appendChild(lbl);
           var p = document.createElement('pre'); p.className = 'think-stream';
           d.appendChild(s); d.appendChild(p); m.bubble.appendChild(d);
@@ -1945,13 +2054,13 @@ export class OllamaChatPanel {
             if (!d.hasAttribute('open')) { clearInterval(m.thinkTimer); return; }
             var secs = Math.round((Date.now() - m.thinkStart) / 1000);
             var tok = Math.round((m.charCount || 0) / 4);
-            var l2 = d.querySelector('.think-label'); if (l2) l2.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + tok + ' tokens, ' + secs + 's)';
+            var l2 = d.querySelector('.think-label'); if (l2) l2.textContent = _tmLabel + ' (~' + tok + ' tokens, ' + secs + 's)';
           }, 1000);
         }
         m.charCount = (m.charCount || 0) + chunk.length;
         var tok = Math.round(m.charCount / 4);
         var secs = Math.round((Date.now() - (m.thinkStart || Date.now())) / 1000);
-        var ll = m.thinkNode.querySelector('.think-label'); if (ll) ll.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + tok + ' tokens, ' + secs + 's)';
+        var ll = m.thinkNode.querySelector('.think-label'); if (ll) ll.textContent = _tmLabel + ' (~' + tok + ' tokens, ' + secs + 's)';  
         var pre = m.thinkNode.querySelector('pre.think-stream'); if (pre) { pre.textContent += chunk; pre.scrollTop = pre.scrollHeight; }
         chat.scrollTop = chat.scrollHeight;
       }
@@ -1961,11 +2070,12 @@ export class OllamaChatPanel {
         if (m.thinkNode && m.thinkNode.hasAttribute('open')) {
           m.thinkNode.removeAttribute('open');
           if (m.thinkTimer) { clearInterval(m.thinkTimer); m.thinkTimer = null; }
-          var icon = m.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
-          var lbl = m.thinkNode.querySelector('.think-label');
-          var tok = Math.round((m.charCount || 0) / 4);
-          var secs = Math.round((Date.now() - (m.thinkStart || Date.now())) / 1000);
-          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (~' + tok + ' tokens, \u8017\u6642 ' + secs + 's)';
+          var icon2 = m.thinkNode.querySelector('.think-icon'); if (icon2) icon2.classList.remove('pulse');
+          var lbl2 = m.thinkNode.querySelector('.think-label');
+          var tok2 = Math.round((m.charCount || 0) / 4);
+          var secs2 = Math.round((Date.now() - (m.thinkStart || Date.now())) / 1000);
+          var _tmDone2 = m.modelName ? '\u{1F9E0} ' + m.modelName + ' \u601d\u8003\u904e\u7a0b' : '\u{1F9E0} \u601d\u8003\u904e\u7a0b';
+          if (lbl2) lbl2.textContent = _tmDone2 + ' (~' + tok2 + ' tokens, \u8017\u6642 ' + secs2 + 's)';
         }
         if (m.status) m.status.textContent = '\u56de\u7b54\u4e2d\u2026';
         if (!m.responseNode) {
@@ -2024,11 +2134,13 @@ export class OllamaChatPanel {
 
       function appendOrchestratorThinkChunk(chunk) {
         if (!_orchestratorNode) return;
+        var _orcName = _orchestratorModel || '';
+        var _orcLabel = _orcName ? '\u{1F9E0} ' + _orcName + ' \u601d\u8003\u4e2d\u2026' : '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
         if (!_orchestratorNode.thinkNode) {
           var d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
           var s = document.createElement('summary');
           var icon = document.createElement('span'); icon.className = 'think-icon pulse'; icon.style.background = '#f7cc65';
-          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = _orcLabel;
           s.appendChild(icon); s.appendChild(lbl);
           var p = document.createElement('pre'); p.className = 'think-stream';
           d.appendChild(s); d.appendChild(p);
@@ -2038,11 +2150,11 @@ export class OllamaChatPanel {
             if (!d.hasAttribute('open')) { clearInterval(_orchestratorNode.thinkTimer); return; }
             var secs = Math.round((Date.now() - _orchestratorNode.thinkStart) / 1000);
             var tok = Math.round((_orchestratorNode.thinkChars || 0) / 4);
-            var l2 = d.querySelector('.think-label'); if (l2) l2.textContent = '\u{1F9E0} \u601d\u8003\u4e2d\u2026 (~' + tok + ' tokens, ' + secs + 's)';
+            var l2 = d.querySelector('.think-label'); if (l2) l2.textContent = _orcLabel + ' (~' + tok + ' tokens, ' + secs + 's)';
           }, 1000);
         }
         _orchestratorNode.thinkChars = (_orchestratorNode.thinkChars || 0) + chunk.length;
-        var pre = _orchestratorNode.thinkNode.querySelector('pre.think-stream'); if (pre) { pre.textContent += chunk; pre.scrollTop = pre.scrollHeight; }
+        var orcPre = _orchestratorNode.thinkNode.querySelector('pre.think-stream'); if (orcPre) { orcPre.textContent += chunk; orcPre.scrollTop = orcPre.scrollHeight; }
         chat.scrollTop = chat.scrollHeight;
       }
 
@@ -2051,11 +2163,13 @@ export class OllamaChatPanel {
         if (_orchestratorNode.thinkNode && _orchestratorNode.thinkNode.hasAttribute('open')) {
           _orchestratorNode.thinkNode.removeAttribute('open');
           if (_orchestratorNode.thinkTimer) { clearInterval(_orchestratorNode.thinkTimer); _orchestratorNode.thinkTimer = null; }
-          var icon = _orchestratorNode.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
-          var lbl = _orchestratorNode.thinkNode.querySelector('.think-label');
-          var tok = Math.round((_orchestratorNode.thinkChars || 0) / 4);
-          var secs = Math.round((Date.now() - (_orchestratorNode.thinkStart || Date.now())) / 1000);
-          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (~' + tok + ' tokens, \u8017\u6642 ' + secs + 's)';
+          var orcIcon = _orchestratorNode.thinkNode.querySelector('.think-icon'); if (orcIcon) orcIcon.classList.remove('pulse');
+          var orcLbl = _orchestratorNode.thinkNode.querySelector('.think-label');
+          var orcTok = Math.round((_orchestratorNode.thinkChars || 0) / 4);
+          var orcSecs = Math.round((Date.now() - (_orchestratorNode.thinkStart || Date.now())) / 1000);
+          var _orcName2 = _orchestratorModel || '';
+          var _orcDone = _orcName2 ? '\u{1F9E0} ' + _orcName2 + ' \u601d\u8003\u904e\u7a0b' : '\u{1F9E0} \u601d\u8003\u904e\u7a0b';
+          if (orcLbl) orcLbl.textContent = _orcDone + ' (~' + orcTok + ' tokens, \u8017\u6642 ' + orcSecs + 's)';
         }
         _orchestratorNode.body.textContent += chunk;
         chat.scrollTop = chat.scrollHeight;
@@ -2686,10 +2800,25 @@ export class OllamaChatPanel {
         hidePermissionBar();
         vscode.postMessage({ type: 'permissionResponse', allow: true, always: true, category: cat });
       });
+      var permSession = document.getElementById('permSession');
+      if (permSession) permSession.addEventListener('click', function() {
+        hidePermissionBar();
+        vscode.postMessage({ type: 'permissionResponse', allow: true, always: false, alwaysSession: true, category: 'all' });
+      });
       if (permDeny) permDeny.addEventListener('click', function() {
         var cat = _currentPermCategory;
         hidePermissionBar();
         vscode.postMessage({ type: 'permissionResponse', allow: false, always: false, category: cat });
+      });
+
+      var waQrCancelBtn = document.getElementById('waQrCancelBtn');
+      if (waQrCancelBtn) waQrCancelBtn.addEventListener('click', function() {
+        var _wqm = document.getElementById('waQrModal'); if (_wqm) _wqm.classList.remove('visible');
+        vscode.postMessage({ type: 'waDisconnect' });
+      });
+      var waDiscBtn = document.getElementById('waDiscBtn');
+      if (waDiscBtn) waDiscBtn.addEventListener('click', function() {
+        vscode.postMessage({ type: 'waDisconnect' });
       });
 
       var debugBtnEl = document.getElementById('debugBtn');
@@ -2769,7 +2898,12 @@ export class OllamaChatPanel {
     const openFiles = vscode.workspace.textDocuments.filter(d => !d.isUntitled && d.uri.scheme === 'file').map(d => d.uri.fsPath);
     const wsContext = `【工作區】${wsRoot}${activeFile ? '\n【作用中檔案】' + activeFile : ''}${openFiles.length ? '\n【開啟的檔案】\n' + openFiles.join('\n') : ''}`;
     // Normalize copilot prefix for handleAgent: copilot/xxx → copilot::xxx
-    const normalizeForAgent = (m: string) => m.startsWith('copilot/') ? 'copilot::' + m.slice('copilot/'.length) : (m.includes('||') ? 'copilot::' + getWorkerModel(m) : m);
+    const normalizeForAgent = (m: string) => {
+      if (m.startsWith('copilot/')) return 'copilot::' + m.slice('copilot/'.length);
+      if (m.startsWith('openai::')) return m; // 保留 openai:: 前綴
+      if (m.includes('||') && !m.startsWith('openai::')) return getWorkerModel(m); // Ollama 多伺服器格式直接用 model
+      return m;
+    };
     const getDisplay = (m: string) => {
       if (m.startsWith('copilot/')) return '\uD83D\uDC19 ' + m.slice('copilot/'.length);
       if (m.startsWith('copilot::')) return '\uD83D\uDC19 ' + m.slice('copilot::'.length);
@@ -3501,7 +3635,7 @@ export class OllamaChatPanel {
     // 工程師可使用與 Agent 模式完全相同的工具集
     const MGR_MEMBER_TOOLS = AGENT_TOOLS;
     // 主任用工具：與工程師相同，但排除寫入／執行／破壞性操作（唯讀審核）
-    const _MGR_WRITE_DENY = new Set(['write_file','replace_in_file','delete_file','create_dir','run_terminal','run_command','run_python','git_commit','lint_fix','jenkins_build','whatsapp_send','whatsapp_send_template','browser_script','jira_create','jira_transition','bb_create_pr']);
+    const _MGR_WRITE_DENY = new Set(['write_file','replace_in_file','delete_file','create_dir','run_terminal','run_command','run_python','git_commit','lint_fix','jenkins_build','whatsapp_connect','whatsapp_disconnect','whatsapp_save_credentials','whatsapp_send','whatsapp_send_template','browser_script','jira_create','jira_transition','bb_create_pr']);
     const MGR_MANAGER_TOOLS = AGENT_TOOLS.filter(t => !_MGR_WRITE_DENY.has(t.function.name));
 
     // Helper：用各自 persona + 獨立 history 呼叫模型，支援工具呼叫迴圈
@@ -4263,14 +4397,15 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
-    const { url: baseUrl, model } = rawModel.startsWith('copilot') ? { url: urls[0], model: rawModel } : decodeOllamaModel(rawModel, urls);
+    const normalizedModel = rawModel.startsWith('copilot/') ? 'copilot::' + rawModel.slice('copilot/'.length) : rawModel;
+    const { url: baseUrl, model } = normalizedModel.startsWith('copilot::') ? { url: urls[0], model: normalizedModel } : decodeOllamaModel(normalizedModel, urls);
 
     // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
     await this.ensureModelReady(baseUrl, model);
 
     // Build a single prompt string from system + history + current message
     // (uses /api/generate which has confirmed thinking field support)
-    const systemContent = this.buildSystemContent();
+    const systemContent = this.buildSystemContent(false);
     const recent = this._chatHistory.slice(-20);
 
     let fullPrompt = '';
@@ -4388,7 +4523,7 @@ ${historyText}
     await this._context.globalState.update('amiAiClaw.longTermMemory', text);
   }
 
-  private buildSystemContent(): string {
+  private buildSystemContent(includeAtlassian = true): string {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const persona = cfg.get<string>('systemPrompt') ?? '';
     const ltm = this.getLongTermMemory();
@@ -4409,21 +4544,16 @@ ${historyText}
     if (ltm.trim()) {
       content += '\n\n## 長期記憶（關於使用者的重要資訊）\n' + ltm.trim();
     }
-    content += `\n\n## Atlassian 整合（atlassian.atlascode）
-\
-【強制規則—不得違反】
-\
-1. 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
-\
-2. 種類判斷與動作：
-\
-   - 「幫我分析 / RCA / 查看內容」任何分析許求 → 第一步必須立即呼叫 \`jira_fetch\`，取得內容後才可分析回答。
-\
-   - 「開啟 / 查看 / 顯示」 → 呼叫 \`jira_open\`（純 UI，不回傳內容）。
-\
-   - 建立 Issue → jira_create | 轉換狀態 → jira_transition | 開 PR → bb_create_pr | 問 Rovo Dev（AI 分析）→ rovo_ask（回傳回覆）
-\
-3. 【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖的語句而不實際呼叫工具。看到 Jira Key 就直接呼叫工具，立即執行，不詄語。`;
+    if (includeAtlassian) {
+      content += '\n\n## Atlassian 整合（atlassian.atlascode）\n' +
+        '【強制規則—不得違反】\n' +
+        '1. 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。\n' +
+        '2. 種類判斷與動作：\n' +
+        '   - 「幫我分析 / RCA / 查看內容」任何分析請求 → 第一步必須立即呼叫 `jira_fetch`，取得內容後才可分析回答。\n' +
+        '   - 「開啟 / 查看 / 顯示」 → 呼叫 `jira_open`（純 UI，不回傳內容）。\n' +
+        '   - 建立 Issue → jira_create | 轉換狀態 → jira_transition | 開 PR → bb_create_pr | 問 Rovo Dev（AI 分析）→ rovo_ask（回傳回覆）\n' +
+        '3. 【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖的語句而不實際呼叫工具。看到 Jira Key 就直接呼叫工具，立即執行，不囉嗦。';
+    }
     return content;
   }
 
@@ -4554,10 +4684,19 @@ ${historyText}
     const pcfg = vscode.workspace.getConfiguration('amiAiClaw');
     const alwaysAllowList = pcfg.get<string[]>('toolAlwaysAllow') ?? [];
     const alwaysConfirmList = pcfg.get<string[]>('toolAlwaysConfirm') ?? [];
+    const forceConfirm = toolName ? alwaysConfirmList.includes(toolName) : false;
+    // WhatsApp 觸發時：非 delete 類且未被 toolAlwaysConfirm 強制確認，自動允許（無人在螢幕前點擊）
+    if (this._waAgentMode && !forceConfirm && category !== 'delete') {
+      OllamaChatPanel.log(`WA agent: auto-allow tool category=${category} tool=${toolName || '(none)'}`);
+      return Promise.resolve(true);
+    }
+    // agentAutoApproveWrite 設定：自動允許 write_file / replace_in_file
+    if (pcfg.get<boolean>('agentAutoApproveWrite', false) && (category === 'write' || toolName === 'write_file' || toolName === 'replace_in_file')) {
+      return Promise.resolve(true);
+    }
     if ((toolName && alwaysAllowList.includes(toolName)) || alwaysAllowList.includes(category)) {
       return Promise.resolve(true);
     }
-    const forceConfirm = toolName ? alwaysConfirmList.includes(toolName) : false;
     if (!forceConfirm && this._alwaysAllow.has(category)) { return Promise.resolve(true); }
     return new Promise<boolean>((resolve) => {
       this._pendingPermission = resolve;
@@ -4565,16 +4704,30 @@ ${historyText}
     });
   }
 
-  private async handleAgent(userPrompt: string, modelOverride?: string, recordToShortTerm = true): Promise<void> {
+  private async handleAgent(userPrompt: string, modelOverride?: string, recordToShortTerm = true, waTriggered = false): Promise<void> {
     if (this._agentRunning) { vscode.window.showInformationMessage('Agent 已在執行中'); return; }
     this._agentRunning = true;
     this._agentCancel = false;
+    this._waAgentMode = waTriggered;
     this._panel.webview.postMessage({ type: 'agentStatus', running: true });
 
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
-    const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
-    const { url: baseUrl, model } = rawModel.startsWith('copilot') ? { url: urls[0], model: rawModel } : decodeOllamaModel(rawModel, urls);
+    // 使用 || 而非 ?? 以確保空字串也能 fallback 到預設值
+    const rawModel = modelOverride || cfg.get<string>('model') || 'llama3';
+    OllamaChatPanel.log(`handleAgent: rawModel="${rawModel}"`);
+    // Normalize copilot/xxx → copilot::xxx（統一格式，避免 isOllama 判斷錯誤）
+    const normalizedModel = rawModel.startsWith('copilot/') ? 'copilot::' + rawModel.slice('copilot/'.length) : rawModel;
+    const { url: baseUrl, model } = normalizedModel.startsWith('copilot::') ? { url: urls[0], model: normalizedModel } : decodeOllamaModel(normalizedModel, urls);
+    const isOpenAICompat = model.startsWith('openai::');
+    if (!model) {
+      const errMsg = 'Agent 模型未設定，請在 VS Code 設定中指定 amiAiClaw.model';
+      this._panel.webview.postMessage({ type: 'agentChunk', text: `\n**錯誤：${errMsg}**\n` });
+      this._agentRunning = false;
+      this._panel.webview.postMessage({ type: 'agentStatus', running: false });
+      return;
+    }
+    OllamaChatPanel.log(`handleAgent: decoded model="${model}" url="${baseUrl}"`);
 
     // 切換 Ollama 模型時先卸載舊模型並等待 VRAM 釋放
     await this.ensureModelReady(baseUrl, model);
@@ -4594,24 +4747,91 @@ ${historyText}
         role: 'system',
         content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。${activeFileStr}${openFilesStr}
 
-執行必違規則：
+## 執行鐵律
 - 不得說「我將」「我會」等宣告意圖而不實際呼叫工具。看到需求就直接呼叫對應工具，立即執行。
 - 不確定時優先查閱本地程式碼，而非假設或憑空生成。
+- 複雜任務先用 manage_todo 建立清單，逐步完成。
 
-執行策略：
-1. 先用 search_workspace 搜尋工作區中的檔案名稱、函式名稱、類別名稱等
-2. 讀取相關檔案確認實際內容
-3. 根據工作區實際程式碼進行修改或回答
+## 可用工具總覽
 
-## Atlassian 整合（atlassian.atlascode）【強制】
-訊息中出現 [A-Z][A-Z0-9]*-\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
+### 📁 檔案操作
+- get_active_file：取得目前編輯器開啟的檔案路徑與內容
+- read_file(path)：讀取工作區內的檔案內容
+- write_file(path, content)：建立或覆寫檔案
+- replace_in_file(path, old_str, new_str)：替換檔案中的特定字串（優先用此取代 write_file 做局部修改）
+- delete_file(path[, recursive])：刪除檔案或目錄
+- create_dir(path)：建立目錄（含中間目錄）
+- list_dir([path])：列出目錄內容，空白表示根目錄
+- read_workspace([include][, exclude][, max_file_kb][, max_total_kb])：遞迴讀取整個工作區所有原始碼，適合全域理解或跨檔案重構；大型 repo 請縮小 include 範圍
 
-【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖而不實際呼叫工具。
+### 🔍 搜尋
+- search_workspace(query)：以關鍵字搜尋檔案名稱與程式碼內容，處理任何問題前優先呼叫
+- search_regex(pattern[, include][, flags])：正規表達式搜尋工作區
+- agentic_file_search(query[, include][, top_k])：自然語言語意搜尋，找最相關的原始碼檔案
 
-工具選擇規則：
-- 任何分析 / RCA / 查看內容 → 第一步必須立即呼叫 jira_fetch，取得 Issue 內容後再回答
-- 開啟 VS Code 面板 → jira_open（純 UI，不回傳內容）
-- 建立 Issue → jira_create；轉換狀態 → jira_transition；開 PR → bb_create_pr；問 Rovo Dev（AI 分析，回傳回覆）→ rovo_ask
+### ⚡ 執行指令
+- run_terminal(command)：在 VS Code 終端機執行命令（無輸出捕獲，適合背景啟動）
+- run_command(command[, cwd])：執行指令並回傳 stdout+stderr（需要看結果時用此）
+- run_python(code[, description])：執行 Python 程式碼片段，print() 輸出結果
+
+### 🌐 網路 / 瀏覽器
+- fetch_url(url)：下載網頁內容（自動去除 HTML，適合靜態文件）
+- open_browser(url)：在 VS Code 簡易瀏覽器開啟網址
+- http_request(url[, method][, headers][, body][, timeout])：發送 HTTP 請求（GET/POST/PUT/DELETE/PATCH），非 GET 需確認
+- browser_navigate(url[, selector][, wait_for])：Playwright 無頭瀏覽器訪問 SPA 或動態頁面
+- browser_screenshot(url[, path][, selector])：無頭瀏覽器截圖存為 PNG
+- browser_script(script[, description])：執行 Playwright Python 自動化腳本
+
+### 🗃️ 資料庫
+- db_query(db_path, query[, params])：對 SQLite 執行 SQL（寫入需確認；用 ? 佔位符防注入）
+
+### 📊 Git
+- git_status([path])：取得工作區 Git 狀態
+- git_diff([file][, staged])：取得 Git diff
+- git_log([count][, file])：取得 commit 歷史
+- git_commit(message[, add_all])：建立 Git commit（預設 git add -A，需確認）
+
+### 🏗️ 程式碼品質
+- lint_fix([path][, tool])：ESLint --fix / Prettier --write
+- run_tests([path][, filter])：執行測試套件（jest/vitest/mocha/pytest）
+- refactor_suggest(path[, focus])：原始碼複雜度分析並提供重構建議
+- generate_docs([path][, tool][, output])：自動產生 API 文件（TypeDoc/JSDoc）
+
+### 🎫 Jira / Atlassian
+- jira_search(jql?, assignee?, reporter?, project?, status?, text?, max_results?)：搜尋 Jira Issues。常用 JQL 範例：
+  - 列出我的待辦：jql="assignee=currentUser() AND status!=Done ORDER BY updated DESC"
+  - 列出待 review：jql="status IN ('In Review','Code Review','PR Review') ORDER BY updated DESC"
+  - 列出某人的：assignee="displayName"
+- jira_log_time(issue_key, time_spent[, date][, comment])：記錄工時。例：time_spent="16h", date="today"
+- jira_fetch(issue_key)：【強制】直接呼叫 Jira REST API 取得完整 Issue 詳情，看到 Jira Key 就立即呼叫
+- jira_attachment_download(url[, filename])：下載 Jira 附件（ZIP 自動解壓縮）
+- jira_open(issue_key)：在 VS Code 開啟 Jira Issue UI 面板（純介面，不回傳內容）
+- jira_create([summary][, description])：開啟建立 Issue 面板
+- jira_transition(issue_key)：開啟 Issue 狀態轉換面板
+- bb_create_pr()：開啟 Bitbucket 建立 PR 面板
+- rovo_ask(question)：向 Atlassian Rovo Dev AI 提問並回傳回覆
+
+### 💬 WhatsApp
+- whatsapp_connect([force])：連接個人 WhatsApp（QR Code 或已儲存 session）
+- whatsapp_disconnect()：登出 WhatsApp Web
+- whatsapp_status()：查詢 WhatsApp 連線狀態
+- whatsapp_save_credentials(access_token, phone_number_id)：儲存 Meta WhatsApp Business API 憑證
+- whatsapp_send(to, message)：發送 WhatsApp 文字訊息
+- whatsapp_send_template(to, template_name[, language_code][, body_params])：發送樣板訊息
+
+### 🛠️ Jenkins
+- jenkins_build([job][, params][, wait])：觸發 Jenkins 建置
+- jenkins_status([job][, build_number][, include_log][, log_lines])：查詢 Build 狀態與 Console 輸出
+
+### 🎨 其他
+- vscode_action(action[, path][, line][, message][, command])：VS Code 操作（開檔、顯示通知、執行內建指令）
+- manage_todo(action[, text][, id])：Agent 內部任務清單（add/done/list/clear）
+
+## Atlassian 整合【強制規則】
+訊息中出現 [A-Z][A-Z0-9]*-\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key，必須立即呼叫 jira_fetch，禁止說「我將查詢」。
+- 分析 / RCA / 查看內容 → jira_fetch
+- 開啟 VS Code 面板 → jira_open
+- 建立 Issue → jira_create；轉換狀態 → jira_transition；開 PR → bb_create_pr；詢問 AI → rovo_ask
 ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
 
 請使用繁體中文回答，完成後告知使用者結果。`
@@ -4628,21 +4848,24 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     try {
       for (let step = 0; step < 20 && !this._agentCancel; step++) {
         let resp: ChatMessage | undefined;
-        const isOllama = !model.startsWith('copilot::');
+        const isOllama = !model.startsWith('copilot::') && !isOpenAICompat;
         // 主動摘要：每步開始前檢查進行上下文大小，超過閾値就自動壓縮
         await this._autoSummarizeHistory(model, baseUrl);
-        // Ollama: stream each call so thinking appears in real-time
-        if (isOllama) { this._panel.webview.postMessage({ type: 'streamStart' }); }
-        const onThinkCb = isOllama ? (c: string) => { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: c }); } : undefined;
-        const onTextCb  = isOllama ? (c: string) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk: c }); } : undefined;
-        const onStatsCb = isOllama ? (t: number, tps: number) => { this._panel.webview.postMessage({ type: 'streamStats', tokens: t, tps }); this.trackUsage(model, t); } : undefined;
+        // Ollama / OpenAI-compat: 串流即時顯示
+        if (isOllama || isOpenAICompat) { this._panel.webview.postMessage({ type: 'streamStart' }); }
+        const onThinkCb = isOllama ? (c: string) => { this._panel.webview.postMessage({ type: 'thinkChunk', chunk: c, model }); } : undefined;
+        const onTextCb  = (isOllama || isOpenAICompat) ? (c: string) => { this._panel.webview.postMessage({ type: 'assistantChunk', chunk: c }); } : undefined;
+        const onStatsCb = (isOllama || isOpenAICompat) ? (t: number, tps: number) => { this._panel.webview.postMessage({ type: 'streamStats', tokens: t, tps }); this.trackUsage(model, t); } : undefined;
+        const oaiModel = isOpenAICompat ? model.slice('openai::'.length) : model;
         try {
           resp = model.startsWith('copilot::')
             ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
-            : await ollamaChatCallStream(baseUrl, model, this._agentMessages, AGENT_TOOLS, onThinkCb, onTextCb, onStatsCb);
-          if (resp && !isOllama) { this.trackUsage(model, Math.ceil(estimateTokens(resp.content ?? '')), getCopilotMultiplierById(model.slice('copilot::'.length))); }
+            : isOpenAICompat
+              ? await openaiCompatChatCallStream(baseUrl, oaiModel, this._agentMessages, AGENT_TOOLS, onTextCb, onStatsCb)
+              : await ollamaChatCallStream(baseUrl, model, this._agentMessages, AGENT_TOOLS, onThinkCb, onTextCb, onStatsCb);
+          if (resp && !isOllama && !isOpenAICompat) { this.trackUsage(model, Math.ceil(estimateTokens(resp.content ?? '')), getCopilotMultiplierById(model.slice('copilot::'.length))); }
         } catch (e) {
-          if (isOllama) { this._panel.webview.postMessage({ type: 'streamAbort' }); }
+          if (isOllama || isOpenAICompat) { this._panel.webview.postMessage({ type: 'streamAbort' }); }
           const emsg = e instanceof Error ? e.message : String(e);
           if (/does not support tools/i.test(emsg)) {
             this._panel.webview.postMessage({ type: 'error', text: `模型 ${model} 不支援工具呼叫（tools API）。\nAgent 模式需要支援 tools 的模型，例如：qwen2.5:7b、llama3.1:8b、mistral-nemo。\n請在 AMI-AiClaw 設定中更換模型。` });
@@ -4650,10 +4873,12 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           }
           if (/token|limit|context|exceed/i.test(emsg) && this._agentMessages.length > 4) {
             await this._autoSummarizeHistory(model, baseUrl);
-            if (isOllama) { this._panel.webview.postMessage({ type: 'streamStart' }); }
+            if (isOllama || isOpenAICompat) { this._panel.webview.postMessage({ type: 'streamStart' }); }
             resp = model.startsWith('copilot::')
               ? await copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, AGENT_TOOLS)
-              : await ollamaChatCallStream(baseUrl, model, this._agentMessages, AGENT_TOOLS, onThinkCb, onTextCb, onStatsCb);
+              : isOpenAICompat
+                ? await openaiCompatChatCallStream(baseUrl, oaiModel, this._agentMessages, AGENT_TOOLS, onTextCb, onStatsCb)
+                : await ollamaChatCallStream(baseUrl, model, this._agentMessages, AGENT_TOOLS, onThinkCb, onTextCb, onStatsCb);
           } else {
             throw e;
           }
@@ -4728,6 +4953,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     } finally {
       this._agentRunning = false;
       this._agentCancel = false;
+      this._waAgentMode = false;
       this._panel.webview.postMessage({ type: 'agentStatus', running: false });
     }
   }
@@ -4747,7 +4973,12 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     const dropFallback = (r: ChatMessage[]) => {
       let trimmed = r;
       while (trimmed.length > 2 && estimateTokens((sys?.content ?? '') + trimmed.map(m => m.content ?? '').join('')) >= threshold) {
-        trimmed = trimmed.slice(2);
+        // 同時丟棄第一條訊息及其緊接的所有 tool 結果，避免孤立的 tool_result
+        let dropCount = 1;
+        while (dropCount < trimmed.length && trimmed[dropCount].role === 'tool') { dropCount++; }
+        trimmed = trimmed.slice(dropCount);
+        // 清除頭部任何孤立的 tool 訊息（其 assistant 已被丟棄）
+        while (trimmed.length > 0 && trimmed[0].role === 'tool') { trimmed = trimmed.slice(1); }
       }
       this._agentMessages = [sys, ...trimmed];
       this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
@@ -4755,9 +4986,12 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
 
     if (!enabled) { dropFallback(rest); return; }
 
-    // 保留最近4 則不壓縮，將其餘小結與 AI
-    const keepTail = rest.slice(-4);
-    const toSummarize = rest.slice(0, Math.max(rest.length - 4, 0));
+    // 保留最近4 則不壓縮，但分割點不能落在 tool 訊息中間（避免孤立的 tool_result）
+    let splitAt = Math.max(rest.length - 4, 0);
+    // 往前移動直到分割點不是 tool 訊息（其 assistant 已在 toSummarize 中）
+    while (splitAt > 0 && rest[splitAt].role === 'tool') { splitAt--; }
+    const keepTail = rest.slice(splitAt);
+    const toSummarize = rest.slice(0, splitAt);
     if (toSummarize.length < 2) { return; }
 
     this._panel.webview.postMessage({ type: 'agentStep', icon: '📝', title: `對話歷史過長（≈${total} tokens），自動摘要舊訊息中…`, fullPath: '' });
@@ -4769,7 +5003,9 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     try {
       const sResp = model.startsWith('copilot::')
         ? await copilotChatCallWithCts(model.slice('copilot::'.length), summaryMsgs, [])
-        : await ollamaChatCallStream(baseUrl, model, summaryMsgs, []);
+        : model.startsWith('openai::')
+          ? await openaiCompatChatCallStream(baseUrl, model.slice('openai::'.length), summaryMsgs, [])
+          : await ollamaChatCallStream(baseUrl, model, summaryMsgs, []);
       summary = (sResp?.content ?? '').trim();
     } catch { /* 摘要失敗，降級主動丟棄 */ }
 
@@ -4882,6 +5118,392 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     } catch (e) {
       OllamaChatPanel.log(`getAtlascodeJiraAuth error: ${e instanceof Error ? e.message : String(e)}`);
       return null;
+    }
+  }
+
+  /** 中斷 WhatsApp Web (Baileys) 連線，清除狀態並通知 webview。*/
+  private async disconnectWhatsApp(): Promise<void> {
+    const sock = this._waSock;
+    this._waSock = null;
+    this._waConnected = false;
+    this._waConnecting = false;
+    if (this._waPendingQr) {
+      this._waPendingQr('連線已取消');
+      this._waPendingQr = null;
+    }
+    if (sock) {
+      try { await sock.logout(); } catch { /* ignore */ }
+      try { sock.end(undefined); } catch { /* ignore */ }
+    }
+    this._panel.webview.postMessage({ type: 'waDisconnected' });
+  }
+
+  /**
+   * 若 globalStorage 裡有 wa-auth/creds.json，嘗試靜默重連 WhatsApp（不顯示 QR 面板）。
+   * 適用於 extension 重新啟動後自動恢復連線。
+   * 若憑證已失效（QR 需重新掃描），會靜默放棄，等使用者手動呼叫 whatsapp_connect。
+   */
+  private async _tryWaAutoReconnect(): Promise<void> {
+    const waAuthDir = path.join(this._context.globalStorageUri.fsPath, 'wa-auth');
+    const credsFile = path.join(waAuthDir, 'creds.json');
+    if (!fs.existsSync(credsFile)) { OllamaChatPanel.log('WA auto-reconnect: no saved creds, skipping'); return; }
+    if (this._waConnected || this._waConnecting) { OllamaChatPanel.log('WA auto-reconnect: already connected/connecting, skipping'); return; }
+    OllamaChatPanel.log('WA auto-reconnect: found saved creds, attempting silent reconnect...');
+    this._waConnecting = true;
+
+    let baileysPkgJsonPath: string;
+    try {
+      baileysPkgJsonPath = require.resolve('@whiskeysockets/baileys/package.json');
+    } catch {
+      OllamaChatPanel.log('WA auto-reconnect: Baileys not found, skipping');
+      this._waConnecting = false;
+      return;
+    }
+
+    try {
+      const baileysPkg = JSON.parse(fs.readFileSync(baileysPkgJsonPath, 'utf-8')) as {
+        exports?: Record<string, Record<string, string> | string>;
+        main?: string;
+      };
+      const baileysPkgDir = path.dirname(baileysPkgJsonPath);
+      const exportsEntry = baileysPkg.exports?.['.'];
+      const esmRelPath = (typeof exportsEntry === 'object'
+        ? exportsEntry['import'] ?? exportsEntry['default']
+        : exportsEntry) ?? baileysPkg.main ?? 'lib/index.js';
+      const baileyAbsPath = path.resolve(baileysPkgDir, esmRelPath);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const baileyUrl = (require('url') as typeof import('url')).pathToFileURL(baileyAbsPath).href;
+      // eslint-disable-next-line no-new-func
+      const esmImport = new Function('u', 'return import(u)') as (u: string) => Promise<unknown>;
+      esmImport(baileyUrl).then(async Baileys => {
+        try {
+          const makeWASocket = (Baileys as Record<string, unknown>)['makeWASocket'] as (opts: Record<string, unknown>) => Record<string, unknown>;
+          const useMultiFileAuthState = (Baileys as Record<string, unknown>)['useMultiFileAuthState'] as (dir: string) => Promise<{ state: unknown; saveCreds: () => void }>;
+          const DisconnectReason = (Baileys as Record<string, unknown>)['DisconnectReason'] as Record<string, number>;
+          const fetchLatestBaileysVersion = (Baileys as Record<string, unknown>)['fetchLatestBaileysVersion'] as () => Promise<{ version: [number, number, number]; isLatest: boolean }>;
+          const BrowsersHelper = (Baileys as Record<string, unknown>)['Browsers'] as Record<string, (s: string) => [string, string, string]> | undefined;
+          const DEFAULT_CFG = (Baileys as Record<string, unknown>)['DEFAULT_CONNECTION_CONFIG'] as { version?: [number, number, number] } | undefined;
+
+          const { state, saveCreds } = await useMultiFileAuthState(waAuthDir);
+          const defaultVersion: [number, number, number] = DEFAULT_CFG?.version ?? [2, 3000, 1023223821];
+          let waVersion: [number, number, number] = defaultVersion;
+          try {
+            const r = await fetchLatestBaileysVersion();
+            waVersion = r.version;
+          } catch { /* use Baileys default */ }
+
+          const noopLogger = { info: ()=>{}, debug: ()=>{}, trace: ()=>{}, warn: ()=>{}, error: ()=>{}, fatal: ()=>{}, silent: ()=>{}, level: 'silent', child: () => noopLogger };
+          const browserInfo = BrowsersHelper?.appropriate?.('Chrome') ?? BrowsersHelper?.ubuntu?.('Chrome') ?? ['Ubuntu', 'Chrome', '22.0.0'];
+
+          const startSock = async () => {
+            const sock = makeWASocket({
+              auth: state as Record<string, unknown>,
+              version: waVersion,
+              browser: browserInfo,
+              printQRInTerminal: false,
+              logger: noopLogger,
+              connectTimeoutMs: 60_000,
+            });
+            this._waSock = sock;
+            const sockEv = (sock as Record<string, unknown>)['ev'] as { on(event: string, handler: (...a: unknown[]) => void): void };
+
+            sockEv.on('connection.update', async (...evArgs: unknown[]) => {
+              const update = evArgs[0] as Record<string, unknown>;
+              const { connection, lastDisconnect, qr } = update as { connection?: string; lastDisconnect?: { error?: { output?: { statusCode?: number } } }; qr?: string };
+              OllamaChatPanel.log('WA auto-reconnect update: connection=' + connection + ' qr=' + (qr ? 'yes' : 'no'));
+              if (qr) {
+                // 有 QR 表示憑證已失效，靜默放棄（使用者需手動呼叫 whatsapp_connect）
+                OllamaChatPanel.log('WA auto-reconnect: QR needed, credentials expired, aborting silent reconnect');
+                this._waSock = null;
+                this._waConnecting = false;
+                try { (sock as Record<string, (...a: unknown[]) => unknown>)?.end?.(undefined); } catch { /* ignore */ }
+                return;
+              }
+              if (connection === 'open') {
+                this._waConnected = true;
+                this._waConnecting = false;
+                try {
+                  const creds = (sock as Record<string, unknown>)['authState'] as Record<string, unknown> | undefined;
+                  const meObj = ((creds?.['creds'] as Record<string, unknown> | undefined)?.['me']) as Record<string, unknown> | undefined;
+                  const meId: string = String(meObj?.['id'] ?? '') || '';
+                  const myPhone = meId.replace(/:.*/, '').replace(/@.*/, '');
+                  if (myPhone) {
+                    await this._context.globalState.update('amiAiClaw.waPhone', myPhone);
+                    OllamaChatPanel.log('WA auto-reconnect: connected! phone=+' + myPhone);
+                  }
+                  const savedPhone = this._context.globalState.get<string>('amiAiClaw.waPhone', '');
+                  this._panel.webview.postMessage({ type: 'waConnected', phone: savedPhone ? '+' + savedPhone : '' });
+                } catch {
+                  this._panel.webview.postMessage({ type: 'waConnected', phone: '' });
+                }
+              }
+              if (connection === 'close') {
+                const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
+                OllamaChatPanel.log('WA auto-reconnect close: code=' + statusCode);
+                if (statusCode === 515) {
+                  this._waSock = null;
+                  this._waConnected = false;
+                  setTimeout(() => { startSock().catch(e2 => OllamaChatPanel.log('WA auto-reconnect restart err: ' + String(e2))); }, 500);
+                  return;
+                }
+                this._waSock = null;
+                this._waConnected = false;
+                this._waConnecting = false;
+                if (statusCode === DisconnectReason.loggedOut) {
+                  try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch { /* ignore */ }
+                }
+                this._panel.webview.postMessage({ type: 'waDisconnected' });
+              }
+            });
+
+            sockEv.on('creds.update', saveCreds as (...a: unknown[]) => void);
+
+            sockEv.on('messages.upsert', async (...evArgs: unknown[]) => {
+              const upsert = evArgs[0] as { messages: Record<string, unknown>[]; type: string };
+              OllamaChatPanel.log(`WA upsert [auto-reconnect] type=${upsert.type} count=${upsert.messages?.length}`);
+              for (const msg of upsert.messages) {
+                const k = msg['key'] as Record<string,unknown> | undefined;
+                const fromMe = !!(k?.['fromMe']);
+                const remoteJid = String(k?.['remoteJid'] ?? '');
+                OllamaChatPanel.log(`WA msg: fromMe=${fromMe} jid=${remoteJid} type=${upsert.type}`);
+                if (upsert.type !== 'notify' && !fromMe) { continue; }
+                this._handleWaIncoming(msg).catch(e => OllamaChatPanel.log('WA handleIncoming error: ' + String(e)));
+              }
+            });
+          };
+
+          await startSock();
+          // 60 秒靜默重連逾時（若憑證有效應在 20s 內完成）
+          setTimeout(() => {
+            if (this._waConnecting) {
+              OllamaChatPanel.log('WA auto-reconnect: timed out (60s)');
+              try { (this._waSock as Record<string, (...a: unknown[]) => unknown>)?.end?.(undefined); } catch { /* ignore */ }
+              this._waSock = null;
+              this._waConnecting = false;
+            }
+          }, 60_000);
+        } catch (e) {
+          this._waConnecting = false;
+          OllamaChatPanel.log('WA auto-reconnect inner error: ' + String(e));
+        }
+      }).catch(e => {
+        this._waConnecting = false;
+        OllamaChatPanel.log('WA auto-reconnect Baileys load error: ' + String(e));
+      });
+    } catch (e) {
+      this._waConnecting = false;
+      OllamaChatPanel.log('WA auto-reconnect outer error: ' + String(e));
+    }
+  }
+
+  /**
+   * 處理 WhatsApp 收到的訊息：顯示在聊天視窗，並自動送入 Agent 執行。
+   * 由 messages.upsert 事件觸發（兩個 socket：whatsapp_connect 和 _tryWaAutoReconnect 共用）。
+   */
+  private async _handleWaIncoming(msg: Record<string, unknown>): Promise<void> {
+    const msgKey = msg['key'] as Record<string, unknown>;
+    const fromMe = !!(msg['key'] && msgKey['fromMe']);
+    const remoteJid = String(msgKey['remoteJid'] ?? '');
+    if (!remoteJid) { return; }
+    OllamaChatPanel.log(`WA _handleWaIncoming: fromMe=${fromMe} jid=${remoteJid}`);
+    // fromMe=true 表示自己送出的訊息；但若 remoteJid 是自己的號碼（Note to self），仍允許觸發 Agent
+    if (fromMe) {
+      let myPhone = this._context.globalState.get<string>('amiAiClaw.waPhone', '');
+      // remoteJid 可能含設備號 :N（如 886919327569:5@s.whatsapp.net），需一併去除
+      const remotePhone = remoteJid.replace(/@.+/, '').replace(/:.*/, '');
+      // 若 waPhone 尚未儲存（auto-reconnect 在 debug log 開啟前完成），嘗試從 socket 讀取
+      if (!myPhone && this._waSock) {
+        try {
+          const creds = (this._waSock as Record<string, unknown>)['authState'] as Record<string, unknown> | undefined;
+          const meObj = ((creds?.['creds'] as Record<string, unknown> | undefined)?.['me']) as Record<string, unknown> | undefined;
+          const meId = String(meObj?.['id'] ?? '');
+          myPhone = meId.replace(/:.*/, '').replace(/@.*/, '');
+          if (myPhone) {
+            void this._context.globalState.update('amiAiClaw.waPhone', myPhone);
+            OllamaChatPanel.log(`WA _handleWaIncoming: recovered waPhone=${myPhone}`);
+          }
+        } catch { /* ignore */ }
+      }
+      OllamaChatPanel.log(`WA _handleWaIncoming: myPhone=${myPhone} remotePhone=${remotePhone}`);
+      // @lid 是 WhatsApp LID 格式（隱私保護的混淆 ID），fromMe=true 時必然是自己的設備，直接放行
+      const isLid = remoteJid.endsWith('@lid');
+      if (!isLid && (!myPhone || remotePhone !== myPhone)) { return; } // 發給別人的訊息：忽略
+      // Note to self：繼續往下處理
+    }
+    let msgContent = msg['message'] as Record<string, unknown> | undefined;
+    if (!msgContent) {
+      OllamaChatPanel.log(`WA _handleWaIncoming: no msgContent, keys=${Object.keys(msg).join(',')}`);
+      return;
+    }
+    // Note-to-self 訊息可能包在 deviceSentMessage 裡
+    if (msgContent['deviceSentMessage']) {
+      const dsm = msgContent['deviceSentMessage'] as Record<string, unknown> | undefined;
+      const inner = dsm?.['message'] as Record<string, unknown> | undefined;
+      if (inner) {
+        OllamaChatPanel.log('WA _handleWaIncoming: unwrapping deviceSentMessage');
+        msgContent = inner;
+      }
+    }
+    // 取出文字內容（支援各種訊息類型）
+    const text: string =
+      String(msgContent['conversation'] ?? '') ||
+      String((msgContent['extendedTextMessage'] as Record<string, unknown> | undefined)?.['text'] ?? '') ||
+      String((msgContent['imageMessage'] as Record<string, unknown> | undefined)?.['caption'] ?? '') ||
+      String((msgContent['videoMessage'] as Record<string, unknown> | undefined)?.['caption'] ?? '') ||
+      '';
+    OllamaChatPanel.log(`WA _handleWaIncoming: text="${text.slice(0,50)}" msgKeys=${Object.keys(msgContent).join(',')}`);
+    if (!text.trim()) { return; } // 非文字訊息（語音、貼圖等）忽略
+
+    // ── /module 內建指令（優先於 Agent，白名單前處理）──────────────────────
+    const trimmed = text.trim();
+    if (/^\/(?:module|model|llm)\b/i.test(trimmed)) {
+      await this._handleWaModuleCommand(trimmed, msg);
+      return;
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
+    // @lid 是 WhatsApp 隱私混淆 ID，fromMe=true 時必然是自己，senderPhone 改用已知的 myPhone
+    const isLidJid = remoteJid.endsWith('@lid');
+    // 去除 remoteJid 中的設備號 :N（如 886919327569:5@s.whatsapp.net → 886919327569）
+    const rawSenderPhone = remoteJid.replace(/@.+/, '').replace(/:.*/, '');
+    const senderPhone = (fromMe && isLidJid)
+      ? (this._context.globalState.get<string>('amiAiClaw.waPhone', '') || rawSenderPhone)
+      : rawSenderPhone;
+    const pushName = String(msg['pushName'] ?? '');
+    const displaySender = pushName ? `${pushName} (+${senderPhone})` : `+${senderPhone}`;
+    OllamaChatPanel.log(`WA incoming from ${displaySender}${fromMe ? ' [note-to-self]' : ''}: ${text}`);
+    // 在聊天視窗顯示收到的訊息
+    this._panel.webview.postMessage({ type: 'waIncoming', sender: displaySender, text, remoteJid });
+    // 白名單過濾：fromMe+@lid 必然是本人，直接放行；其他號碼需比對白名單
+    const pcfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const allowedSenders = pcfg.get<string[]>('waAgentAllowedSenders', []);
+    const skipWhitelist = fromMe && isLidJid;
+    if (!skipWhitelist && allowedSenders.length > 0 && !allowedSenders.includes(senderPhone)) {
+      OllamaChatPanel.log(`WA incoming: ${senderPhone} 不在白名單，略過 Agent`);
+      return;
+    }
+    // 自動送入 Agent 執行（若 agent 正在執行中則略過，避免衝突）
+    if (this._agentRunning) {
+      OllamaChatPanel.log('WA incoming: agent busy, skipping auto-run');
+      // 主動回覆告知對方正在忙碌
+      try {
+        if (this._waSock && remoteJid) {
+          await (this._waSock as Record<string, (j: string, m: Record<string, unknown>) => Promise<void>>)
+            .sendMessage(remoteJid, { text: '⏳ 我目前正在處理另一個任務，請稍候再試。' });
+        }
+      } catch (e) { OllamaChatPanel.log('WA busy-reply error: ' + String(e)); }
+      return;
+    }
+    // 優先使用 _waModelOverride（/model 指令記憶體內切換），其次 waAgentModel 設定，最後 fallback 到 UI 當前 model
+    const waAgentModel = this._waModelOverride || pcfg.get<string>('waAgentModel', '') || pcfg.get<string>('model') || '';
+    OllamaChatPanel.log(`WA incoming: using model="${waAgentModel}"`);
+    const agentPrompt = `[WhatsApp 指令，來自 ${displaySender}]\n${text}\n\n請處理此指令。處理完後，使用 whatsapp_send 將結果回覆給 +${senderPhone}。`;
+    // waTriggered=true：工具執行時自動允許（不等待 UI 點擊）
+    this.handleAgent(agentPrompt, waAgentModel || undefined, true, true).catch(e => OllamaChatPanel.log('WA agent error: ' + String(e)));
+  }
+
+  /**
+   * 處理 WhatsApp /module 內建指令（不走 Agent，直接同步回覆）。
+   * 支援：
+   *   /module list              → 列出所有可用 Ollama + Copilot 模型（帶編號）
+   *   /module <N>               → 切換 waAgentModel 為第 N 個模型
+   *   /module <name>            → 切換 waAgentModel 為名稱模糊相符的模型
+   */
+  private async _handleWaModuleCommand(text: string, msg: Record<string, unknown>): Promise<void> {
+    OllamaChatPanel.log(`WA /module command: "${text}"`);
+
+    // 取得回覆 JID（原訊息的 remoteJid）
+    const msgKey = msg['key'] as Record<string, unknown> | undefined;
+    const replyJid = String(msgKey?.['remoteJid'] ?? '');
+    const send = async (body: string) => {
+      try {
+        if (this._waSock && replyJid) {
+          await (this._waSock as Record<string, (j: string, m: Record<string, unknown>) => Promise<void>>)
+            .sendMessage(replyJid, { text: body });
+        }
+      } catch (e) { OllamaChatPanel.log(`WA /module reply error: ${String(e)}`); }
+    };
+
+    // 建立完整模型清單（Ollama + Copilot）
+    const buildModuleList = async (): Promise<{ id: string; label: string }[]> => {
+      const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+      const urls = getOllamaUrls(cfg);
+      const list: { id: string; label: string }[] = [];
+      for (const url of urls) {
+        try {
+          const models = await ollamaListModels(url);
+          for (const m of models) {
+            list.push({ id: encodeOllamaModelId(url, m, urls), label: ollamaDisplayLabel(url, m, urls) });
+          }
+        } catch { /* server offline */ }
+      }
+      try {
+        const lms = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+        const seen = new Set<string>();
+        for (const m of lms) {
+          if (!seen.has(m.id)) {
+            seen.add(m.id);
+            const name = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi, '').trim();
+            list.push({ id: `copilot::${m.id}`, label: `[Copilot] ${name}` });
+          }
+        }
+      } catch { /* Copilot not available */ }
+      return list;
+    };
+
+    const parts = text.trim().split(/\s+/);
+    // 移除第一個 token（/module、/model、/llm 都視為同一指令）
+    const sub = parts[1]?.toLowerCase() ?? '';
+
+    // /module list
+    if (!sub || sub === 'list') {
+      const list = await buildModuleList();
+      if (list.length === 0) {
+        await send('⚠️ 目前沒有可用的模型（Ollama 未連線且 Copilot 不可用）');
+        return;
+      }
+      const cfg2 = vscode.workspace.getConfiguration('amiAiClaw');
+      const current = this._waModelOverride || cfg2.get<string>('waAgentModel', '') || cfg2.get<string>('model', '');
+      const lines = list.map((m, i) => {
+        const active = (m.id === current || m.label === current) ? ' ✅' : '';
+        return `${i + 1}. ${m.label}${active}`;
+      });
+      await send(`📋 可用模型（/module <編號> 切換）：\n\n${lines.join('\n')}\n\n目前 WA Agent 使用：${current || '(同 UI 選擇)'}`);
+      return;
+    }
+
+    // /module <N> 或 /module <name>
+    const list2 = await buildModuleList();
+    if (list2.length === 0) {
+      await send('⚠️ 目前沒有可用的模型');
+      return;
+    }
+
+    let target: { id: string; label: string } | undefined;
+    const num = parseInt(sub, 10);
+    if (!isNaN(num) && num >= 1 && num <= list2.length) {
+      target = list2[num - 1];
+    } else {
+      // 模糊比對 label 或 id
+      const q = parts.slice(1).join(' ').toLowerCase();
+      target = list2.find(m => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
+    }
+
+    if (!target) {
+      await send(`❌ 找不到模型「${parts.slice(1).join(' ')}」，請用 /module list 查看清單`);
+      return;
+    }
+
+    // 寫入設定，同時更新記憶體內覆蓋値（讓下一條指令立即生效）
+    try {
+      this._waModelOverride = target.id;
+      const cfg3 = vscode.workspace.getConfiguration('amiAiClaw');
+      await cfg3.update('waAgentModel', target.id, vscode.ConfigurationTarget.Global);
+      OllamaChatPanel.log(`WA /module: switched waAgentModel to "${target.id}"`);
+      await send(`✅ WA Agent 模型已切換為：\n${target.label}\n\n（ID: ${target.id}）`);
+    } catch (e) {
+      this._waModelOverride = '';
+      await send(`❌ 切換失敗：${String(e)}`);
     }
   }
 
@@ -5244,7 +5866,9 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         });
       }
       case 'fetch_url': {
-        const rawUrl = args.url as string;
+        const rawUrl = (args.url as string || '').trim();
+        if (!rawUrl) return '請提供 url 參數';
+        try { new URL(rawUrl); } catch { return `無效的 URL: ${rawUrl}`; }
         return new Promise<string>((resolve) => {
           const protocol = rawUrl.startsWith('https') ? https : http;
           let buf = '';
@@ -5326,6 +5950,94 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           return `已執行 VS Code 指令: ${args.command}`;
         }
         return `未知 vscode_action: ${action}`;
+      }
+      case 'jira_search': {
+        // 支援兩種呼叫：直接給 jql，或給 assignee/reporter/project/status 組合
+        let jql = (args.jql as string || '').trim();
+        if (!jql) {
+          const parts: string[] = [];
+          const assignee = (args.assignee as string || '').trim();
+          const reporter = (args.reporter as string || '').trim();
+          const project  = (args.project  as string || '').trim();
+          const status   = (args.status   as string || '').trim();
+          const text     = (args.text     as string || '').trim();
+          if (assignee) parts.push(`assignee = "${assignee}"`);
+          if (reporter) parts.push(`reporter = "${reporter}"`);
+          if (project)  parts.push(`project = "${project}"`);
+          if (status)   parts.push(`status = "${status}"`);
+          if (text)     parts.push(`text ~ "${text}"`);
+          if (parts.length === 0) return '請提供 jql 或至少一個過濾條件（assignee/reporter/project/status/text）';
+          jql = parts.join(' AND ') + ' ORDER BY updated DESC';
+        }
+        const maxResults2 = Math.min(Number(args.max_results ?? 20), 50);
+
+        let searchApiUrl: string;
+        let authHeader2: string;
+        const atlasAuth2 = await this.getAtlascodeJiraAuth();
+        if (atlasAuth2) {
+          searchApiUrl = `${atlasAuth2.baseApiUrl}/api/2/search`;
+          authHeader2 = `Bearer ${atlasAuth2.accessToken}`;
+        } else {
+          const jiraCfg2 = vscode.workspace.getConfiguration('amiAiClaw');
+          const jiraBase2 = (jiraCfg2.get<string>('jiraBaseUrl') ?? '').replace(/\/$/, '');
+          const jiraEmail2 = jiraCfg2.get<string>('jiraEmail') ?? '';
+          const jiraPat2   = jiraCfg2.get<string>('jiraPat') ?? '';
+          if (!jiraBase2) return '找不到 Jira 設定，請確認 atlassian.atlascode 已登入或填寫 amiAiClaw.jiraBaseUrl';
+          if (!jiraPat2)  return '找不到 Jira 認證，請填寫 amiAiClaw.jiraPat';
+          searchApiUrl = `${jiraBase2}/rest/api/2/search`;
+          authHeader2 = jiraEmail2
+            ? 'Basic ' + Buffer.from(`${jiraEmail2}:${jiraPat2}`).toString('base64')
+            : 'Bearer ' + jiraPat2;
+        }
+
+        const postBody2 = JSON.stringify({
+          jql,
+          maxResults: maxResults2,
+          fields: ['summary', 'status', 'assignee', 'reporter', 'priority', 'issuetype', 'updated', 'labels']
+        });
+
+        return new Promise<string>((resolve) => {
+          try {
+            const u2 = new URL(searchApiUrl);
+            const proto2 = u2.protocol === 'https:' ? https : http;
+            const req2 = proto2.request({
+              hostname: u2.hostname, port: u2.port ? parseInt(u2.port) : (u2.protocol === 'https:' ? 443 : 80),
+              path: u2.pathname + u2.search, method: 'POST',
+              headers: { 'Authorization': authHeader2, 'Accept': 'application/json', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postBody2) }
+            }, (res2) => {
+              let data2 = '';
+              res2.on('data', (c: Buffer) => { data2 += c; });
+              res2.on('end', () => {
+                if (res2.statusCode === 400) { resolve(`JQL 語法錯誤: ${data2.substring(0, 300)}`); return; }
+                if (res2.statusCode === 401 || res2.statusCode === 403) {
+                  this._atlasJiraCred = null;
+                  resolve(`Jira 認證失敗 (HTTP ${res2.statusCode})，請確認 atlassian.atlascode 已登入。`);
+                  return;
+                }
+                if (res2.statusCode !== 200) { resolve(`Jira Search API 回傳 HTTP ${res2.statusCode}: ${data2.substring(0, 200)}`); return; }
+                try {
+                  const j2 = JSON.parse(data2);
+                  const issues2: Array<Record<string, unknown>> = j2.issues ?? [];
+                  if (issues2.length === 0) { resolve(`JQL: ${jql}\n\n查無符合的 Issue。`); return; }
+                  const lines2 = issues2.map((iss) => {
+                    const f2 = iss.fields as Record<string, unknown>;
+                    const st2  = (f2.status   as Record<string,unknown>)?.name ?? '';
+                    const as2  = (f2.assignee as Record<string,unknown>)?.displayName ?? '未指派';
+                    const pr2  = (f2.priority as Record<string,unknown>)?.name ?? '';
+                    const ty2  = (f2.issuetype as Record<string,unknown>)?.name ?? '';
+                    const upd2 = String(f2.updated ?? '').slice(0, 10);
+                    return `[${iss.key}] [${ty2}] [${st2}] [${pr2}] ${f2.summary}  (Assignee: ${as2}, Updated: ${upd2})`;
+                  });
+                  resolve(`JQL: ${jql}\n共 ${j2.total} 筆（顯示前 ${issues2.length} 筆）:\n\n${lines2.join('\n')}`);
+                } catch { resolve(`無法解析 Jira Search 回應: ${data2.substring(0, 300)}`); }
+              });
+            });
+            req2.on('error', (e2: Error) => resolve(`Jira search 錯誤: ${e2.message}`));
+            req2.setTimeout(15000, () => { req2.destroy(); resolve('Jira search 逾時 (15s)'); });
+            req2.write(postBody2);
+            req2.end();
+          } catch (e2) { resolve(`jira_search 錯誤: ${e2 instanceof Error ? e2.message : String(e2)}`); }
+        });
       }
       case 'jira_fetch': {
         const fetchKey = (args.issue_key as string || '').trim().toUpperCase();
@@ -5512,6 +6224,103 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
           await vscode.commands.executeCommand('atlascode.jira.showIssueForKey', key);
           return `已開啟 Jira Issue: ${key}`;
         } catch (e) { return `無法開啟 Jira Issue: ${e instanceof Error ? e.message : String(e)}`; }
+      }
+      case 'jira_log_time': {
+        const ltKey = (args.issue_key as string || '').trim().toUpperCase();
+        if (!ltKey) return '請提供 issue_key，例如 BIOS-123';
+        // 解析時間：支援 "16h"、"2h 30m"、"1d"、"90m"、純秒數
+        const timeStr = (args.time_spent as string || '').trim();
+        if (!timeStr) return '請提供 time_spent，例如 "16h"、"2h 30m"、"1d"';
+        let totalSeconds = 0;
+        const dMatch = timeStr.match(/(\d+(?:\.\d+)?)\s*d/i);
+        const hMatch = timeStr.match(/(\d+(?:\.\d+)?)\s*h/i);
+        const mMatch = timeStr.match(/(\d+(?:\.\d+)?)\s*m(?!s)/i);
+        const sMatch = timeStr.match(/(\d+(?:\.\d+)?)\s*s(?!\w)/i);
+        if (dMatch) totalSeconds += parseFloat(dMatch[1]) * 8 * 3600;  // 1d = 8h
+        if (hMatch) totalSeconds += parseFloat(hMatch[1]) * 3600;
+        if (mMatch) totalSeconds += parseFloat(mMatch[1]) * 60;
+        if (sMatch) totalSeconds += parseFloat(sMatch[1]);
+        if (!dMatch && !hMatch && !mMatch && !sMatch) {
+          const bare = parseFloat(timeStr);
+          if (!isNaN(bare)) totalSeconds = bare;  // 裸數字視為秒
+          else return `無法解析時間格式: "${timeStr}"，請使用如 "16h"、"2h 30m"、"1d" 格式`;
+        }
+        if (totalSeconds <= 0) return '時間必須大於 0';
+
+        // 日期：支援 "today"、"yesterday"、"YYYY-MM-DD"，預設今天
+        const dateStr = (args.date as string || 'today').trim().toLowerCase();
+        let logDate: Date;
+        if (dateStr === 'today' || !dateStr) {
+          logDate = new Date();
+        } else if (dateStr === 'yesterday') {
+          logDate = new Date(); logDate.setDate(logDate.getDate() - 1);
+        } else {
+          logDate = new Date(dateStr);
+          if (isNaN(logDate.getTime())) return `無法解析日期: "${dateStr}"，請用 YYYY-MM-DD 格式`;
+        }
+        // Jira worklog 需要 ISO 8601 格式並帶時區
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const started = `${logDate.getFullYear()}-${pad(logDate.getMonth()+1)}-${pad(logDate.getDate())}T09:00:00.000+0000`;
+        const comment = (args.comment as string || '').trim();
+
+        let ltApiBase: string;
+        let ltAuth: string;
+        const atlasAuth4 = await this.getAtlascodeJiraAuth();
+        if (atlasAuth4) {
+          ltApiBase = atlasAuth4.baseApiUrl;
+          ltAuth = `Bearer ${atlasAuth4.accessToken}`;
+        } else {
+          const ltCfg = vscode.workspace.getConfiguration('amiAiClaw');
+          const ltBase = (ltCfg.get<string>('jiraBaseUrl') ?? '').replace(/\/$/, '');
+          const ltEmail = ltCfg.get<string>('jiraEmail') ?? '';
+          const ltPat = ltCfg.get<string>('jiraPat') ?? '';
+          if (!ltBase) return '找不到 Jira 設定，請確認 atlassian.atlascode 已登入或填寫 amiAiClaw.jiraBaseUrl';
+          if (!ltPat)  return '找不到 Jira 認證，請填寫 amiAiClaw.jiraPat';
+          ltApiBase = ltBase + '/rest';
+          ltAuth = ltEmail
+            ? 'Basic ' + Buffer.from(`${ltEmail}:${ltPat}`).toString('base64')
+            : 'Bearer ' + ltPat;
+        }
+
+        const worklogUrl = `${ltApiBase}/api/2/issue/${ltKey}/worklog`;
+        const worklogBody = JSON.stringify({
+          timeSpentSeconds: Math.round(totalSeconds),
+          started,
+          ...(comment ? { comment } : {})
+        });
+
+        return new Promise<string>((resolve) => {
+          try {
+            const wu = new URL(worklogUrl);
+            const wproto = wu.protocol === 'https:' ? https : http;
+            const wreq = wproto.request({
+              hostname: wu.hostname, port: wu.port ? parseInt(wu.port) : (wu.protocol === 'https:' ? 443 : 80),
+              path: wu.pathname + wu.search, method: 'POST',
+              headers: { 'Authorization': ltAuth, 'Accept': 'application/json', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(worklogBody) }
+            }, (wres) => {
+              let wdata = '';
+              wres.on('data', (c: Buffer) => { wdata += c; });
+              wres.on('end', () => {
+                if (wres.statusCode === 401 || wres.statusCode === 403) {
+                  this._atlasJiraCred = null;
+                  resolve(`Jira 認證失敗 (HTTP ${wres.statusCode})`);
+                  return;
+                }
+                if (wres.statusCode === 404) { resolve(`找不到 Issue ${ltKey}，請確認 Key 正確或使用者有權限。`); return; }
+                if (wres.statusCode !== 201) { resolve(`Jira Log Time 失敗 HTTP ${wres.statusCode}: ${wdata.substring(0, 200)}`); return; }
+                try {
+                  const wj = JSON.parse(wdata);
+                  const hrs = (totalSeconds / 3600).toFixed(1);
+                  resolve(`✅ 已記錄 ${ltKey} 工時 ${hrs}h（${Math.round(totalSeconds)}s），日期: ${dateStr === 'today' ? '今天' : dateStr}${comment ? `，備註: ${comment}` : ''}，worklog ID: ${wj.id}`);
+                } catch { resolve(`Jira Log Time 完成但無法解析回應: ${wdata.substring(0, 200)}`); }
+              });
+            });
+            wreq.on('error', (we: Error) => resolve(`Jira log_time 錯誤: ${we.message}`));
+            wreq.setTimeout(15000, () => { wreq.destroy(); resolve('Jira log_time 逾時 (15s)'); });
+            wreq.write(worklogBody);
+            wreq.end();
+          } catch (we2) { resolve(`jira_log_time 錯誤: ${we2 instanceof Error ? we2.message : String(we2)}`); }
+        });
       }
       case 'jira_create': {
         try {
@@ -5761,7 +6570,6 @@ except Exception as e:
           .filter(w => w.length >= 2 && !afStopWords.has(w));
         const SKIP_BINARY = new Set(['.png','.jpg','.jpeg','.gif','.ico','.svg','.woff','.woff2','.ttf','.eot','.vsix','.zip','.tar','.gz','.exe','.dll','.pdf','.db','.sqlite','.lock','.wasm']);
         // 宣告抽取：函式/類別/介面/const/export
-        const afDeclRe = /^(?:export\s+)?(?:(?:async\s+)?function\s+([\w$]+)|class\s+([\w$]+)|interface\s+([\w$]+)|type\s+([\w$]+)\s*=|(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[\w$]+)\s*=>|def\s+([\w_]+)|func\s+([\w_]+)|public\s+(?:static\s+)?(?:\w+\s+)?([\w_]+)\s*\()/m;
         const afDeclReLines = /^\s*(?:export\s+)?(?:(?:async\s+)?function\*?\s+([\w$]+)|class\s+([\w$]+)|interface\s+([\w$]+)|type\s+([\w$]+)\s*(?:<[^>]*>)?\s*=|(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>|def\s+([\w_]+)|func\s+([\w_]+)\s*\(|public\s+(?:static\s+)?\S+\s+([\w_]+)\s*\()/;
         const afAllUris = await vscode.workspace.findFiles(afInclude, '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/build/**}', 1000);
         const afScores: { rel: string; score: number; decls: string[] }[] = [];
@@ -5809,7 +6617,8 @@ except Exception as e:
       case 'search_regex': {
         const pattern = (args.pattern as string || '').trim();
         if (!pattern) return '請提供 pattern 參數';
-        const reFlags = ((args.flags as string) || 'i').replace(/[^gimu]/g, '');
+        // 移除 g flag：逐行搜尋時 g flag 會保留 lastIndex 造成交替漏比對，改用無狀態的 flags
+        const reFlags = ((args.flags as string) || 'i').replace(/[^imu]/g, '');
         let regex: RegExp;
         try { regex = new RegExp(pattern, reFlags); } catch (e) { return `無效的正規表達式: ${e}`; }
         const includeGlob = (args.include as string) || '**/*';
@@ -5824,7 +6633,7 @@ except Exception as e:
             const text = Buffer.from(bytes).toString('utf8');
             const lines = text.split('\n');
             for (let li = 0; li < lines.length && reMatches.length < 100; li++) {
-              if (regex.test(lines[li])) { reMatches.push(`${uri.fsPath}:${li + 1}: ${lines[li].trim().slice(0, 120)}`); }
+              if (regex.exec(lines[li]) !== null) { reMatches.push(`${uri.fsPath}:${li + 1}: ${lines[li].trim().slice(0, 120)}`); }
             }
           } catch { /* skip binary */ }
         }
@@ -6140,19 +6949,294 @@ except Exception as e:
         ].join('\n');
         return rsReport.slice(0, 20000);
       }
+      case 'whatsapp_connect': {
+        if (this._waConnecting) return '⏳ WhatsApp Web 正在連線中，請等待 QR Code 顯示後掃描';
+        // 若 auto-reconnect 已成功建立有效連線，直接回報狀態
+        if (this._waConnected && this._waSock) {
+          const savedPhone = this._context.globalState.get<string>('amiAiClaw.waPhone', '');
+          return `✅ WhatsApp Web 已連線${savedPhone ? '，號碼：+' + savedPhone : ''}（session 仍有效，無需重新掃描 QR）`;
+        }
+        // 清理殭屍 socket（已斷線但未清除的情況）
+        if (this._waSock) {
+          const oldSock = this._waSock;
+          this._waSock = null;
+          this._waConnected = false;
+          try { (oldSock as Record<string, (...a: unknown[]) => unknown>)?.end?.(undefined); } catch { /* ignore */ }
+        }
+        this._waConnecting = true;
+        const waAuthDir = path.join(this._context.globalStorageUri.fsPath, 'wa-auth');
+        // force=true 才清 session；預設保留 creds，讓 Baileys 決定是否需要 QR
+        // （若 session 仍有效，Baileys 不會觸發 qr 事件，直接 connection='open'，無需掃描）
+        const waForce = (args.force as boolean) === true;
+        if (waForce) {
+          try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        }
+        fs.mkdirSync(waAuthDir, { recursive: true });
+        const hasSavedSession = !waForce && fs.existsSync(path.join(waAuthDir, 'creds.json'));
+        // 顯示 QR 面板（loading 狀態）
+        const initMsg = hasSavedSession
+          ? '⏳ 嘗試恢復已儲存的 WhatsApp session，請稍候…（若 session 仍有效則無需掃描 QR）'
+          : '⏳ 初始化中，請稍候…';
+        this._panel.webview.postMessage({ type: 'waQrCode', imgDataUrl: '', statusMsg: initMsg });
+        return new Promise<string>(resolve => {
+          this._waPendingQr = resolve;
+          // Baileys 是 ESM-only 套件，在 CJS 模組中需要使用原生 dynamic import 載入。
+          // 步驟：
+          //   1. require.resolve() 找到套件的 package.json（在 CJS 作用域，能正確解析 node_modules）
+          //   2. 讀取 package.json 取得 ESM entry (exports['.'].import 或 main)
+          //   3. 轉為 file:// URL 後用 new Function 包裝的 import() 載入
+          //      （new Function 讓 TypeScript 不把 import() 轉為 require()）
+          let baileysPkgJsonPath: string;
+          try {
+            baileysPkgJsonPath = require.resolve('@whiskeysockets/baileys/package.json');
+          } catch (e) {
+            const msg = '❌ 找不到 @whiskeysockets/baileys 套件。\n請在 D:\\Tools\\Ollama 目錄執行：\n  docker run --rm -v "%CD%:/workspace" -w /workspace node:20-slim sh -c "apt-get update -qq && apt-get install -y --no-install-recommends git > /dev/null 2>&1 && npm install"\n或重新打包安裝最新 .vsix';
+            if (this._waPendingQr) { this._waPendingQr(msg); this._waPendingQr = null; }
+            this._waConnecting = false;
+            this._panel.webview.postMessage({ type: 'waDisconnected' });
+            return;
+          }
+          try {
+            const baileysPkg = JSON.parse(fs.readFileSync(baileysPkgJsonPath, 'utf-8')) as {
+              exports?: Record<string, Record<string, string> | string>;
+              main?: string;
+            };
+            const baileysPkgDir = path.dirname(baileysPkgJsonPath);
+            const exportsEntry = baileysPkg.exports?.['.'];
+            const esmRelPath = (typeof exportsEntry === 'object'
+              ? exportsEntry['import'] ?? exportsEntry['default']
+              : exportsEntry) ?? baileysPkg.main ?? 'lib/index.js';
+            const baileyAbsPath = path.resolve(baileysPkgDir, esmRelPath);
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const baileyUrl = (require('url') as typeof import('url')).pathToFileURL(baileyAbsPath).href;
+            OllamaChatPanel.log('WA: loading Baileys from ' + baileyUrl);
+            this._panel.webview.postMessage({ type: 'waQrCode', imgDataUrl: '', statusMsg: '⏳ 載入 Baileys 模組 (ESM) 中…' });
+            // eslint-disable-next-line no-new-func
+            const esmImport = new Function('u', 'return import(u)') as (u: string) => Promise<unknown>;
+            esmImport(baileyUrl).then(async Baileys => {
+            try {
+              const makeWASocket = (Baileys as Record<string, unknown>)['makeWASocket'] as (opts: Record<string, unknown>) => Record<string, unknown>;
+              const useMultiFileAuthState = (Baileys as Record<string, unknown>)['useMultiFileAuthState'] as (dir: string) => Promise<{ state: unknown; saveCreds: () => void }>;
+              const DisconnectReason = (Baileys as Record<string, unknown>)['DisconnectReason'] as Record<string, number>;
+              const fetchLatestBaileysVersion = (Baileys as Record<string, unknown>)['fetchLatestBaileysVersion'] as () => Promise<{ version: [number, number, number]; isLatest: boolean }>;
+              const BrowsersHelper = (Baileys as Record<string, unknown>)['Browsers'] as Record<string, (s: string) => [string, string, string]> | undefined;
+              const DEFAULT_CFG = (Baileys as Record<string, unknown>)['DEFAULT_CONNECTION_CONFIG'] as { version?: [number, number, number] } | undefined;
+              // eslint-disable-next-line @typescript-eslint/no-var-requires
+              const QRCode = require('qrcode') as { toDataURL: (text: string, opts?: Record<string, unknown>) => Promise<string> };
+              OllamaChatPanel.log('WA: Baileys loaded OK, initializing auth state');
+              this._panel.webview.postMessage({ type: 'waQrCode', imgDataUrl: '', statusMsg: '⏳ 初始化 WhatsApp 認證狀態…' });
+              const { state, saveCreds } = await useMultiFileAuthState(waAuthDir);
+              OllamaChatPanel.log('WA: auth state loaded, fetching WA version');
+              this._panel.webview.postMessage({ type: 'waQrCode', imgDataUrl: '', statusMsg: '⏳ 取得最新 WhatsApp Web 版本…' });
+              // 取得最新 WA Web 版本，避免 405 連線拒絕（舊版不相容）
+              // Fallback 使用 Baileys 自帶的 DEFAULT_CONNECTION_CONFIG.version
+              const defaultVersion: [number, number, number] = DEFAULT_CFG?.version ?? [2, 3000, 1023223821];
+              let waVersion: [number, number, number] = defaultVersion;
+              try {
+                const r = await fetchLatestBaileysVersion();
+                waVersion = r.version;
+                OllamaChatPanel.log('WA: fetched version ' + waVersion.join('.') + ' isLatest=' + r.isLatest);
+              } catch (e) {
+                OllamaChatPanel.log('WA: fetchLatestBaileysVersion failed, using Baileys default ' + defaultVersion.join('.') + ': ' + String(e));
+              }
+              OllamaChatPanel.log('WA: using version ' + waVersion.join('.'));
+              const noopLogger = { info: ()=>{}, debug: ()=>{}, trace: ()=>{}, warn: ()=>{}, error: ()=>{}, fatal: ()=>{}, silent: ()=>{}, level: 'silent', child: () => noopLogger };
+              const browserInfo = BrowsersHelper?.appropriate?.('Chrome') ?? BrowsersHelper?.ubuntu?.('Chrome') ?? ['Ubuntu', 'Chrome', '22.0.0'];
+
+              // 抽成 startSock，以便 515 restartRequired 時重新建立 socket
+              const startSock = async () => {
+                this._panel.webview.postMessage({ type: 'waQrCode', imgDataUrl: '', statusMsg: '⏳ 連接 WhatsApp 伺服器中，等待 QR 碼…' });
+                const sock = makeWASocket({
+                  auth: state as Record<string, unknown>,
+                  version: waVersion,
+                  browser: browserInfo,
+                  printQRInTerminal: false,
+                  logger: noopLogger,
+                  connectTimeoutMs: 60_000,
+                });
+                this._waSock = sock;
+                OllamaChatPanel.log('WA: socket created, registering event handlers');
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const sockEv = (sock as Record<string, unknown>)['ev'] as { on(event: string, handler: (...a: unknown[]) => void): void };
+                sockEv.on('connection.update', async (...args: unknown[]) => {
+                  const update = args[0] as Record<string, unknown>;
+                  const { connection, lastDisconnect, qr } = update as { connection?: string; lastDisconnect?: { error?: { output?: { statusCode?: number } } }; qr?: string };
+                  OllamaChatPanel.log('WA connection.update: connection=' + connection + ' qr=' + (qr ? 'yes' : 'no'));
+                  if (qr) {
+                    try {
+                      const imgDataUrl = await QRCode.toDataURL(qr, { width: 256, margin: 2 });
+                      this._panel.webview.postMessage({ type: 'waQrCode', imgDataUrl });
+                    } catch (e) {
+                      const errMsg2 = '❌ QR Code 圖片產生失敗：' + String(e);
+                      OllamaChatPanel.log('WA QR generate error: ' + String(e));
+                      if (this._waPendingQr) { this._waPendingQr(errMsg2); this._waPendingQr = null; }
+                    }
+                  }
+                  if (connection === 'open') {
+                    this._waConnected = true;
+                    this._waConnecting = false;
+                    // 取出自己的號碼並存到 globalState
+                    try {
+                      const creds = (sock as Record<string, unknown>)['authState'] as Record<string, unknown> | undefined;
+                      const meObj = ((creds?.['creds'] as Record<string, unknown> | undefined)?.['me']) as Record<string, unknown> | undefined;
+                      const meId: string = String(meObj?.['id'] ?? '') || '';
+                      const myPhone = meId.replace(/:.*/, '').replace(/@.*/, ''); // 去掉 :N@s.whatsapp.net
+                      if (myPhone) {
+                        await this._context.globalState.update('amiAiClaw.waPhone', myPhone);
+                        OllamaChatPanel.log('WA: saved phone ' + myPhone);
+                        this._panel.webview.postMessage({ type: 'waConnected', phone: '+' + myPhone });
+                      } else {
+                        this._panel.webview.postMessage({ type: 'waConnected', phone: '' });
+                      }
+                    } catch {
+                      this._panel.webview.postMessage({ type: 'waConnected', phone: '' });
+                    }
+                    if (this._waPendingQr) {
+                      const savedPhone = this._context.globalState.get<string>('amiAiClaw.waPhone', '');
+                      this._waPendingQr('✅ WhatsApp Web 連線成功！' + (savedPhone ? '號碼：+' + savedPhone + '  ' : '') + '現在可以使用 whatsapp_send 發送訊息（無需 Access Token）');
+                      this._waPendingQr = null;
+                    }
+                  }
+                  if (connection === 'close') {
+                    const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
+                    const errMsg = (lastDisconnect?.error as { message?: string } | undefined)?.message ?? '';
+                    OllamaChatPanel.log('WA: connection close code=' + statusCode + ' msg=' + errMsg);
+                    // 515 = restartRequired：重新建立 socket，不視為錯誤
+                    if (statusCode === 515) {
+                      OllamaChatPanel.log('WA: restartRequired (515), restarting socket...');
+                      this._waSock = null;
+                      this._waConnected = false;
+                      setTimeout(() => { startSock().catch(e2 => OllamaChatPanel.log('WA restart error: ' + String(e2))); }, 500);
+                      return;
+                    }
+                    this._waSock = null;
+                    this._waConnected = false;
+                    this._waConnecting = false;
+                    if (statusCode === DisconnectReason.loggedOut) {
+                      // 已登出：刪除存檔的 auth 資料
+                      try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch { /* ignore */ }
+                    }
+                    let closeMsg: string;
+                    if (statusCode === DisconnectReason.loggedOut) {
+                      closeMsg = '⚠️ 已登出 WhatsApp（帳號在其他裝置登出）';
+                    } else if (statusCode === 405) {
+                      closeMsg = `❌ WhatsApp 拒絕連線 (multideviceMismatch 405)\n請確認手機 WhatsApp 已開啟多裝置功能：\n設定 → 已連結的裝置 → 多裝置測試版${errMsg ? '\n錯誤：' + errMsg : ''}`;
+                    } else if (statusCode === 428) {
+                      closeMsg = `❌ 連線被關閉 (428 connectionClosed)${errMsg ? '\n' + errMsg : ''}`;
+                    } else if (statusCode === 500) {
+                      closeMsg = `❌ 連線會話錯誤 (500 badSession)，請重新呼叫 whatsapp_connect${errMsg ? '\n' + errMsg : ''}`;
+                    } else {
+                      closeMsg = `❌ 連線已中斷 (code: ${statusCode ?? 'unknown'})${errMsg ? '\n' + errMsg : ''}`;
+                    }
+                    // 在 QR modal 顯示錯誤（若 QR 還顯示中）
+                    this._panel.webview.postMessage({ type: 'waQrCode', imgDataUrl: '', statusMsg: closeMsg });
+                    // 2 秒後關閉 modal
+                    setTimeout(() => { this._panel.webview.postMessage({ type: 'waDisconnected' }); }, 2000);
+                    if (this._waPendingQr) {
+                      this._waPendingQr(closeMsg);
+                      this._waPendingQr = null;
+                    }
+                  }
+                });
+                sockEv.on('creds.update', saveCreds as (...a: unknown[]) => void);
+
+                // 接收訊息
+                sockEv.on('messages.upsert', async (...args: unknown[]) => {
+                  const upsert = args[0] as { messages: Record<string, unknown>[]; type: string };
+                  OllamaChatPanel.log(`WA upsert [connect] type=${upsert.type} count=${upsert.messages?.length}`);
+                  for (const msg of upsert.messages) {
+                    const k = msg['key'] as Record<string,unknown> | undefined;
+                    const fromMe = !!(k?.['fromMe']);
+                    const remoteJid = String(k?.['remoteJid'] ?? '');
+                    OllamaChatPanel.log(`WA msg: fromMe=${fromMe} jid=${remoteJid} type=${upsert.type}`);
+                    if (upsert.type !== 'notify' && !fromMe) { continue; }
+                    this._handleWaIncoming(msg).catch(e => OllamaChatPanel.log('WA handleIncoming error: ' + String(e)));
+                  }
+                });
+              };
+
+              await startSock();
+              // 90 秒掃描逾時
+              setTimeout(() => {
+                if (this._waPendingQr) {
+                  this._panel.webview.postMessage({ type: 'waDisconnected' });
+                  try { (this._waSock as Record<string, (...a: unknown[]) => unknown>)?.end?.(undefined); } catch { /* ignore */ }
+                  this._waSock = null; this._waConnecting = false;
+                  this._waPendingQr('⏱ QR Code 掃描逾時（90 秒），請重新呼叫 whatsapp_connect');
+                  this._waPendingQr = null;
+                }
+              }, 90_000);
+            } catch (e) {
+              this._waConnecting = false;
+              const msg = '❌ 無法啟動 WhatsApp Web：' + String(e) + '\n請確認套件已安裝並重新打包 .vsix';
+              if (this._waPendingQr) { this._waPendingQr(msg); this._waPendingQr = null; } else resolve(msg);
+            }
+          }).catch(e => {
+            this._waConnecting = false;
+            const msg = '❌ 無法載入 Baileys 模組：' + String(e) + '\n請確認套件已安裝並重新打包 .vsix';
+            if (this._waPendingQr) { this._waPendingQr(msg); this._waPendingQr = null; } else resolve(msg);
+          });
+          } catch (outerErr) {
+            this._waConnecting = false;
+            const msg = '❌ 初始化 WhatsApp 失敗：' + String(outerErr);
+            if (this._waPendingQr) { this._waPendingQr(msg); this._waPendingQr = null; } else resolve(msg);
+            this._panel.webview.postMessage({ type: 'waDisconnected' });
+          }
+        });
+      }
+      case 'whatsapp_status': {
+        const waAuthDir2 = path.join(this._context.globalStorageUri.fsPath, 'wa-auth');
+        const hasCredsFile = fs.existsSync(path.join(waAuthDir2, 'wa-auth', 'creds.json')) ||
+                             fs.existsSync(path.join(waAuthDir2, 'creds.json'));
+        const savedPhone2 = this._context.globalState.get<string>('amiAiClaw.waPhone', '');
+        const sockAlive = !!this._waSock;
+        const lines = [
+          `_waConnected  : ${this._waConnected}`,
+          `_waConnecting : ${this._waConnecting}`,
+          `_waSock alive : ${sockAlive}`,
+          `creds.json    : ${hasCredsFile}`,
+          `saved phone   : ${savedPhone2 || '(無)'}`,
+          `agentRunning  : ${this._agentRunning}`,
+        ];
+        return '📊 WhatsApp 狀態\n' + lines.join('\n');
+      }
+      case 'whatsapp_disconnect': {
+        if (!this._waConnected && !this._waConnecting && !this._waSock) return '⚠️ WhatsApp Web 目前未連線';
+        await this.disconnectWhatsApp();
+        return '✅ 已中斷 WhatsApp Web 連線';
+      }
+      case 'whatsapp_save_credentials': {
+        const saveToken = (args.access_token as string || '').trim();
+        const savePhoneId = (args.phone_number_id as string || '').trim();
+        if (!saveToken) return '請提供 access_token';
+        if (!savePhoneId) return '請提供 phone_number_id';
+        await this._context.globalState.update('amiAiClaw.waToken', saveToken);
+        await this._context.globalState.update('amiAiClaw.waPhoneId', savePhoneId);
+        return `✅ 已儲存 WhatsApp 憑證到 VS Code（僅本機儲存）\nPhone Number ID: ${savePhoneId}\nAccess Token: ${saveToken.slice(0, 8)}…（已隱藏）\n\n現在可以使用 whatsapp_send 和 whatsapp_send_template，無需手動設定 settings.json。`;
+      }
       case 'whatsapp_send': {
-        const waToCfg = vscode.workspace.getConfiguration('amiAiClaw');
-        const waToken = waToCfg.get<string>('whatsappAccessToken', '').trim();
-        const waPhoneId = waToCfg.get<string>('whatsappPhoneNumberId', '').trim();
-        const waApiVer = waToCfg.get<string>('whatsappApiVersion', 'v20.0').trim();
-        if (!waToken) return '請先在設定中配置 amiAiClaw.whatsappAccessToken（Meta WhatsApp Business 存取權斜殇）';
-        if (!waPhoneId) return '請先在設定中配置 amiAiClaw.whatsappPhoneNumberId（Meta 商業管理平台 Phone Number ID）';
         const waTo = ((args.to as string) || '').replace(/[\s\-()]/g, '');
         if (!waTo) return '請提供收件人電話號碼（to），含國碼，例如 +886912345678';
         const waMsg = (args.message as string || '').trim();
         if (!waMsg) return '請提供訊息內容（message）';
         const waAllowed = await this.requestPermission('run', `發送 WhatsApp 訊息至 ${waTo}: ${waMsg.slice(0, 80)}`, 'whatsapp_send');
         if (!waAllowed) return '使用者已拒絕發送 WhatsApp 訊息';
+        // --- WA Web (QR 綁定) 模式優先 ---
+        if (this._waConnected && this._waSock) {
+          try {
+            const jid = `${waTo.replace(/^\+/, '')}@s.whatsapp.net`;
+            await (this._waSock as Record<string, (...a: unknown[]) => unknown>).sendMessage(jid, { text: waMsg });
+            return `✅ WhatsApp 訊息已發送至 ${args.to as string}（透過 QR 綁定連線）`;
+          } catch (e) { return `❌ 發送失敗：${String(e)}`; }
+        }
+        // --- Meta Business API 模式（Access Token fallback）---
+        const waToCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        // 優先從 globalState 讀（QR 連線後自動儲存），其次才看 settings
+        const waToken = (this._context.globalState.get<string>('amiAiClaw.waToken', '') || waToCfg.get<string>('whatsappAccessToken', '')).trim();
+        const waPhoneId = (this._context.globalState.get<string>('amiAiClaw.waPhoneId', '') || waToCfg.get<string>('whatsappPhoneNumberId', '')).trim();
+        const waApiVer = waToCfg.get<string>('whatsappApiVersion', 'v20.0').trim();
+        if (!waToken) return '請先使用 whatsapp_connect 掃描 QR Code 綁定，或在設定中配置 amiAiClaw.whatsappAccessToken（Meta Business API）';
+        if (!waPhoneId) return '請先在設定中配置 amiAiClaw.whatsappPhoneNumberId（Meta 商業管理平台 Phone Number ID）';
         const waBody = JSON.stringify({
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
@@ -6198,11 +7282,12 @@ except Exception as e:
       }
       case 'whatsapp_send_template': {
         const wtCfg = vscode.workspace.getConfiguration('amiAiClaw');
-        const wtToken = wtCfg.get<string>('whatsappAccessToken', '').trim();
-        const wtPhoneId = wtCfg.get<string>('whatsappPhoneNumberId', '').trim();
+        // 優先從 globalState 讀（QR 連線後自動儲存），其次才看 settings
+        const wtToken = (this._context.globalState.get<string>('amiAiClaw.waToken', '') || wtCfg.get<string>('whatsappAccessToken', '')).trim();
+        const wtPhoneId = (this._context.globalState.get<string>('amiAiClaw.waPhoneId', '') || wtCfg.get<string>('whatsappPhoneNumberId', '')).trim();
         const wtApiVer = wtCfg.get<string>('whatsappApiVersion', 'v20.0').trim();
-        if (!wtToken) return '請先在設定中配置 amiAiClaw.whatsappAccessToken';
-        if (!wtPhoneId) return '請先在設定中配置 amiAiClaw.whatsappPhoneNumberId';
+        if (!wtToken) return '請先使用 whatsapp_connect 掃描 QR Code 綁定，或在設定中配置 amiAiClaw.whatsappAccessToken';
+        if (!wtPhoneId) return '請先使用 whatsapp_connect 掃描 QR Code 綁定，或在設定中配置 amiAiClaw.whatsappPhoneNumberId';
         const wtTo = ((args.to as string) || '').replace(/[\s\-()]/g, '');
         if (!wtTo) return '請提供收件人電話號碼（to）';
         const wtTpl = (args.template_name as string || '').trim();
@@ -6365,6 +7450,40 @@ except Exception as e:
         }
         return `✅ Jenkins Build 已觸發: ${jbUrl}/job/${jbJob}${queueMsg}${buildNumber ? `\n建置詳情: ${jbUrl}/job/${encodeURIComponent(jbJob)}/${buildNumber}` : '\n提示: 可用 jenkins_status 工具查詢建置結果'}`;
       }
+      case 'read_workspace': {
+        const rwInclude = (args.include as string) || '**/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,md,json,yaml,yml,txt}';
+        const rwExtraExclude = ((args.exclude as string) || '').split(',').map(s => s.trim()).filter(Boolean);
+        const rwDefaultExclude = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/out/**', '**/build/**', '**/.next/**', '**/__pycache__/**', '**/*.min.js', '**/*.map'];
+        const rwExcludeGlob = '{' + [...rwDefaultExclude, ...rwExtraExclude].join(',') + '}';
+        const rwMaxFileBytes = Math.max(1, (args.max_file_kb as number) || 128) * 1024;
+        const rwMaxTotalBytes = Math.max(1, (args.max_total_kb as number) || 512) * 1024;
+        const rwUris = await vscode.workspace.findFiles(rwInclude, rwExcludeGlob, 2000);
+        const rwBinaryExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.bmp', '.vsix', '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.dylib', '.wasm', '.pdf', '.db', '.sqlite']);
+        const rwParts: string[] = [];
+        let rwTotalBytes = 0;
+        let rwTruncated = false;
+        for (const uri of rwUris) {
+          if (rwBinaryExts.has(path.extname(uri.fsPath).toLowerCase())) { continue; }
+          let content: string;
+          try {
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const raw = Buffer.from(bytes);
+            if (raw.length > rwMaxFileBytes) {
+              content = raw.toString('utf8', 0, rwMaxFileBytes) + `\n…（已截斷，原始檔案 ${Math.round(raw.length / 1024)} KB）`;
+            } else {
+              content = raw.toString('utf8');
+            }
+          } catch { continue; }
+          const relPath = vscode.workspace.asRelativePath(uri);
+          const entry = `### ${relPath}\n\`\`\`\n${content}\n\`\`\``;
+          rwTotalBytes += Buffer.byteLength(entry, 'utf8');
+          if (rwTotalBytes > rwMaxTotalBytes) { rwTruncated = true; break; }
+          rwParts.push(entry);
+        }
+        if (rwParts.length === 0) { return `找不到符合 "${rwInclude}" 的檔案`; }
+        const rwHeader = `工作區共讀取 ${rwParts.length} 個檔案（合計 ≈${Math.round(rwTotalBytes / 1024)} KB）${rwTruncated ? '，已達上限提早停止' : ''}`;
+        return rwHeader + '\n\n' + rwParts.join('\n\n');
+      }
       case 'jenkins_status': {
         const jsCfg = vscode.workspace.getConfiguration('amiAiClaw');
         const jsUrl = jsCfg.get<string>('jenkinsUrl', 'http://localdev.visualebios').replace(/\/+$/, '');
@@ -6524,9 +7643,11 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'open_browser', description: '在 VS Code 簡易瀏覽器中開啟網址', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'manage_todo', description: 'Agent 內部任務清單。複雜任務請先建立任務清單，逐一完成後標記为done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=新增, done=完成, list=查看, clear=清空' }, text: { type: 'string', description: '任務內容（action=add 時必須）' }, id: { type: 'number', description: '任務 ID（action=done 時必須）' } }, required: ['action'] } } },
   { type: 'function', function: { name: 'vscode_action', description: 'VS Code 操作：開啟檔案到指定行、取得工作區信息、顯示通知、執行 VS Code 內建指令', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=開檔, get_workspace_info=工作區信息, show_notification=通知, run_command=執行内建指令' }, path: { type: 'string', description: 'open_file 用' }, line: { type: 'number', description: '開啟到哪一行' }, message: { type: 'string', description: 'show_notification 用' }, command: { type: 'string', description: 'run_command 用，VS Code 指令 ID' }, args: { type: 'array', items: { type: 'string' }, description: '指令參數' } }, required: ['action'] } } },
+  { type: 'function', function: { name: 'jira_search', description: '用 JQL 搜尋 Jira Issues，支援列出指定人的工作項目（assignee/reporter）、專案、狀態過濾。例：列出我的/某人的待辦、列出某專案所有進行中 Issue。', parameters: { type: 'object', properties: { jql: { type: 'string', description: '完整 JQL 查詢語句（優先）。例：assignee = currentUser() AND status != Done ORDER BY updated DESC' }, assignee: { type: 'string', description: '指派人帳號名稱或 displayName（可選，自動組 JQL）' }, reporter: { type: 'string', description: '建立人帳號名稱（可選）' }, project: { type: 'string', description: '專案 Key，例如 BIOS、UOEM2（可選）' }, status: { type: 'string', description: '狀態篩選，例如 "In Progress"、"To Do"、"Done"（可選）' }, text: { type: 'string', description: '全文搜尋關鍵字（可選）' }, max_results: { type: 'number', description: '最多回傳筆數（預設 20，最多 50）' } }, required: [] } } },
   { type: 'function', function: { name: 'jira_fetch', description: '【立即執行】直接呼叫 Jira REST API 取得 Issue 完整詳情（Summary、Description、Status、Assignee、Priority、最近留言、附件清單）供分析。看到 Jira Key 就呼叫，禁止先說「我將查詢」等意圖語句而不行動。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 UOEM2-3476' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'jira_attachment_download', description: '下載 Jira Issue 附件（URL 來自 jira_fetch 結果的 url= 欄位）。ZIP 檔案自動解壓縮並列出內容及文字檔內容；文字/patch/log 檔直接顯示。', parameters: { type: 'object', properties: { url: { type: 'string', description: '附件下載 URL（來自 jira_fetch 附件清單的 url= 後方網址）' }, filename: { type: 'string', description: '指定儲存檔名（可選，預設從 URL 推斷）' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'jira_open', description: '在 VS Code 中開啟 Jira Issue UI 面板（不回傳內容，純介面操作）。需要 Issue 內容供分析時請用 jira_fetch 而非此工具。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123 或 PROJ-456' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_log_time', description: '記錄 Jira Issue 工時（Worklog）。支援 "16h"、"2h 30m"、"1d" 等格式，可指定日期（today/yesterday/YYYY-MM-DD），預設今天。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123' }, time_spent: { type: 'string', description: '工時，例如 "16h"、"2h 30m"、"1d"、"90m"' }, date: { type: 'string', description: '日期（可選）："today"（預設）、"yesterday"、或 "YYYY-MM-DD"' }, comment: { type: 'string', description: '備註（可選）' } }, required: ['issue_key', 'time_spent'] } } },
   { type: 'function', function: { name: 'jira_create', description: '開啟 Jira 建立 Issue 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { summary: { type: 'string', description: 'Issue 標題（可選，預填）' }, description: { type: 'string', description: 'Issue 詳細描述（可選，預填）' } } } } },
   { type: 'function', function: { name: 'jira_transition', description: '開啟 Jira Issue 狀態轉換面板（如 TODO → IN PROGRESS → DONE）', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'bb_create_pr', description: '開啟 Bitbucket 建立 Pull Request 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: {} } } },
@@ -6547,14 +7668,19 @@ const AGENT_TOOLS = [
   { type: 'function', function: { name: 'browser_script', description: '執行 Python Playwright 自動化腳本（適合表單填寫、點擊、多步驟操作等複雜流程）。腳本中用 print() 輸出結果。需要 Python playwright。', parameters: { type: 'object', properties: { script: { type: 'string', description: 'Python playwright 腳本（sync_api），包含完整邏輯，用 print() 輸出結果' }, description: { type: 'string', description: '一行說明腳本用途（顯示在步驟列）' } }, required: ['script'] } } },
   { type: 'function', function: { name: 'generate_docs', description: '為專案或指定檔案自動產生 API 文件。自動偵測 TypeDoc（TypeScript）或 JSDoc（JavaScript），若都未安裝則嘗試 TypeDoc。', parameters: { type: 'object', properties: { path: { type: 'string', description: '要產生文件的原始碼檔案或目錄路徑（可選，預設工作區根目錄）' }, tool: { type: 'string', enum: ['auto', 'typedoc', 'jsdoc'], description: '文件工具（預設 auto，自動從 package.json 偵測）' }, output: { type: 'string', description: '輸出目錄名稱（預設 docs）' } }, required: [] } } },
   { type: 'function', function: { name: 'refactor_suggest', description: '讀取指定原始碼檔案，執行 ESLint 複雜度/品質分析，並回傳含行號的原始碼供 AI 提供重構建議。分析包含循環複雜度、函式長度、巢狀深度等指標。', parameters: { type: 'object', properties: { path: { type: 'string', description: '要分析的原始碼檔案路徑（必填）' }, focus: { type: 'string', enum: ['all', 'complexity', 'naming', 'duplication', 'solid'], description: '分析重點方向（預設 all，AI 會依此強調對應建議）' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'whatsapp_send', description: '透過 Meta WhatsApp Business Cloud API 發送文字訊息至指定手機號碼。適用於 24 小時內看過訊息的聯絡人。需要先在設定配置 whatsappAccessToken 和 whatsappPhoneNumberId。', parameters: { type: 'object', properties: { to: { type: 'string', description: '收件人手機號碼，必須含國碼，例如 +886912345678' }, message: { type: 'string', description: '要發送的文字訊息內容' } }, required: ['to', 'message'] } } },
+  { type: 'function', function: { name: 'whatsapp_status', description: '查詢目前 WhatsApp Web 連線狀態（_waConnected、_waSock、creds.json 是否存在、已儲存電話號碼等），用於診斷連線或收訊問題。', parameters: { type: 'object', properties: {}, required: [] } } },
+  { type: 'function', function: { name: 'whatsapp_connect', description: '連接個人 WhatsApp 帳號（WhatsApp Web 協議）。若已有儲存的 session 且仍有效，直接重連無需掃描 QR Code；session 過期時才顯示 QR 供掃描。重開 VS Code 後 session 會自動恢復（状態列顯示 💚）。若需強制重新綁定新帳號，傳入 force:true。', parameters: { type: 'object', properties: { force: { type: 'boolean', description: '強制清除已儲存的 session 並顯示全新 QR Code（用於切換帳號或 session 無法自動恢復時）。預設 false。' } }, required: [] } } },
+  { type: 'function', function: { name: 'whatsapp_disconnect', description: '中斷 WhatsApp Web QR 綁定連線，登出目前裝置。', parameters: { type: 'object', properties: {}, required: [] } } },
+  { type: 'function', function: { name: 'whatsapp_save_credentials', description: '儲存 Meta WhatsApp Business API 的 Access Token 和 Phone Number ID 到 VS Code（僅本機儲存，不寫入 settings.json）。儲存後 whatsapp_send / whatsapp_send_template 即可使用，無需手動設定。', parameters: { type: 'object', properties: { access_token: { type: 'string', description: 'Meta WhatsApp Business Cloud API Access Token' }, phone_number_id: { type: 'string', description: 'Meta 商業管理平台的 Phone Number ID（純數字）' } }, required: ['access_token', 'phone_number_id'] } } },
+  { type: 'function', function: { name: 'whatsapp_send', description: '發送 WhatsApp 文字訊息至指定手機號碼。若已透過 QR Code 綁定（whatsapp_connect）則優先使用個人帳號連線；否則使用 Meta WhatsApp Business Cloud API（需設定 whatsappAccessToken）。', parameters: { type: 'object', properties: { to: { type: 'string', description: '收件人手機號碼，必須含國碼，例如 +886912345678' }, message: { type: 'string', description: '要發送的文字訊息內容' } }, required: ['to', 'message'] } } },
   { type: 'function', function: { name: 'whatsapp_send_template', description: '透過 Meta WhatsApp Business Cloud API 發送已審核的樣板訊息。適用於初次聯絡或 24 小時窗口外的訊息（不受 24 小時限制）。需要先建立並審核樣板。', parameters: { type: 'object', properties: { to: { type: 'string', description: '收件人手機號碼，必須含國碼' }, template_name: { type: 'string', description: 'Meta 商業管理平台已審核的樣板名稱' }, language_code: { type: 'string', description: '樣板語言碼（預設 zh_TW，可選 en_US、zh_CN 等）' }, body_params: { type: 'array', items: { type: 'string' }, description: '樣板主體 {{1}} {{2}} 參數列表（可選）' } }, required: ['to', 'template_name'] } } },
   { type: 'function', function: { name: 'jenkins_build', description: '觸發 Jenkins 任動建置（Build）並回傳排隊 / 映射編號。依設定自動取得 CSRF Crumb。預設連接 localdev.visualebios 。', parameters: { type: 'object', properties: { job: { type: 'string', description: 'Jenkins Job 名稱（預設使用 amiAiClaw.jenkinsDefaultJob，未設定則 SeamlessBuild）' }, params: { type: 'object', description: 'Build 參數（key-value，可選），有參數自動使用 buildWithParameters 端點', additionalProperties: { type: 'string' } }, wait: { type: 'boolean', description: '是否等待 Job 開始建置並回傳編號/狀態（預設 true，最多等待 60s）' } }, required: [] } } },
   { type: 'function', function: { name: 'jenkins_status', description: '查詢 Jenkins Job 最新 Build 或指定 Build 編號的狀態及 Console 輸出。預設連接 localdev.visualebios 。', parameters: { type: 'object', properties: { job: { type: 'string', description: 'Jenkins Job 名稱（預設使用 amiAiClaw.jenkinsDefaultJob）' }, build_number: { type: 'number', description: 'Build 編號（可選，預設 lastBuild）' }, include_log: { type: 'boolean', description: '是否包含 Console 輸出（預設 true）' }, log_lines: { type: 'number', description: 'Console 輸出最後幾行（預設 100，最大 500）' } }, required: [] } } },
+  { type: 'function', function: { name: 'read_workspace', description: '遞迴讀取整個工作區所有原始碼檔案內容，回傳每個檔案路徑與完整內容。適合需要全域理解程式庫結構、跨檔案重構、全域搜尋替換等任務。大型工作區請透過 include/exclude 縮小範圍以避免超出 token 上限。', parameters: { type: 'object', properties: { include: { type: 'string', description: 'glob 檔案樣式（預設 **/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,md,json,yaml,yml,txt}）' }, exclude: { type: 'string', description: '額外排除的 glob 樣式（逗號分隔，預設已排除 node_modules/.git/dist/out/build）' }, max_file_kb: { type: 'number', description: '單檔最大讀取 KB（預設 128，超過截斷）' }, max_total_kb: { type: 'number', description: '所有檔案合計最大 KB（預設 512，超過停止並回報）' } }, required: [] } } },
 ];
 
 function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', agentic_file_search: '🧠', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_search: '🔍', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_log_time: '⏱️', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', agentic_file_search: '🧠', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_connect: '📱', whatsapp_disconnect: '📵', whatsapp_status: '📶', whatsapp_save_credentials: '🔐', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊', read_workspace: '🗂️' };
   return m[name] ?? '🔧';
 }
 
@@ -6574,10 +7700,15 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'open_browser': return `開啟瀏覽器: ${args.url}`;
     case 'manage_todo': return `Todo (${args.action}${args.text ? ': ' + args.text : args.id ? ' #' + args.id : ''})`;
     case 'vscode_action': return `VS Code (${args.action}${args.path ? ': ' + args.path : args.command ? ': ' + args.command : ''})`;
+    case 'jira_search': {
+      const jqlLabel = (args.jql as string) || [args.assignee && 'assignee='+args.assignee, args.reporter && 'reporter='+args.reporter, args.project && 'project='+args.project, args.status && 'status='+args.status, args.text && 'text~'+args.text].filter(Boolean).join(' ');
+      return `Jira 搜尋: ${jqlLabel}`;
+    }
     case 'jira_fetch': return `Jira 從 API 取得: ${args.issue_key}`;
     case 'jira_attachment_download': return `Jira 附件下載: ${(args.filename as string) || path.basename(String(args.url || '')).split('?')[0]}`;
     case 'jira_open': return `Jira 開啟 Issue: ${args.issue_key}`;
     case 'jira_create': return `Jira 建立 Issue${args.summary ? ': ' + args.summary : ''}`;
+    case 'jira_log_time': return `Jira 記錄工時: ${args.issue_key} ${args.time_spent}${args.date ? ' @ ' + args.date : ''}${args.comment ? ' - ' + args.comment : ''}`;
     case 'jira_transition': return `Jira 轉換狀態: ${args.issue_key}`;
     case 'bb_create_pr': return 'Bitbucket 建立 PR';
     case 'rovo_ask': return `Rovo Dev: ${args.question}`;
@@ -6601,6 +7732,7 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'whatsapp_send_template': return `📣 WhatsApp 樣板 [${args.template_name}] 至 ${args.to}`;
     case 'jenkins_build': return `🛠️ Jenkins Build: ${args.job || '(default job)'}${args.params ? ' ' + JSON.stringify(args.params).slice(0, 50) : ''}`;
     case 'jenkins_status': return `📊 Jenkins 狀態: ${args.job || '(default job)'}${args.build_number ? ' #' + args.build_number : ' (lastBuild)'}`;
+    case 'read_workspace': return `讀取整個工作區${args.include ? ' [' + args.include + ']' : ''}${args.max_total_kb ? '（上限 ' + args.max_total_kb + ' KB）' : ''}`;
     default: return name;
   }
 }
@@ -6881,6 +8013,137 @@ function ollamaChatCallStream(
   });
 }
 
+/**
+ * OpenAI-compatible /v1/chat/completions 串流呼叫（支援 tool_calls）。
+ * 模型 ID 格式：openai::http://host:port||model-name 或 openai::model-name（使用預設 baseUrl）
+ */
+function openaiCompatChatCallStream(
+  baseUrl: string, model: string, messages: ChatMessage[], tools: unknown[],
+  onTextChunk?: (chunk: string) => void,
+  onStats?: (tokens: number, tps: number) => void
+): Promise<ChatMessage> {
+  return new Promise((resolve, reject) => {
+    try {
+      const url = new URL('/v1/chat/completions', baseUrl);
+      // 轉換 ChatMessage 格式為 OpenAI 格式
+      const oaiMessages = messages.map(m => {
+        if (m.role === 'tool') {
+          return { role: 'tool' as const, content: m.content ?? '', tool_call_id: m.tool_call_id ?? '' };
+        }
+        if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+          return {
+            role: 'assistant' as const,
+            content: m.content ?? null,
+            tool_calls: m.tool_calls.map(tc => ({
+              id: tc.id ?? tc.function.name,
+              type: 'function' as const,
+              function: {
+                name: tc.function.name,
+                arguments: typeof tc.function.arguments === 'string'
+                  ? tc.function.arguments
+                  : JSON.stringify(tc.function.arguments),
+              },
+            })),
+          };
+        }
+        return { role: m.role as 'system' | 'user' | 'assistant', content: m.content ?? '' };
+      });
+      // 轉換 tools 為 OpenAI 格式（與 Ollama 格式相同）
+      const oaiTools = tools.length > 0 ? tools : undefined;
+      const bodyObj: Record<string, unknown> = { model, messages: oaiMessages, stream: true };
+      if (oaiTools) { bodyObj.tools = oaiTools; bodyObj.tool_choice = 'auto'; }
+      const body = JSON.stringify(bodyObj);
+      const protocol = url.protocol === 'https:' ? https : http;
+      const options: http.RequestOptions = {
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Accept': 'text/event-stream' },
+      };
+      let lineBuffer = '';
+      let accContent = '';
+      // tool_calls 是增量合併結構（index-based）
+      const toolCallBuilders: Map<number, { id: string; name: string; args: string }> = new Map();
+      let promptTokens = 0; let completionTokens = 0; const startMs = Date.now();
+      const req = protocol.request(options, (res) => {
+        if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+          let errBody = '';
+          res.setEncoding('utf8');
+          res.on('data', (d: string) => { errBody += d; });
+          res.on('end', () => {
+            try { const j = JSON.parse(errBody); reject(new Error('OpenAI API 錯誤：' + (j.error?.message ?? 'HTTP ' + res.statusCode))); }
+            catch { reject(new Error('OpenAI API HTTP ' + res.statusCode + ': ' + errBody.slice(0, 200))); }
+          });
+          return;
+        }
+        res.setEncoding('utf8');
+        res.on('data', (data: string) => {
+          lineBuffer += data;
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop() ?? '';
+          for (const line of lines) {
+            const t = line.trim();
+            if (!t || !t.startsWith('data:')) continue;
+            const payload = t.slice(5).trim();
+            if (payload === '[DONE]') continue;
+            try {
+              const chunk = JSON.parse(payload) as {
+                choices?: Array<{
+                  delta?: {
+                    content?: string | null;
+                    tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
+                  };
+                  finish_reason?: string;
+                }>;
+                usage?: { prompt_tokens?: number; completion_tokens?: number };
+              };
+              const delta = chunk.choices?.[0]?.delta;
+              if (delta?.content) { accContent += delta.content; if (onTextChunk) onTextChunk(delta.content); }
+              if (delta?.tool_calls) {
+                for (const tc of delta.tool_calls) {
+                  if (!toolCallBuilders.has(tc.index)) { toolCallBuilders.set(tc.index, { id: tc.id ?? '', name: tc.function?.name ?? '', args: '' }); }
+                  const b = toolCallBuilders.get(tc.index)!;
+                  if (tc.id) b.id = tc.id;
+                  if (tc.function?.name) b.name += tc.function.name;
+                  if (tc.function?.arguments) b.args += tc.function.arguments;
+                }
+              }
+              if (chunk.usage) {
+                promptTokens = chunk.usage.prompt_tokens ?? 0;
+                completionTokens = chunk.usage.completion_tokens ?? 0;
+              }
+            } catch { /* partial */ }
+          }
+        });
+        res.on('end', () => {
+          if (onStats && completionTokens > 0) {
+            const elapsed = (Date.now() - startMs) / 1000;
+            onStats(promptTokens + completionTokens, elapsed > 0 ? completionTokens / elapsed : 0);
+          }
+          if (toolCallBuilders.size > 0) {
+            const tool_calls = Array.from(toolCallBuilders.entries())
+              .sort(([a], [b]) => a - b)
+              .map(([, b]) => ({
+                id: b.id || b.name,
+                function: {
+                  name: b.name,
+                  arguments: (() => { try { return JSON.parse(b.args) as Record<string, unknown>; } catch { return {}; } })(),
+                },
+              }));
+            resolve({ role: 'assistant', content: accContent || null, tool_calls });
+          } else {
+            resolve({ role: 'assistant', content: accContent || null });
+          }
+        });
+        res.on('error', (e: Error) => reject(e));
+      });
+      req.on('error', (e: Error) => reject(new Error(`無法連線到 OpenAI-compatible server (${baseUrl})：${e.message}`)));
+      req.setTimeout(600000, () => { req.destroy(new Error('OpenAI-compatible 呼叫逾時 (600s)')); });
+      req.write(body); req.end();
+    } catch (e) { reject(e); }
+  });
+}
+
 function getCopilotMultiplier(m: vscode.LanguageModelChat): string {
   const id = m.id.toLowerCase();
   const fam = (m.family || '').toLowerCase();
@@ -6924,9 +8187,19 @@ async function copilotChatCallWithCts(
   const lm = lms[0];
   if (!lm) { throw new Error(`Copilot 找不到模型: ${modelId}`); }
 
+  // 防禦性過濾：移除孤立的 tool_result（找不到對應 tool_use 的 tool 訊息），避免 Bedrock/Anthropic 400 錯誤
+  const sanitized = messages.filter((m, i) => {
+    if (m.role !== 'tool') { return true; }
+    // 往前找最近的 assistant 訊息，確認其 tool_calls 包含此 tool_call_id
+    let ai = i - 1;
+    while (ai >= 0 && messages[ai].role === 'tool') { ai--; }
+    return ai >= 0 && messages[ai].role === 'assistant' &&
+      (messages[ai].tool_calls ?? []).some(tc => (tc.id ?? tc.function.name) === m.tool_call_id);
+  });
+
   // 正確轉換每種 role 為 VS Code LM API 對應的 Part 型別
   const vmMsgs: vscode.LanguageModelChatMessage[] = [];
-  for (const m of messages) {
+  for (const m of sanitized) {
     if (m.role === 'system' || m.role === 'user') {
       // system 沒有對應 role，以 User 訊息注入
       vmMsgs.push(vscode.LanguageModelChatMessage.User(m.content ?? ''));
@@ -7269,8 +8542,18 @@ function getOllamaUrls(cfg: vscode.WorkspaceConfiguration): string[] {
   return [cfg.get<string>('url') ?? 'http://localhost:11434'];
 }
 
-/** 解碼 Ollama model ID：多伺服器格式為 "http://host:port||modelname"，單伺服器為 "modelname"。 */
+/** 解碼 Ollama model ID：多伺服器格式為 "http://host:port||modelname"，單伺服器為 "modelname"。
+ *  OpenAI-compatible 格式："openai::http://host:port||modelname" 或 "openai::modelname"（使用 fallbackUrls[0]）。
+ *  解碼後 model 保留 openai:: 前綴供後續路由判斷。
+ */
 function decodeOllamaModel(modelId: string, fallbackUrls: string[]): { url: string; model: string } {
+  // OpenAI-compatible 格式：openai::http://host:port||modelname 或 openai::modelname
+  if (modelId.startsWith('openai::')) {
+    const inner = modelId.slice('openai::'.length);
+    const sep = inner.indexOf('||');
+    if (sep !== -1) return { url: inner.slice(0, sep), model: 'openai::' + inner.slice(sep + 2) };
+    return { url: fallbackUrls[0] ?? 'http://localhost:11434', model: 'openai::' + inner };
+  }
   const sep = modelId.indexOf('||');
   if (sep !== -1) return { url: modelId.slice(0, sep), model: modelId.slice(sep + 2) };
   return { url: fallbackUrls[0] ?? 'http://localhost:11434', model: modelId };
