@@ -22,6 +22,7 @@ export class OllamaChatPanel {
   private readonly _disposables: vscode.Disposable[] = [];
   private _autoRunning = false;
   private _autoCancel = false;
+  private _disposed = false;
   private _autoMaxIterations = 50;
   private _streamMode = false;
   private _agentRunning = false;
@@ -566,6 +567,7 @@ export class OllamaChatPanel {
   }
 
   public dispose() {
+    this._disposed = true;
     OllamaChatPanel.currentPanel = undefined;
     this._panel.dispose();
     while (this._disposables.length) { const d = this._disposables.pop(); if (d) { d.dispose(); } }
@@ -5355,6 +5357,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
    * 由 messages.upsert 事件觸發（兩個 socket：whatsapp_connect 和 _tryWaAutoReconnect 共用）。
    */
   private async _handleWaIncoming(msg: Record<string, unknown>): Promise<void> {
+    if (this._disposed) { return; } // panel 已關閉，跳過（WA socket 仍在運行）
     const msgKey = msg['key'] as Record<string, unknown>;
     const fromMe = !!(msg['key'] && msgKey['fromMe']);
     const remoteJid = String(msgKey['remoteJid'] ?? '');
@@ -5439,8 +5442,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
     const pushName = String(msg['pushName'] ?? '');
     const displaySender = pushName ? `${pushName} (+${senderPhone})` : `+${senderPhone}`;
     OllamaChatPanel.log(`WA incoming from ${displaySender}${fromMe ? ' [note-to-self]' : ''}: ${text}`);
-    // 在聊天視窗顯示收到的訊息
-    this._panel.webview.postMessage({ type: 'waIncoming', sender: displaySender, text, remoteJid });
+    // 在聊天視窗顯示收到的訊息（panel 可能已關閉，try-catch 防止拋出）
+    try { this._panel.webview.postMessage({ type: 'waIncoming', sender: displaySender, text, remoteJid }); } catch { /* disposed */ }
     // 白名單過濾：fromMe+@lid 必然是本人，直接放行；其他號碼需比對白名單
     const pcfg = vscode.workspace.getConfiguration('amiAiClaw');
     const allowedSenders = pcfg.get<string[]>('waAgentAllowedSenders', []);
