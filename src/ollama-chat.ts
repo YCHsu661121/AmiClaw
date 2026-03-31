@@ -67,7 +67,9 @@ export class OllamaChatPanel {
   private _toolCache = new Map<string, { value: string; ts: number }>();
   private static readonly TOOL_CACHE_TTL = 30_000;
   /** 使用量統計：各 model 累計 token 與 Copilot 費率 */
-  private _usageStats: Record<string, { tokens: number; isCopilot: boolean; multiplier: string }> = {};
+  private _usageStats: Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }> = {};
+  /** 延遲記錄：每次請求完成時寫入 { model, ms, ts } */
+  private _latencyLog: Array<{ model: string; ms: number; ts: number }> = [];
   /** Debate 即時換模型：key='A'|'B'|'J'，value=新 model id，每次 handleDebateSend 開始時重置 */
   private _debateSwap: { A?: string; B?: string; J?: string } = {};
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -85,29 +87,40 @@ export class OllamaChatPanel {
   }
 
   /** 記錄一次 API 呼叫的 token 使用量，並推送更新到前端。 */
-  private trackUsage(model: string, tokens: number, multiplier = ''): void {
-    if (!tokens || tokens <= 0) { return; }
+  private trackUsage(model: string, tokens: number, multiplier = '', toolCall = false): void {
+    if (!toolCall && (!tokens || tokens <= 0)) { return; }
     const isCopilot = model.startsWith('copilot::') || model.startsWith('copilot/');
     const key = model.replace(/^copilot[::\/]+/, '');
     const existing = this._usageStats[key];
     if (existing) {
       existing.tokens += tokens;
+      if (tokens > 0) existing.calls = (existing.calls || 0) + 1;
+      if (toolCall) existing.toolCalls = (existing.toolCalls || 0) + 1;
     } else {
-      this._usageStats[key] = { tokens, isCopilot, multiplier };
+      this._usageStats[key] = { tokens, isCopilot, multiplier, calls: tokens > 0 ? 1 : 0, toolCalls: toolCall ? 1 : 0 };
     }
     // 持久化累計值
-    const saved = this._context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string }>>('amiAiClaw.usageStats') ?? {};
+    const saved = this._context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }>>('amiAiClaw.usageStats') ?? {};
     const sk = saved[key];
-    if (sk) { sk.tokens += tokens; } else { saved[key] = { tokens, isCopilot, multiplier }; }
+    if (sk) { sk.tokens += tokens; if (tokens > 0) sk.calls = (sk.calls || 0) + 1; if (toolCall) sk.toolCalls = (sk.toolCalls || 0) + 1; }
+    else { saved[key] = { tokens, isCopilot, multiplier, calls: tokens > 0 ? 1 : 0, toolCalls: toolCall ? 1 : 0 }; }
     this._context.globalState.update('amiAiClaw.usageStats', saved);
     this._panel.webview.postMessage({ type: 'usageUpdate', stats: this._usageStats });
+  }
+
+  /** 記錄一次請求的延遲，並推送到前端。 */
+  private trackLatency(model: string, ms: number): void {
+    const key = model.replace(/^copilot[::\/]+/, '');
+    this._latencyLog.push({ model: key, ms, ts: Date.now() });
+    if (this._latencyLog.length > 200) { this._latencyLog.shift(); }
+    this._panel.webview.postMessage({ type: 'latencyUpdate', log: this._latencyLog });
   }
 
   private constructor(panel: vscode.WebviewPanel, context: vscode.ExtensionContext) {
     this._panel = panel;
     this._context = context;
     // 載入持久化的使用量統計
-    this._usageStats = context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string }>>('amiAiClaw.usageStats') ?? {};
+    this._usageStats = context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }>>('amiAiClaw.usageStats') ?? {};
     OllamaChatPanel.log('Constructor: start');
     vscode.window.showInformationMessage('AMI-AiClaw: Extension activated');
 
@@ -192,7 +205,7 @@ export class OllamaChatPanel {
             break;
           case 'teamSend':
             this.switchChatSession(message.sessionId);
-            this.handleTeamSend(message.prompt, message.models, message.rounds, message.teamExecMode, message.maxParallel).catch(() => {});
+            this.handleTeamSend(message.prompt, message.models, message.rounds, message.teamExecMode, message.maxParallel, message.roles).catch(() => {});
             break;
           case 'teamStop':
             this._teamCancel = true;
@@ -305,8 +318,14 @@ export class OllamaChatPanel {
           }
           case 'resetUsage':
             this._usageStats = {};
+            this._latencyLog = [];
             this._context.globalState.update('amiAiClaw.usageStats', {});
             this._panel.webview.postMessage({ type: 'usageUpdate', stats: {} });
+            this._panel.webview.postMessage({ type: 'latencyUpdate', log: [] });
+            break;
+          case 'statsOpen':
+            this._panel.webview.postMessage({ type: 'usageUpdate', stats: this._usageStats });
+            this._panel.webview.postMessage({ type: 'latencyUpdate', log: this._latencyLog });
             break;
           case 'debateSwapModel':
             if (message.speaker === 'A' || message.speaker === 'B' || message.speaker === 'J') {
@@ -699,12 +718,16 @@ export class OllamaChatPanel {
       #debatePicker.visible{display:block}
       #teamPicker{display:none;padding:4px 8px 6px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;margin:2px 0;background:rgba(128,128,128,0.05);max-height:130px;overflow-y:auto}
       #teamPicker.visible{display:block}
-      #teamPickerBar,#debatePickerBar{display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap}
+      #comparePicker{display:none;padding:4px 8px 6px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;margin:2px 0;background:rgba(128,128,128,0.05);max-height:120px;overflow-y:auto}
+      #comparePicker.visible{display:block}
+      #teamPickerBar,#debatePickerBar,#comparePickerBar{display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap}
       .team-pick-row{display:flex;align-items:center;gap:5px;padding:1px 2px}
       .team-pick-row label{font-size:12px;cursor:pointer;user-select:none}
       .tpl-copilot{color:#f7cc65}.tpl-ollama{color:#4fc1ff}
       .role-badge{font-size:10px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:5px;vertical-align:middle;white-space:nowrap}
       .role-badge-manager{background:#f7cc65;color:#1e1e1e}.role-badge-member{background:#4fc1ff;color:#1e1e1e}.role-badge-coordinator{background:#4ec9b0;color:#1e1e1e}.role-badge-discussor{background:#c586c0;color:#fff}.role-badge-agent{background:#ce9178;color:#1e1e1e}
+      .role-badge-planner{background:#f7a534;color:#1e1e1e}.role-badge-developer{background:#4fc1ff;color:#1e1e1e}.role-badge-reviewer{background:#c586c0;color:#fff}.role-badge-tester{background:#4ec9b0;color:#1e1e1e}.role-badge-writer{background:#89d185;color:#1e1e1e}
+      .team-pick-role{font-size:10px;padding:1px 4px;border-radius:3px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.3));display:none;cursor:pointer}
       .team-pick-mini-btn{font-size:11px;padding:1px 7px;border-radius:3px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.3);color:inherit;cursor:pointer}
       #teamPickerCount{font-size:11px;opacity:0.7}
       /* 記憶管理 Modal */
@@ -730,6 +753,18 @@ export class OllamaChatPanel {
       .usage-table th{opacity:0.6;font-weight:600;text-align:left;padding:2px 6px;border-bottom:1px solid rgba(128,128,128,0.25)}
       .usage-table td{padding:2px 6px;border-bottom:1px solid rgba(128,128,128,0.1);word-break:break-all}
       .usage-copilot td{color:var(--vscode-editorInfo-foreground,#4fc1ff)}
+      /* 統計面板 Modal */
+      #statsModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:flex-start;justify-content:center;padding-top:40px}
+      #statsModal.open{display:flex}
+      #statsBox{background:var(--vscode-editor-background);border:1px solid rgba(128,128,128,0.35);border-radius:10px;padding:18px;width:min(640px,95vw);max-height:85vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
+      #statsBox h3{margin:0;font-size:14px;font-weight:700;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(128,128,128,0.2);padding-bottom:10px}
+      .stats-section{border:1px solid rgba(128,128,128,0.2);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+      .stats-section-title{font-size:12px;font-weight:700;opacity:0.9;margin:0 0 4px}
+      .latency-bar-row{display:flex;align-items:center;gap:6px;font-size:11px;margin:1px 0}
+      .latency-bar-label{width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.8;text-align:right;flex-shrink:0}
+      .latency-bar-track{flex:1;background:rgba(128,128,128,0.15);border-radius:3px;height:12px;overflow:hidden}
+      .latency-bar-fill{height:100%;border-radius:3px;background:#4fc1ff;transition:width 0.3s}
+      .latency-bar-val{width:54px;flex-shrink:0;opacity:0.7}
       /* 棋盤視覺化 */
       .debate-board{background:var(--vscode-editor-background,#1e1e1e);border:1px solid rgba(128,128,128,0.25);border-radius:4px;padding:6px 10px;font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.4;white-space:pre;overflow-x:auto;margin:4px 0;color:var(--vscode-editor-foreground,#d4d4d4)}
       #debateSwapBar{padding:6px 8px;border-top:1px solid rgba(128,128,128,0.2);display:flex;flex-wrap:wrap;align-items:center;gap:4px}
@@ -817,9 +852,11 @@ export class OllamaChatPanel {
         <button class="icon-btn" id="toggleStream" title="切換串流模式">⚡</button>
         <button class="icon-btn" id="agentMode" title="Agent 模式 (AI 可讀寫檔案、執行命令)">🤖</button>
         <button class="icon-btn" id="teamMode" title="團隊討論模式 (多個 AI 並行思考👥)">👥</button>
+        <button class="icon-btn" id="compareMode" title="模型比較：同一問題對多個 AI，並排回答 🆚">🆚</button>
         <button class="icon-btn" id="debateMode" title="對話模式：2 個 AI 辯論/對弈，可加第 3 個裁判 ⚔️">⚔️</button>
         <button class="icon-btn" id="stopAgent" title="停止 Agent">⏹</button>
         <button class="icon-btn" id="memBtn" title="記憶管理">🧠</button>
+        <button class="icon-btn" id="statsBtn" title="使用統計 / 效能分析">📊</button>
         <button class="icon-btn" id="clear" title="清除對話">🗑</button>
         <button class="icon-btn" id="debugBtn" title="Debug Console" style="font-size:12px;">🐛</button>
         <span style="flex:1"></span>
@@ -842,6 +879,7 @@ export class OllamaChatPanel {
               <option value="discussion">&#x1F4AC; 討論模式</option>
               <option value="agent">&#x1F916; Agent 模式</option>
               <option value="manager">&#x1F3E2; 主管模式</option>
+              <option value="clone">&#x1FA84; 分身 Agent</option>
             </select>
             <label style="font-size:11px;margin-left:6px">回合：</label>
             <select id="teamRoundsSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
@@ -862,6 +900,15 @@ export class OllamaChatPanel {
             <span id="teamPickerCount">0/5 已選</span>
         </div>
         <div id="teamPickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
+      </div>
+      <div id="comparePicker">
+        <div id="comparePickerBar">
+          <span style="font-size:11px;font-weight:700">&#x1F19A; 模型比較（選 2-5 個，同一問題各自作答）</span>
+          <button class="team-pick-mini-btn" id="comparePickerRefresh">&#x1F504;</button>
+          <span style="flex:1"></span>
+          <span id="comparePickerCount">0/5 已選</span>
+        </div>
+        <div id="comparePickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
       </div>
       <div id="debatePicker">
         <div id="debatePickerBar">
@@ -974,6 +1021,20 @@ export class OllamaChatPanel {
         </div>
       </div>
     </div>
+    <div id="statsModal">
+      <div id="statsBox">
+        <h3>&#x1F4CA; 使用統計 &amp; 效能分析 <button class="mem-close-btn" id="statsClose">&#x2715;</button></h3>
+        <div class="stats-section">
+          <p class="stats-section-title">&#x1F4CB; Token &amp; 工具呼叫統計</p>
+          <div id="statsUsageWrap"><p style="font-size:11px;opacity:0.55;margin:2px 0">尚無資料</p></div>
+          <div class="mem-row"><button class="mem-btn" id="statsResetBtn">&#x1F5D1; 重置統計</button></div>
+        </div>
+        <div class="stats-section">
+          <p class="stats-section-title">&#x23F1; 請求延遲（最近 50 筆，ms）</p>
+          <div id="statsLatencyWrap"><p style="font-size:11px;opacity:0.55;margin:2px 0">尚無資料</p></div>
+        </div>
+      </div>
+    </div>
     <script nonce="${nonce}">
       // Pre-create debugPanel so errors from the main script are visible
       (function(){
@@ -1083,7 +1144,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
           else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
           else if (msg.type === 'teamAgentStart')  { var tah = document.createElement('div'); tah.className = 'team-agent-header'; tah.textContent = '\uD83E\uDD16 Agent \u63A5\u529B\u57F7\u884C\u8A08\u5283\uFF08' + (msg.model||'') + '\uFF09'; chat.appendChild(tah); chat.scrollTop = chat.scrollHeight; }
-          else if (msg.type === 'teamModelList')   { populateTeamPicker(msg.models); populateDebatePicker(msg.models); }
+          else if (msg.type === 'teamModelList')   { populateTeamPicker(msg.models); populateDebatePicker(msg.models); populateComparePicker(msg.models); }
           else if (msg.type === 'teamTodoList')  { createTodoPanel(msg.tasks); }
           else if (msg.type === 'teamTodoStart') { updateTodo(msg.idx, 'running', msg.worker); }
           else if (msg.type === 'teamTodoDone')  { updateTodo(msg.idx, 'done'); }
@@ -1137,7 +1198,7 @@ export class OllamaChatPanel {
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
-          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); var _pickerModels = []; (msg.models||[]).forEach(function(m) { var id = (typeof m === 'string') ? m : m.id; var label = (typeof m === 'string') ? m : m.label; _pickerModels.push({ id: id, label: label, vendor: 'ollama' }); }); (msg.copilotModels||[]).forEach(function(cm) { _pickerModels.push({ id: 'copilot::' + cm.id, label: cm.name, vendor: 'copilot', multiplier: cm.multiplier || '' }); }); if (_pickerModels.length) { populateTeamPicker(_pickerModels); populateDebatePicker(_pickerModels); } }
+          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); var _pickerModels = []; (msg.models||[]).forEach(function(m) { var id = (typeof m === 'string') ? m : m.id; var label = (typeof m === 'string') ? m : m.label; _pickerModels.push({ id: id, label: label, vendor: 'ollama' }); }); (msg.copilotModels||[]).forEach(function(cm) { _pickerModels.push({ id: 'copilot::' + cm.id, label: cm.name, vendor: 'copilot', multiplier: cm.multiplier || '' }); }); if (_pickerModels.length) { populateTeamPicker(_pickerModels); populateDebatePicker(_pickerModels); populateComparePicker(_pickerModels); } }
           else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
@@ -1145,7 +1206,8 @@ export class OllamaChatPanel {
           else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; _lastHistLen = msg.count || 0; } }
           else if (msg.type === 'consolidateStart') { var cs = document.getElementById('consolidateStatus'); if (cs) { cs.style.display = ''; cs.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026'; } var clb = document.getElementById('consolidateLtmBtn'); if (clb) clb.disabled = true; }
           else if (msg.type === 'consolidateChunk') { var cs2 = document.getElementById('consolidateStatus'); if (cs2) cs2.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026 ' + (msg.chunk || '').slice(0, 40); }
-          else if (msg.type === 'usageUpdate') { renderUsageTable(msg.stats); }
+          else if (msg.type === 'usageUpdate') { renderUsageTable(msg.stats); renderStatsUsageTable(msg.stats); }
+          else if (msg.type === 'latencyUpdate') { renderLatencyChart(msg.log); }
           else if (msg.type === 'consolidateDone') {
             var clb2 = document.getElementById('consolidateLtmBtn'); if (clb2) clb2.disabled = false;
             var cs3 = document.getElementById('consolidateStatus');
@@ -1227,6 +1289,7 @@ export class OllamaChatPanel {
       let _pendingBubble = null;
       let agentMode = true;
       let teamMode = false;
+      let compareMode = false;
       let debateMode = false;
       let _debateRunning = false;
       let _agentStepNode = null;
@@ -1491,10 +1554,17 @@ export class OllamaChatPanel {
             var teamExecMode = teamModeEl ? teamModeEl.value : 'task';
             var maxParEl = document.getElementById('teamMaxParallelSelect');
             var maxParVal = maxParEl ? parseInt(maxParEl.value) : 3;
-            var tModeLabel = teamExecMode === 'discussion' ? '\u{1F4AC} \u8a0e\u8ad6\u4e2d\u2026' : teamExecMode === 'agent' ? '\u{1F916} Agent \u57f7\u884c\u4e2d\u2026' : teamExecMode === 'manager' ? '\u{1F3E2} \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
-            vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, rounds: roundsVal, teamExecMode: teamExecMode, maxParallel: maxParVal, sessionId: _activeChatSessionId });
+            var tModeLabel = teamExecMode === 'discussion' ? '\u{1F4AC} \u8a0e\u8ad6\u4e2d\u2026' : teamExecMode === 'agent' ? '\u{1F916} Agent \u57f7\u884c\u4e2d\u2026' : teamExecMode === 'manager' ? '\u{1F3E2} \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : teamExecMode === 'clone' ? '\u{1FA84} \u5206\u8eab Agent \u57f7\u884c\u4e2d\u2026' : '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
+            vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, roles: getTeamModelRoles(), rounds: roundsVal, teamExecMode: teamExecMode, maxParallel: maxParVal, sessionId: _activeChatSessionId });
             prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
             if (statusBar) statusBar.textContent = tModeLabel;
+            return;
+        }
+        if (compareMode) {
+            var cmpSel = getSelectedCompareModels();
+            vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: cmpSel, teamExecMode: 'compare', sessionId: _activeChatSessionId });
+            prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
+            if (statusBar) statusBar.textContent = '\uD83C\uDD9A \u6bd4\u8f03\u4e2d\u2026';
             return;
         }
         if (debateMode) {
@@ -1550,6 +1620,7 @@ export class OllamaChatPanel {
         agentMode = !agentMode;
         document.getElementById('agentMode').classList.toggle('active', agentMode);
         if (agentMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
+        if (agentMode && compareMode) { compareMode = false; document.getElementById('compareMode').classList.remove('active'); document.getElementById('comparePicker').classList.remove('visible'); }
         if (agentMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
         if (statusBar) statusBar.textContent = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F \u2014 AI \u53EF\u81EA\u52D5\u8B80\u5BEB\u6A94\u6848\u3001\u57F7\u884C\u547D\u4EE4' : '\uD83D\uDCAC Ask \u6A21\u5F0F \u2014 \u76F4\u63A5\u5C0D\u8A71\uFF0C\u4E0D\u4F7F\u7528\u5DE5\u5177';
         var _ph = cfgSendKey === 'Ctrl+Enter' ? 'Ctrl+Enter \u9001\u51fa' : 'Enter \u9001\u51fa';
@@ -1560,6 +1631,7 @@ export class OllamaChatPanel {
         teamMode = !teamMode;
         document.getElementById('teamMode').classList.toggle('active', teamMode);
         if (teamMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
+        if (teamMode && compareMode) { compareMode = false; document.getElementById('compareMode').classList.remove('active'); document.getElementById('comparePicker').classList.remove('visible'); }
         if (teamMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
         var picker = document.getElementById('teamPicker');
         if (picker) picker.classList.toggle('visible', teamMode);
@@ -1572,12 +1644,29 @@ export class OllamaChatPanel {
       var tmodeEl = document.getElementById('teamModeSelect');
       if (tmodeEl) tmodeEl.addEventListener('change', function() { updateTeamRoleLabels(); });
 
+      var compareModeBtn = document.getElementById('compareMode');
+      if (compareModeBtn) compareModeBtn.addEventListener('click', function() {
+        compareMode = !compareMode;
+        compareModeBtn.classList.toggle('active', compareMode);
+        if (compareMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
+        if (compareMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
+        if (compareMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
+        var cp = document.getElementById('comparePicker');
+        if (cp) cp.classList.toggle('visible', compareMode);
+        if (compareMode) { vscode.postMessage({ type: 'fetchTeamModels' }); if (statusBar) statusBar.textContent = '\uD83C\uDD9A \u9078\u64c7\u6bd4\u8f03\u6a21\u578b\u5f8c\u8f38\u5165\u554f\u984c'; }
+        else { if (statusBar) statusBar.textContent = ''; }
+        prompt.placeholder = compareMode ? '\u8f38\u5165\u554f\u984c\u2026 \u591a\u500b AI \u4e26\u6392\u56de\u7b54 (Enter \u9001\u51fa)' : '\u8f38\u5165\u8a0a\u606f\u2026 (Enter \u9001\u51fa / Ctrl+Enter \u63db\u884c)';
+      });
+      var cpr = document.getElementById('comparePickerRefresh');
+      if (cpr) cpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
+
       var debateModeBtn = document.getElementById('debateMode');
       if (debateModeBtn) debateModeBtn.addEventListener('click', function() {
         debateMode = !debateMode;
         debateModeBtn.classList.toggle('active', debateMode);
         if (debateMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
         if (debateMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
+        if (debateMode && compareMode) { compareMode = false; document.getElementById('compareMode').classList.remove('active'); document.getElementById('comparePicker').classList.remove('visible'); }
         var dp = document.getElementById('debatePicker');
         if (dp) dp.classList.toggle('visible', debateMode);
         if (debateMode) { vscode.postMessage({ type: 'fetchTeamModels' }); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u6a21\u5f0f\uff1a\u9078 2 \u500b AI \u8f2f\u8ad6\uff0c\u53ef\u52a0\u5730 3 \u500b\u88c1\u5224'; }
@@ -2283,7 +2372,13 @@ export class OllamaChatPanel {
           var lbl = document.createElement('label'); lbl.htmlFor = 'tp' + i;
           lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
           lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label + (m.vendor === 'copilot' && m.multiplier ? '  ' + m.multiplier : '');
-          row.appendChild(cb); row.appendChild(lbl); list.appendChild(row);
+          var roleSelect = document.createElement('select');
+          roleSelect.className = 'team-pick-role'; roleSelect.dataset.modelId = m.id;
+          [['\u{1F5FA}\uFE0F \u898f\u5283\u8005','planner'],['\uD83D\uDCBB \u958b\u767c\u8005','developer'],['\uD83D\uDD0D \u8A55\u5BE9\u54E1','reviewer'],['\uD83E\uDDEA \u6E2C\u8A66\u54E1','tester'],['\uD83D\uDCDD \u64B0\u5BEB\u8005','writer']].forEach(function(opt) {
+            var o = document.createElement('option'); o.value = opt[1]; o.textContent = opt[0]; roleSelect.appendChild(o);
+          });
+          roleSelect.addEventListener('change', updateTeamRoleLabels);
+          row.appendChild(cb); row.appendChild(lbl); row.appendChild(roleSelect); list.appendChild(row);
         });
         updateTeamPickerCount();
       }
@@ -2295,37 +2390,19 @@ export class OllamaChatPanel {
         updateTeamRoleLabels();
       }
       function updateTeamRoleLabels() {
-        var modeEl = document.getElementById('teamModeSelect');
-        var mode = modeEl ? modeEl.value : 'task';
-        var memberIdx = 0;
+        var _ROLE_LABELS = { planner: '\uD83D\uDDFA\uFE0F \u898f\u5283\u8005', developer: '\uD83D\uDCBB \u958b\u767c\u8005', reviewer: '\uD83D\uDD0D \u8A55\u5BE9\u54E1', tester: '\uD83E\uDDEA \u6E2C\u8A66\u54E1', writer: '\uD83D\uDCDD \u64B0\u5BEB\u8005' };
+        var _ROLE_CLS   = { planner: 'role-badge role-badge-planner', developer: 'role-badge role-badge-developer', reviewer: 'role-badge role-badge-reviewer', tester: 'role-badge role-badge-tester', writer: 'role-badge role-badge-writer' };
         document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
           var cb = row.querySelector('input[type=checkbox]');
           var lbl = row.querySelector('label');
+          var roleSel = row.querySelector('select.team-pick-role');
           if (!cb || !lbl) return;
+          if (roleSel) roleSel.style.display = cb.checked ? '' : 'none';
           var badge = lbl.querySelector('.role-badge');
           if (!badge) { badge = document.createElement('span'); badge.className = 'role-badge'; lbl.appendChild(badge); }
-          if (cb.checked) {
-            if (mode === 'manager') {
-              if (memberIdx === 0) {
-                badge.textContent = '\uD83C\uDFE2 \u4e3b\u7ba1'; badge.className = 'role-badge role-badge-manager';
-              } else {
-                badge.textContent = '\uD83D\uDC68\u200D\uD83D\uDCBB \u7d44\u54e1 #' + memberIdx; badge.className = 'role-badge role-badge-member';
-              }
-            } else if (mode === 'task') {
-              if (memberIdx === 0) {
-                badge.textContent = '\uD83C\uDFAF \u5354\u8abf\u54e1'; badge.className = 'role-badge role-badge-coordinator';
-              } else {
-                badge.textContent = '\uD83D\uDC68\u200D\uD83D\uDCBB \u7d44\u54e1 #' + memberIdx; badge.className = 'role-badge role-badge-member';
-              }
-            } else if (mode === 'discussion') {
-              badge.textContent = '\uD83D\uDCAC \u8a0e\u8ad6\u8005 #' + (memberIdx + 1); badge.className = 'role-badge role-badge-discussor';
-            } else if (mode === 'agent') {
-              badge.textContent = '\uD83E\uDD16 Agent #' + (memberIdx + 1); badge.className = 'role-badge role-badge-agent';
-            } else {
-              badge.textContent = '\uD83D\uDC64 \u6210\u54e1 #' + (memberIdx + 1); badge.className = 'role-badge role-badge-member';
-            }
-            badge.style.display = '';
-            memberIdx++;
+          if (cb.checked && roleSel) {
+            var r = roleSel.value || 'developer';
+            badge.textContent = _ROLE_LABELS[r] || r; badge.className = _ROLE_CLS[r] || 'role-badge role-badge-member'; badge.style.display = '';
           } else {
             badge.style.display = 'none';
           }
@@ -2334,6 +2411,41 @@ export class OllamaChatPanel {
       function getSelectedTeamModels() {
         var r = [];
         document.querySelectorAll('#teamPickerList input[type=checkbox]:checked').forEach(function(c) { r.push(c.value); });
+        return r;
+      }
+      function getTeamModelRoles() {
+        var roles = {};
+        document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
+          var cb = row.querySelector('input[type=checkbox]');
+          var roleSel = row.querySelector('select.team-pick-role');
+          if (cb && cb.checked && roleSel) roles[cb.value] = roleSel.value || 'developer';
+        });
+        return roles;
+      }
+
+      function populateComparePicker(models) {
+        var _cmpModels = models || [];
+        var list = document.getElementById('comparePickerList'); if (!list) return;
+        list.innerHTML = '';
+        if (!_cmpModels.length) { list.innerHTML = '<span style="font-size:11px;opacity:0.6">\u7121\u53ef\u7528\u6a21\u578b</span>'; return; }
+        _cmpModels.forEach(function(m, i) {
+          var row = document.createElement('div'); row.className = 'team-pick-row';
+          var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'cmp' + i; cb.value = m.id;
+          cb.addEventListener('change', function() {
+            var cbs = document.querySelectorAll('#comparePickerList input[type=checkbox]');
+            var n = 0; cbs.forEach(function(c) { if (c.checked) n++; });
+            var el = document.getElementById('comparePickerCount'); if (el) el.textContent = n + '/5 \u5df2\u9078';
+            cbs.forEach(function(c) { if (!c.checked) c.disabled = n >= 5; });
+          });
+          var lbl = document.createElement('label'); lbl.htmlFor = 'cmp' + i;
+          lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
+          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label + (m.vendor === 'copilot' && m.multiplier ? '  ' + m.multiplier : '');
+          row.appendChild(cb); row.appendChild(lbl); list.appendChild(row);
+        });
+      }
+      function getSelectedCompareModels() {
+        var r = [];
+        document.querySelectorAll('#comparePickerList input[type=checkbox]:checked').forEach(function(c) { r.push(c.value); });
         return r;
       }
 
@@ -2592,6 +2704,77 @@ export class OllamaChatPanel {
         html += '</tbody></table>';
         wrap.innerHTML = html;
       }
+
+      var _latencyLog = [];
+      function renderStatsUsageTable(stats) {
+        var wrap = document.getElementById('statsUsageWrap');
+        if (!wrap) return;
+        var keys = stats ? Object.keys(stats) : [];
+        if (keys.length === 0) { wrap.innerHTML = '<p style="font-size:11px;opacity:0.55;margin:2px 0">尚無資料</p>'; return; }
+        var html = '<table class="usage-table"><thead><tr><th>\u6a21\u578b</th><th>Tokens</th><th>\u547c\u53eb\u6b21\u6578</th><th>\u5de5\u5177\u547c\u53eb</th><th>\u8cbb\u7387</th></tr></thead><tbody>';
+        var totalTokens = 0; var totalCalls = 0; var totalTools = 0;
+        keys.sort(function(a,b){ return (stats[b].tokens||0)-(stats[a].tokens||0); }).forEach(function(k) {
+          var v = stats[k];
+          var mult = v.multiplier || (v.isCopilot ? '1x' : '-');
+          var cls = v.isCopilot ? ' class="usage-copilot"' : '';
+          totalTokens += v.tokens||0; totalCalls += v.calls||0; totalTools += v.toolCalls||0;
+          html += '<tr' + cls + '><td>' + k + '</td><td>' + (v.tokens||0).toLocaleString() + '</td><td>' + (v.calls||0) + '</td><td>' + (v.toolCalls||0) + '</td><td>' + mult + '</td></tr>';
+        });
+        if (keys.length > 1) {
+          html += '<tr style="font-weight:600;border-top:1px solid rgba(128,128,128,0.3)"><td>\u5408\u8a08</td><td>' + totalTokens.toLocaleString() + '</td><td>' + totalCalls + '</td><td>' + totalTools + '</td><td></td></tr>';
+        }
+        html += '</tbody></table>';
+        wrap.innerHTML = html;
+      }
+      function renderLatencyChart(log) {
+        _latencyLog = log || [];
+        var wrap = document.getElementById('statsLatencyWrap');
+        if (!wrap) return;
+        if (!_latencyLog.length) { wrap.innerHTML = '<p style="font-size:11px;opacity:0.55;margin:2px 0">\u5c1a\u7121\u8cc7\u6599</p>'; return; }
+        // Aggregate by model: avg + min + max
+        var byModel = {};
+        _latencyLog.forEach(function(e) {
+          if (!byModel[e.model]) byModel[e.model] = { sum:0, count:0, min:Infinity, max:0 };
+          var m = byModel[e.model];
+          m.sum += e.ms; m.count++; m.min = Math.min(m.min,e.ms); m.max = Math.max(m.max,e.ms);
+        });
+        var maxAvg = 0;
+        Object.keys(byModel).forEach(function(k) { var avg = byModel[k].sum/byModel[k].count; if(avg>maxAvg) maxAvg=avg; });
+        var html = '';
+        Object.keys(byModel).sort(function(a,b){ return byModel[a].sum/byModel[a].count - byModel[b].sum/byModel[b].count; }).forEach(function(k) {
+          var m = byModel[k]; var avg = Math.round(m.sum/m.count); var pct = maxAvg > 0 ? Math.round(avg/maxAvg*100) : 0;
+          var color = avg < 3000 ? '#89d185' : avg < 10000 ? '#f7cc65' : '#f87070';
+          html += '<div class="latency-bar-row"><div class="latency-bar-label" title="' + k + '">' + k + '</div>' +
+            '<div class="latency-bar-track"><div class="latency-bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+            '<div class="latency-bar-val">' + (avg >= 1000 ? (avg/1000).toFixed(1)+'s' : avg+'ms') + '</div>' +
+            '<div style="font-size:10px;opacity:0.5;flex-shrink:0">\xd7' + m.count + '</div>' +
+            '</div>';
+        });
+        // Recent 20 requests timeline
+        var recent = _latencyLog.slice(-20);
+        html += '<div style="margin-top:8px;font-size:10px;opacity:0.6">\u6700\u8fd1 ' + recent.length + ' \u7b46\uff1a</div>';
+        html += '<div style="display:flex;gap:2px;align-items:flex-end;height:32px;margin-top:2px">';
+        var rMax = 0; recent.forEach(function(e){ if(e.ms>rMax) rMax=e.ms; });
+        recent.forEach(function(e) {
+          var h = rMax > 0 ? Math.max(2, Math.round(e.ms/rMax*32)) : 2;
+          var c = e.ms < 3000 ? '#89d185' : e.ms < 10000 ? '#f7cc65' : '#f87070';
+          html += '<div title="' + e.model + ' ' + (e.ms >= 1000 ? (e.ms/1000).toFixed(1)+'s' : e.ms+'ms') + '" style="flex:1;height:' + h + 'px;background:' + c + ';border-radius:1px;min-width:2px;cursor:default"></div>';
+        });
+        html += '</div>';
+        wrap.innerHTML = html;
+      }
+
+      var statsModal = document.getElementById('statsModal');
+      var statsBtn = document.getElementById('statsBtn');
+      if (statsBtn) statsBtn.addEventListener('click', function() {
+        if (statsModal) statsModal.classList.add('open');
+        vscode.postMessage({ type: 'statsOpen' });
+      });
+      var statsClose = document.getElementById('statsClose');
+      if (statsClose) statsClose.addEventListener('click', function() { if (statsModal) statsModal.classList.remove('open'); });
+      if (statsModal) statsModal.addEventListener('click', function(e) { if (e.target === statsModal) statsModal.classList.remove('open'); });
+      var statsResetBtn = document.getElementById('statsResetBtn');
+      if (statsResetBtn) statsResetBtn.addEventListener('click', function() { vscode.postMessage({ type: 'resetUsage' }); });
 
       var memModal = document.getElementById('memModal');
       var memBtn = document.getElementById('memBtn');
@@ -2861,7 +3044,7 @@ export class OllamaChatPanel {
 </html>`;
   }
 
-  private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number, teamExecMode?: string, maxParallel?: number): Promise<void> {
+  private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number, teamExecMode?: string, maxParallel?: number, roles?: Record<string, string>): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const defaultBaseUrl = urls[0];
@@ -2888,15 +3071,21 @@ export class OllamaChatPanel {
 
     // ── 討論模式：全員針對同一問題各自回答，依回合數重複，最後合成 ──────
     if (teamExecMode === 'discussion') {
-      return this._handleTeamDiscussion(prompt, allModels, roundsNum);
+      return this._handleTeamDiscussion(prompt, allModels, roundsNum, roles);
     }
 
     // ── Agent 模式：每個成員用 handleAgent（含工具）各自獨立完成任務 ──────
     if (teamExecMode === 'agent') {
-      return this._handleTeamAgent(prompt, allModels);
+      return this._handleTeamAgent(prompt, allModels, roles);
     }
     if (teamExecMode === 'manager') {
-      return this._handleTeamManager(prompt, allModels, roundsNum);
+      return this._handleTeamManager(prompt, allModels, roundsNum, roles);
+    }
+    if (teamExecMode === 'clone') {
+      return this._handleTeamClone(prompt, allModels[0] ?? (selectedModels?.[0] ?? ''));
+    }
+    if (teamExecMode === 'compare') {
+      return this._handleTeamCompare(prompt, allModels);
     }
 
     let finalDebateSummary = '';
@@ -3253,9 +3442,20 @@ export class OllamaChatPanel {
     return best;
   }
 
+  private static buildRoleSystemNote(role: string): string {
+    switch (role) {
+      case 'planner':   return '你的職責是【規劃者】：分析需求、制定解題架構、將任務拆分為有序步驟、確保整體方向正確。';
+      case 'developer': return '你的職責是【開發者】：撰寫程式碼、實作功能、提供具體技術解決方案、確保程式邏輯正確。';
+      case 'reviewer':  return '你的職責是【評審員】：審查方案與程式碼品質、找出潛在問題與改進空間、以批判視角提高整體品質。';
+      case 'tester':    return '你的職責是【測試員】：思考邊界情況、撰寫測試案例、找出可能的錯誤與漏洞、確保功能穩定性。';
+      case 'writer':    return '你的職責是【撰寫者】：清晰解釋技術概念、撰寫說明文件、確保溝通明確易懂。';
+      default:          return '';
+    }
+  }
+
   // ── Team 討論模式 ────────────────────────────────────────────────────────
   /** 全員同題作答，每回合每人輪流發言，最後一輪收尾合成 */
-  private async _handleTeamDiscussion(prompt: string, allModels: string[], maxRounds: number): Promise<void> {
+  private async _handleTeamDiscussion(prompt: string, allModels: string[], maxRounds: number, roles?: Record<string, string>): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
@@ -3373,8 +3573,9 @@ export class OllamaChatPanel {
               (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); });
           } else {
             const { url, model: mName } = decodeOllamaModel(model, urls);
+            const _roleNote = (roles && roles[model]) ? OllamaChatPanel.buildRoleSystemNote(roles[model]) + ' ' : '';
             const messages: ChatMessage[] = [
-              { role: 'system', content: `你是 ${display}，正在和其他 AI 討論以下問題。你可以參考工作區檔案內容進行分析。每次回答請根據前幾輪的對話內容延伸，不要重複，請提出新觀點或補充說明。` },
+              { role: 'system', content: `你是 ${display}，正在和其他 AI 討論以下問題。${_roleNote}你可以參考工作區檔案內容進行分析。每次回答請根據前幾輪的對話內容延伸，不要重複，請提出新觀點或補充說明。` },
               ...hist.map(h => ({ role: h.role as 'user'|'assistant', content: h.content }))
             ];
             if (messages[messages.length - 1].role !== 'user') messages.push({ role: 'user', content: '請繼續。' });
@@ -3456,7 +3657,7 @@ export class OllamaChatPanel {
 
   // ── Team Agent 模式 ──────────────────────────────────────────────────────
   /** 每個選定的模型各自以 Agent 身份（含工具）處理同一個任務 */
-  private async _handleTeamAgent(prompt: string, allModels: string[]): Promise<void> {
+  private async _handleTeamAgent(prompt: string, allModels: string[], roles?: Record<string, string>): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
@@ -3500,7 +3701,8 @@ export class OllamaChatPanel {
       this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
 
       try {
-        await this.handleAgent(prompt, model, false);
+        const _agentRolePrefix = (roles && roles[model]) ? OllamaChatPanel.buildRoleSystemNote(roles[model]) + '\n\n' : '';
+        await this.handleAgent(_agentRolePrefix + prompt, model, false);
       } catch { /* continue with next worker */ }
 
       // Restore original postMessage
@@ -3517,6 +3719,174 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage({ type: 'agentStatus', running: false });
   }
 
+  // ── 模型比較模式 ────────────────────────────────────────────────────────
+  /**
+   * 將同一問題同時送給所有選定的模型，各自並行回答（直接呼叫，不使用 Agent 工具），
+   * 結果並排顯示在 team-member bubble 中方便比較。
+   */
+  private async _handleTeamCompare(prompt: string, allModels: string[]): Promise<void> {
+    if (allModels.length === 0) {
+      this._panel.webview.postMessage({ type: 'error', text: '模型比較至少需選 1 個模型' });
+      return;
+    }
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const urls = getOllamaUrls(cfg);
+    const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
+    const getDisplay = (m: string) => {
+      if (m.startsWith('copilot::')) return '\uD83D\uDC19 ' + m.slice('copilot::'.length);
+      const { url, model } = decodeOllamaModel(m, urls);
+      try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; }
+    };
+
+    this._teamCancel = false;
+    this._panel.webview.postMessage({ type: 'teamTodoList', tasks: allModels.map(m => getDisplay(m)) });
+
+    // Run all models in parallel
+    const _cmpStart = Date.now();
+    await Promise.all(allModels.map(async (model, mi) => {
+      const color = COLORS[mi % COLORS.length];
+      const display = getDisplay(model);
+      const id = `tcmp_${mi}`;
+
+      this._panel.webview.postMessage({ type: 'teamTodoStart', idx: mi, worker: display });
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `\uD83C\uDD9A ${display}`, color, task: prompt });
+
+      const systemContent = this.buildSystemContent(false);
+      const t0 = Date.now();
+      try {
+        if (model.startsWith('copilot::')) {
+          const family = model.slice('copilot::'.length);
+          const msgs: vscode.LanguageModelChatMessage[] = [];
+          if (systemContent.trim()) msgs.push(vscode.LanguageModelChatMessage.User(`[系統]\n${systemContent}`));
+          msgs.push(vscode.LanguageModelChatMessage.User(prompt));
+          const cts = new vscode.CancellationTokenSource();
+          const response = await copilotStreamText(family, msgs,
+            (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); },
+            cts.token);
+          cts.dispose();
+          const tokenEst = Math.ceil(estimateTokens(response));
+          this.trackUsage(family, tokenEst, getCopilotMultiplierById(family));
+          this.trackLatency(family, Date.now() - t0);
+        } else {
+          const { url, model: mName } = decodeOllamaModel(model, urls);
+          const messages: ChatMessage[] = [];
+          if (systemContent.trim()) messages.push({ role: 'system', content: systemContent });
+          messages.push({ role: 'user', content: prompt });
+          const response = await ollamaChatStream(url, mName, messages,
+            (chunk) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk }); },
+            undefined,
+            (tokens) => { this.trackUsage(mName, tokens); });
+          this.trackLatency(mName, Date.now() - t0);
+          void response;
+        }
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `\n[\u932f\u8aa4] ${errMsg}` });
+      }
+
+      this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+      this._panel.webview.postMessage({ type: 'teamTodoDone', idx: mi });
+    }));
+
+    this.trackLatency('compare-total', Date.now() - _cmpStart);
+    this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
+  }
+
+  // ── 分身 Agent 模式 ──────────────────────────────────────────────────────
+  /**
+   * 同一個 LLM 依序扮演 5 種腳色（規劃者→開發者→評審員→測試員→撰寫者），
+   * 每一關的輸出作為下一關的上下文，實現「一個模型分身五職」的流水線。
+   */
+  private async _handleTeamClone(prompt: string, model: string): Promise<void> {
+    if (!model) {
+      this._panel.webview.postMessage({ type: 'error', text: '分身 Agent 模式需至少選擇 1 個模型' });
+      return;
+    }
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const urls = getOllamaUrls(cfg);
+    const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
+    const getDisplay = (m: string) => {
+      if (m.startsWith('copilot::')) return '\uD83D\uDC19 ' + m.slice('copilot::'.length);
+      const { url, model: mn } = decodeOllamaModel(m, urls);
+      try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${mn}`; } catch { return mn; }
+    };
+    const CLONE_ROLES: { role: string; emoji: string; label: string; color: string }[] = [
+      { role: 'planner',   emoji: '\uD83D\uDDFA\uFE0F', label: '\u898f\u5283\u8005', color: '#f7a534' },
+      { role: 'developer', emoji: '\uD83D\uDCBB',        label: '\u958b\u767c\u8005', color: '#4fc1ff' },
+      { role: 'reviewer',  emoji: '\uD83D\uDD0D',        label: '\u8A55\u5BE9\u54E1', color: '#c586c0' },
+      { role: 'tester',    emoji: '\uD83E\uDDEA',        label: '\u6E2C\u8A66\u54E1', color: '#4ec9b0' },
+      { role: 'writer',    emoji: '\uD83D\uDCDD',        label: '\u64B0\u5BEB\u8005', color: '#89d185' },
+    ];
+    const displayBase = getDisplay(model);
+
+    this._teamCancel = false;
+    this._panel.webview.postMessage({ type: 'teamTodoList', tasks: CLONE_ROLES.map(r => `${r.emoji} ${r.label}`) });
+
+    const origPost = this._panel.webview.postMessage.bind(this._panel.webview);
+    let prevOutput = '';
+
+    for (let ri = 0; ri < CLONE_ROLES.length && !this._teamCancel; ri++) {
+      const cr = CLONE_ROLES[ri];
+      const id = `tclone_${ri}`;
+      const roleNote = OllamaChatPanel.buildRoleSystemNote(cr.role);
+      const roleDisplay = `${cr.emoji} ${displayBase} [${cr.label}]`;
+
+      this._panel.webview.postMessage({ type: 'teamTodoStart', idx: ri, worker: roleDisplay });
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: roleDisplay, color: cr.color,
+        task: ri === 0 ? prompt : `承接上一階段（${CLONE_ROLES[ri-1].label}）的輸出繼續處理。` });
+
+      const patchedPost = (msg: object & { type?: string }): Thenable<boolean> => {
+        const t = (msg as { type?: string }).type;
+        if (t === 'assistant') {
+          origPost({ type: 'teamResponseChunk', id, chunk: (msg as { text?: string }).text ?? '' });
+          return Promise.resolve(true);
+        }
+        if (t === 'assistantChunk') {
+          origPost({ type: 'teamResponseChunk', id, chunk: (msg as { chunk?: string }).chunk ?? '' });
+          return Promise.resolve(true);
+        }
+        if (t === 'agentStep' || t === 'agentStepDone' || t === 'agentStatus') { return origPost(msg); }
+        return origPost(msg);
+      };
+      (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = patchedPost;
+
+      this._agentMessages = [];
+      this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+
+      const stagePrompt = ri === 0
+        ? `${roleNote}\n\n${prompt}`
+        : `${roleNote}\n\n【原始任務】\n${prompt}\n\n【上一階段（${CLONE_ROLES[ri-1].label}）輸出】\n${prevOutput}\n\n請根據以上內容，從你的職責角度繼續處理。`;
+
+      let stageOutput = '';
+      try {
+        // Capture streamed output by monkey-patching teamResponseChunk
+        const capturePost = (msg: object & { type?: string }): Thenable<boolean> => {
+          if ((msg as { type?: string }).type === 'teamResponseChunk') {
+            stageOutput += (msg as { chunk?: string }).chunk ?? '';
+          }
+          return origPost(msg);
+        };
+        (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = capturePost;
+        await this.handleAgent(stagePrompt, model, false);
+      } catch { /* continue with next stage */ }
+
+      (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = origPost;
+
+      if (!isOllamaModel(model)) {
+        // For copilot, stageOutput was collected via the capture patch above
+      }
+      prevOutput = stageOutput || prevOutput;
+
+      this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+      this._panel.webview.postMessage({ type: 'teamTodoDone', idx: ri });
+    }
+
+    this._agentMessages = [];
+    this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+    this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
+    this._panel.webview.postMessage({ type: 'agentStatus', running: false });
+  }
+
   // ── Team 主管模式 ────────────────────────────────────────────────────────
   /**
    * 主管模式流程：
@@ -3524,7 +3894,7 @@ export class OllamaChatPanel {
    * → Phase-3 Agent 執行 → Phase-4 全員 Review
    * 人格與記憶分離：每個模型擁有自己獨立的系統提示詞與對話歷史。
    */
-  private async _handleTeamManager(prompt: string, allModels: string[], maxRounds: number): Promise<void> {
+  private async _handleTeamManager(prompt: string, allModels: string[], maxRounds: number, roles?: Record<string, string>): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const COLORS = ['#f7cc65', '#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa'];
@@ -3634,9 +4004,11 @@ export class OllamaChatPanel {
       `4. 確認方案無誤後才核准（回覆末尾輸出 [APPROVED]）\n` +
       `5. 對執行結果進行最終 Review\n` +
       `風格：嚴謹簡潔，繁體中文回答。${_wsBlock}`;
-    const memberPersona = (i: number) =>
-      `你是工程師 #${i + 1}。職責：根據主管指示提出具體實作方案與程式碼修改建議。\n` +
-      `重要：你只看得到自己的對話歷史，不知道其他工程師的內容。繁體中文回答。${_wsBlock}`;
+    const memberPersona = (i: number) => {
+      const _mRoleNote = (roles && roles[memberModels[i]]) ? '\n' + OllamaChatPanel.buildRoleSystemNote(roles[memberModels[i]]) : '';
+      return `你是工程師 #${i + 1}。職責：根據主管指示提出具體實作方案與程式碼修改建議。${_mRoleNote}\n` +
+        `重要：你只看得到自己的對話歷史，不知道其他工程師的內容。繁體中文回答。${_wsBlock}`;
+    };
 
     // ─ 記憶分離：各自獨立的對話歷史，以批次閱讀歷史預填
     const managerHist: { role: 'user' | 'assistant'; content: string }[] = [..._mgrBatchedInitHist];
@@ -4434,6 +4806,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
 
     this._panel.webview.postMessage({ type: 'streamStart' });
     let fullResponse = '';
+    const _sendStart = Date.now();
     // Cancel any previous in-flight Copilot request (stale response guard)
     if (this._pendingSendCts) { this._pendingSendCts.cancel(); this._pendingSendCts.dispose(); this._pendingSendCts = null; }
     try {
@@ -4464,6 +4837,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
         );
       }
       // Save assistant response to short-term memory
+      this.trackLatency(model, Date.now() - _sendStart);
       this._chatHistory.push({ role: 'assistant', content: fullResponse });
       this._panel.webview.postMessage({ type: 'streamEnd' });
       this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
@@ -4720,6 +5094,7 @@ ${historyText}
     this._agentCancel = false;
     this._waAgentMode = waTriggered;
     this._panel.webview.postMessage({ type: 'agentStatus', running: true });
+    const _agentStart = Date.now();
 
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
@@ -4919,6 +5294,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
             // 稽核日誌：記錄工具呼叫與結果
             const _auditEntry = { ts: Date.now(), session: this._activeSessionId, tool: fn.name, argsSnippet: JSON.stringify(args).slice(0, 120), error: isError };
             this._auditLog.push(_auditEntry);
+            // 工具呼叫次數統計
+            this.trackUsage(model, 0, '', true);
             if (this._auditLog.length > 200) { this._auditLog.shift(); }
             const _savedAudit = this._context.globalState.get<typeof _auditEntry[]>('amiAiClaw.auditLog') ?? [];
             _savedAudit.push(_auditEntry);
@@ -4961,6 +5338,7 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       const msg = e instanceof Error ? e.message : String(e);
       this._panel.webview.postMessage({ type: 'error', text: 'Agent 錯誤：' + msg });
     } finally {
+      this.trackLatency(model, Date.now() - _agentStart);
       this._agentRunning = false;
       this._agentCancel = false;
       this._waAgentMode = false;
