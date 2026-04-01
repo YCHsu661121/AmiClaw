@@ -53,6 +53,54 @@ D:\Tools\Ollama\
 
 ---
 
+## 拆分計畫（ollama-chat.ts → 14 個模組）
+
+> 目標：主類別縮減至 ~500 行薄 facade，各模組各司其職
+
+```
+src/
+├── panels/
+│   └── OllamaChatPanel.ts      (~500)  lifecycle + message dispatch
+├── chat/
+│   ├── QueryEngine.ts          (~1200) handleSend / buildSystemContent / LTM / permission
+│   └── AgentExecutor.ts        (~300)  handleAgent / agentic loop / auto-summarize
+├── auto/
+│   └── AutoIterator.ts         (~100)  startAuto / _autoCancel 迭代包裝
+├── team/
+│   └── TeamManager.ts          (~1600) handleTeamSend / discussion / compare / orchestrator
+├── debate/
+│   └── DebateEngine.ts         (~300)  handleDebateSend / A-B-Judge 結構辯論
+├── integrations/
+│   ├── JiraManager.ts          (~300)  getAtlascodeJiraAuth + jira_* tool cases
+│   ├── WhatsAppManager.ts      (~700)  WA socket / reconnect / incoming / module commands
+│   └── RovoDevManager.ts       (~200)  discoverRovoDevUrl / ensureModelReady / callRovoDevApi
+├── tools/
+│   └── ToolExecutor.ts         (~1900) executeTool switch（60+ tools）+ 30s TTL cache
+├── webview/
+│   └── WebviewRenderer.ts      (~2700) getHtmlForWebview（HTML / CSS / JS 全部 UI）
+├── session/
+│   └── SessionManager.ts       (~100)  switchChatSession / resolveSessionId / fork / export
+├── models/
+│   └── ModelFetcher.ts         (~150)  fetchModelsFromServer / testConnectionStatus
+└── state/
+    └── PanelState.ts           (~300)  trackUsage / trackLatency / auditLog / alwaysAllow
+```
+
+### 拆分優先序
+
+| 優先 | 模組 | 理由 |
+|------|------|------|
+| 1 | `WebviewRenderer` | 2700 行純 HTML/CSS/JS，完全無副作用，零風險 |
+| 2 | `WhatsAppManager` | 700 行自治狀態機，依賴最少 |
+| 3 | `ToolExecutor` | 1900 行工具 switch，可獨立外包 |
+| 4 | `TeamManager` + `DebateEngine` | 互相不依賴，直接搬移 |
+| 5 | `QueryEngine` + `AgentExecutor` | 核心邏輯，需仔細梳理共享狀態 |
+| 6 | `OllamaChatPanel` 薄化 | 最後才做，完成後主類別剩 ~500 行 |
+
+
+
+---
+
 ## 核心類別：`OllamaChatPanel`（src/ollama-chat.ts）
 
 ### 類別欄位
