@@ -44,6 +44,15 @@ D:\Tools\Ollama\
 
 ---
 
+## Review 需求
+
+| 檔案 | 行數 | 問題 |
+|------|------|------|
+| `src/ollama-chat.ts` | **9,740** | God class：UI / Agent / WhatsApp / Jira / 工具全混一檔，需拆分並 AI 深度審查 |
+| `src/extension.ts` | ~150 | `createSilent` 在啟動時背景初始化（WhatsApp 自動連線）— 留意副作用 |
+
+---
+
 ## 核心類別：`OllamaChatPanel`（src/ollama-chat.ts）
 
 ### 類別欄位
