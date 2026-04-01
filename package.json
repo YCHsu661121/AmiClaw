@@ -20,7 +20,7 @@
   "devDependencies": {
     "typescript": "^5.3.3",
     "@types/node": "^20.4.2",
-    "knip": "^5.0.0",
+    "knip": "^6.0.0",
     "@types/vscode": "^1.90.0",
     "@types/qrcode": "^1.5.5",
     "vsce": "^2.12.0"
