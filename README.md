@@ -51,6 +51,14 @@ Auto-trims old tool-call records and retries when the token limit is reached.
 
 Click 👥 to open the team member picker. Select up to 5 models, choose a sub-mode, set rounds, and click Send.
 
+| Sub-Mode | Best For |
+|----------|----------|
+| 🧩 Task Decomposition | Parallelisable coding tasks — orchestrator splits, workers execute |
+| 💬 Discussion | Design decisions, code reviews, open-ended questions |
+| 🤖 Agent (Team) | Multiple AIs independently attempt the same task |
+| 🪄 Clone Agent | Single model pipeline — one LLM plays 5 roles sequentially |
+| 🏗️ Manager | Complex features requiring coordinated implementation |
+
 #### 🧩 Task Decomposition (default)
 
 Best for **coding tasks that can be parallelised**.
@@ -76,6 +84,29 @@ Best for **design decisions, code reviews, and open-ended technical questions**.
 #### 🤖 Agent Mode (Team)
 
 Each selected model runs as a **fully independent Agent** (with all tools) on the same task simultaneously. Useful when you want multiple AIs to independently attempt the same coding task and compare results.
+
+#### 🪄 Clone Agent Mode
+
+Best for **sequential pipeline tasks where one model wears multiple hats**.
+
+A single LLM is assigned **5 distinct professional roles** in sequence, each receiving the output of the previous stage as context — creating a one-model "assembly line":
+
+| Stage | Role | Emoji | Responsibility |
+|-------|------|-------|----------------|
+| 1 | **Planner** | 🗺️ | Analyse requirements, design architecture, produce implementation plan |
+| 2 | **Developer** | 💻 | Write code following the plan; full Agent tool access (read/write files, run commands) |
+| 3 | **Reviewer** | 🔍 | Code review — find bugs, security issues, style violations |
+| 4 | **Tester** | 🧪 | Design and run tests, verify correctness |
+| 5 | **Writer** | 📝 | Write documentation, explain technical concepts clearly |
+
+**How it works:**
+1. Select **1 model** in the Team picker, choose **🪄 Clone Agent** mode, then send your task.
+2. The model first runs as Planner with full Agent capabilities.
+3. Each subsequent role receives the **original task + previous stage output** in its prompt, with a role-specific system note that shapes its persona.
+4. All 5 stages share the same model but maintain **independent Agent message histories** — each role starts fresh with only the pipeline context.
+5. Progress is tracked in the 📋 Todos panel (same as Task Decomposition mode).
+
+> **Tip:** Clone Agent is ideal when you only have one powerful model available but want the quality benefits of multi-perspective review. It's also useful for ensuring documentation is always produced as the final step.
 
 #### 🏗️ Manager Mode
 
@@ -249,6 +280,14 @@ AI 自主讀取、寫入、搜尋工作區，完成複雜任務。
 
 點擊 👥 開啟成員選擇面板，最多選 5 個模型，選擇子模式，設定回合數，送出即開始。
 
+| 子模式 | 最適合 |
+|--------|--------|
+| 🧩 任務分解 | 可平行拆分的開發任務 — 協調員拆分，工人執行 |
+| 💬 討論模式 | 設計決策、程式碼審查、開放式技術問題 |
+| 🤖 Agent 模式 | 多個 AI 各自獨立嘗試同一任務 |
+| 🪄 分身 Agent | 單一模型流水線 — 一個 LLM 依序扮演 5 種角色 |
+| 🏗️ 主管模式 | 需要協調實作的複雜功能 |
+
 #### 🧩 任務分解（預設）
 
 最適合**可拆分平行執行的開發任務**。
@@ -274,6 +313,29 @@ AI 自主讀取、寫入、搜尋工作區，完成複雜任務。
 #### 🤖 Agent 模式（Team）
 
 每個選定的模型都以**完整 Agent 身份（含所有工具）** 各自獨立執行同一個任務。適合讓多個 AI 各自嘗試同一個程式碼任務，比較結果。
+
+#### 🪄 分身 Agent 模式
+
+最適合**只有一個強力模型但想獲得多視角審查品質**的場景。
+
+同一個 LLM 依序被指派 **5 種專業角色**，每個角色接收前一階段的輸出作為上下文，形成「一人分飾五角」的流水線：
+
+| 階段 | 角色 | Emoji | 職責 |
+|------|------|-------|------|
+| 1 | **規劃者** | 🗺️ | 分析需求、設計架構、產出實作計劃 |
+| 2 | **開發者** | 💻 | 依照計劃撰寫程式碼；擁有完整 Agent 工具權限（讀寫檔案、執行命令） |
+| 3 | **評審員** | 🔍 | Code Review — 找出 bug、安全問題、風格問題 |
+| 4 | **測試員** | 🧪 | 設計並執行測試，驗證正確性 |
+| 5 | **撰寫者** | 📝 | 撰寫文件、清晰解釋技術概念 |
+
+**運作方式：**
+1. 在 Team 選單中選擇 **1 個模型**，子模式選 **🪄 分身 Agent**，送出任務。
+2. 模型先以「規劃者」身份執行，擁有完整 Agent 工具。
+3. 每個後續角色收到 **原始任務 + 上一階段輸出**，並附帶角色專屬的系統提示詞塑造人格。
+4. 5 個階段共用同一個模型，但各自擁有**獨立的 Agent 訊息歷史** — 每個角色從乾淨狀態開始，只帶入流水線上下文。
+5. 進度追蹤顯示在 📋 Todos 面板（與任務分解模式相同）。
+
+> **提示：** 當你只有一個強力模型可用，但希望獲得多角度審查的品質時，分身 Agent 特別適合。它也確保文件撰寫永遠作為最後步驟產出。
 
 #### 🏗️ 主管模式
 

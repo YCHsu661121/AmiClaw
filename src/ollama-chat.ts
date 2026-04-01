@@ -149,7 +149,7 @@ export class OllamaChatPanel {
       try {
         switch (message.type) {
           case 'send':
-            await this.handleSend(message.prompt, message.model, message.sessionId);
+            await this.handleSend(message.prompt, message.model, message.sessionId, message.images as string[] | undefined);
             break;
           case 'insert':
             await this.handleInsert(message.code);
@@ -618,7 +618,7 @@ export class OllamaChatPanel {
       pre{background:rgba(0,0,0,0.08);padding:8px;border-radius:4px;white-space:pre-wrap;margin:4px 0;font-size:0.88em}
       .bubble button{font-size:11px;padding:2px 7px;margin:3px 3px 0 0;cursor:pointer;border-radius:4px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.25);color:inherit}
       #bottomBar{border-top:1px solid rgba(128,128,128,0.15);background:var(--vscode-editor-background);padding:6px 8px;display:flex;flex-direction:column;gap:4px}
-      #topBar{display:flex;align-items:center;gap:6px;padding:0 2px 2px}
+      #topBar{display:flex;align-items:center;gap:4px 6px;padding:0 2px 2px;flex-wrap:wrap;row-gap:3px}
       #chatSessionSelect{max-width:170px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
       #chatSearchBar{display:none;align-items:center;gap:4px;padding:2px 0}
       #chatSearchInput{flex:1;font-size:12px;padding:3px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));border-radius:4px;outline:none}
@@ -653,6 +653,9 @@ export class OllamaChatPanel {
       .file-chip { display:inline-flex; align-items:center; gap:3px; background:rgba(0,120,215,0.14); border:1px solid rgba(0,120,215,0.3); border-radius:3px; padding:1px 6px; font-size:11px; margin:2px }
       .file-chip .rm { padding:0 2px; font-size:11px; background:none; border:none; cursor:pointer; opacity:0.6; color:inherit; line-height:1 }
       #attachedFiles { padding:2px 8px; display:flex; flex-wrap:wrap; min-height:0 }
+      .img-chip{display:inline-flex;align-items:center;gap:4px;background:rgba(180,100,215,0.12);border:1px solid rgba(180,100,215,0.35);border-radius:4px;padding:2px 4px 2px 2px;font-size:11px;margin:2px}
+      .img-chip img{width:36px;height:36px;object-fit:cover;border-radius:3px;display:block}
+      .img-chip .rm{padding:0 2px;font-size:11px;background:none;border:none;cursor:pointer;opacity:0.6;color:inherit;line-height:1}
       @keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
       .loading-dots{display:inline-flex;align-items:center;gap:4px;padding:4px 2px}
       .loading-dots span{animation:blink 1.4s infinite both;display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor}
@@ -729,6 +732,10 @@ export class OllamaChatPanel {
       .role-badge-planner{background:#f7a534;color:#1e1e1e}.role-badge-developer{background:#4fc1ff;color:#1e1e1e}.role-badge-reviewer{background:#c586c0;color:#fff}.role-badge-tester{background:#4ec9b0;color:#1e1e1e}.role-badge-writer{background:#89d185;color:#1e1e1e}
       .team-pick-role{font-size:10px;padding:1px 4px;border-radius:3px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.3));display:none;cursor:pointer}
       .team-pick-mini-btn{font-size:11px;padding:1px 7px;border-radius:3px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.3);color:inherit;cursor:pointer}
+      .team-pick-stepper{display:inline-flex;align-items:center;gap:2px;margin-left:4px}
+      .team-pick-step-btn{font-size:11px;width:18px;height:16px;line-height:1;padding:0;border-radius:3px;background:rgba(128,128,128,0.2);border:1px solid rgba(128,128,128,0.3);color:inherit;cursor:pointer}
+      .team-pick-step-btn:disabled{opacity:0.35;cursor:default}
+      .team-pick-step-count{min-width:14px;text-align:center;font-size:11px;font-weight:700}
       #teamPickerCount{font-size:11px;opacity:0.7}
       /* 記憶管理 Modal */
       #memModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:flex-start;justify-content:center;padding-top:40px}
@@ -792,6 +799,17 @@ export class OllamaChatPanel {
       /* Permission dialog */
       #permissionBar{display:none;padding:8px 10px;background:rgba(247,150,50,0.12);border:1px solid rgba(247,150,50,0.5);border-radius:6px;margin:4px 0;gap:8px;flex-direction:column}
       #permissionBar.visible{display:flex}
+      #permDiffPanel{display:none;border:1px solid rgba(255,255,255,0.12);border-radius:4px;overflow:hidden;max-height:260px;flex-direction:column}
+      #permDiffPanel.has-diff{display:flex}
+      .diff-tab-bar{display:flex;gap:0;background:rgba(0,0,0,0.3);flex-shrink:0}
+      .diff-tab{padding:3px 10px;font-size:11px;cursor:pointer;border-bottom:2px solid transparent;color:var(--vscode-foreground);opacity:0.6}
+      .diff-tab.active{opacity:1;border-bottom-color:#4fc1ff}
+      .diff-pane{display:none;overflow:auto;max-height:220px;background:rgba(0,0,0,0.25)}
+      .diff-pane.active{display:block}
+      .diff-pane pre{margin:0;padding:4px 6px;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;white-space:pre-wrap;word-break:break-all;line-height:1.5}
+      .diff-line-add{background:rgba(78,201,176,0.18);color:#4ec9b0}
+      .diff-line-del{background:rgba(244,71,71,0.18);color:#f44747}
+      .diff-line-ctx{color:rgba(255,255,255,0.5)}
       #permissionDesc{font-size:12px;line-height:1.5;word-break:break-all}
       #permissionBtns{display:flex;gap:6px;flex-wrap:wrap}
       .perm-btn{font-size:12px;padding:4px 12px;border-radius:4px;border:1px solid;cursor:pointer;font-weight:600}
@@ -875,11 +893,8 @@ export class OllamaChatPanel {
             <button class="team-pick-mini-btn" id="teamPickerRefresh">&#x1F504;</button>
             <label style="font-size:11px;margin-left:8px">模式：</label>
             <select id="teamModeSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
-              <option value="task" selected>&#x1F9E9; 任務分解</option>
-              <option value="discussion">&#x1F4AC; 討論模式</option>
-              <option value="agent">&#x1F916; Agent 模式</option>
-              <option value="manager">&#x1F3E2; 主管模式</option>
-              <option value="clone">&#x1FA84; 分身 Agent</option>
+              <option value="parallel" selected>&#x26A1; 平行協作 Agent</option>
+              <option value="manager">&#x1F3E2; 主管模式（含 Agent 能力）</option>
             </select>
             <label style="font-size:11px;margin-left:6px">回合：</label>
             <select id="teamRoundsSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
@@ -897,6 +912,7 @@ export class OllamaChatPanel {
               <option value="5">5</option>
             </select>
             <span style="flex:1"></span>
+            <button class="team-pick-mini-btn" id="teamQuickSetupBtn" title="快速配置：主管 + 3 工程師 + 測試員">&#x26A1; 5-slot</button>
             <span id="teamPickerCount">0/5 已選</span>
         </div>
         <div id="teamPickerList"><span style="font-size:11px;opacity:0.6">載入中…</span></div>
@@ -941,6 +957,16 @@ export class OllamaChatPanel {
       </div>
       <div id="permissionBar">
         <div id="permissionDesc"></div>
+        <div id="permDiffPanel">
+          <div class="diff-tab-bar">
+            <span class="diff-tab active" data-pane="unified">統一 Diff</span>
+            <span class="diff-tab" data-pane="before">改前</span>
+            <span class="diff-tab" data-pane="after">改後</span>
+          </div>
+          <div class="diff-pane active" id="diffPaneUnified"><pre></pre></div>
+          <div class="diff-pane" id="diffPaneBefore"><pre></pre></div>
+          <div class="diff-pane" id="diffPaneAfter"><pre></pre></div>
+        </div>
         <div id="permissionBtns">
           <button class="perm-btn perm-btn-allow" id="permAllow">✅ 允許（此次）</button>
           <button class="perm-btn perm-btn-always" id="permAlways">♾️ 永遠允許此類</button>
@@ -1140,11 +1166,15 @@ export class OllamaChatPanel {
           else if (msg.type === 'teamRoundReviewStart')  { startTeamReview(msg.id); }
           else if (msg.type === 'teamRoundReviewChunk')  { appendTeamReviewChunk(msg.id, msg.chunk); }
           else if (msg.type === 'teamRoundDone')         { finalizeTeamRound(msg.id, msg.approved); }
+          else if (msg.type === 'teamTodoListStart') { createTeamTodoListBubble(); }
+          else if (msg.type === 'teamTodoListChunk')  { appendTeamTodoListChunk(msg.chunk); }
+          else if (msg.type === 'teamTodoListEnd')    { /* bubble stays */ }
           else if (msg.type === 'teamSynthStart')  { createTeamSynthBubble(); }
           else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
           else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
           else if (msg.type === 'teamAgentStart')  { var tah = document.createElement('div'); tah.className = 'team-agent-header'; tah.textContent = '\uD83E\uDD16 Agent \u63A5\u529B\u57F7\u884C\u8A08\u5283\uFF08' + (msg.model||'') + '\uFF09'; chat.appendChild(tah); chat.scrollTop = chat.scrollHeight; }
           else if (msg.type === 'teamModelList')   { populateTeamPicker(msg.models); populateDebatePicker(msg.models); populateComparePicker(msg.models); }
+          else if (msg.type === 'teamRolesConfig') { if (msg.roles && msg.roles.length) _teamRolesConfig = msg.roles; }
           else if (msg.type === 'teamTodoList')  { createTodoPanel(msg.tasks); }
           else if (msg.type === 'teamTodoStart') { updateTodo(msg.idx, 'running', msg.worker); }
           else if (msg.type === 'teamTodoDone')  { updateTodo(msg.idx, 'done'); }
@@ -1165,7 +1195,7 @@ export class OllamaChatPanel {
           }
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
-          else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm); }
+          else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm, msg.diff); }
           else if (msg.type === 'waQrCode') {
             var _wqm = document.getElementById('waQrModal');
             var _wqi = document.getElementById('waQrImg');
@@ -1283,6 +1313,7 @@ export class OllamaChatPanel {
       const modelSelect = document.getElementById('modelSelect');
       let streamMode = false;
       let attachedFiles = [];
+      let attachedImages = []; // [{dataUrl}] pasted images
       let _streamNode = null;
       let _lastStreamTokens = 0;
       let _lastStreamTps = 0;
@@ -1300,6 +1331,13 @@ export class OllamaChatPanel {
       let _orchestratorNode = null;
       let _orchestratorModel = '';
       let _teamAvailModels = []; // [{id, label, vendor}]
+      var _teamRolesConfig = [
+        { key: 'planner',   label: '規劃者', emoji: '🗺️', color: '#f7a534', systemPrompt: '你的職責是【規劃者】：分析需求、制定解題架構、將任務拆分為有序步驟、確保整體方向正確。' },
+        { key: 'developer', label: '開發者', emoji: '💻', color: '#4fc1ff', systemPrompt: '你的職責是【開發者】：撰寫程式碼、實作功能、提供具體技術解決方案、確保程式邏輯正確。' },
+        { key: 'reviewer',  label: '評審員', emoji: '🔍', color: '#c586c0', systemPrompt: '你的職責是【評審員】：審查方案與程式碼品質、找出潛在問題與改進空間、以批判視角提高整體品質。' },
+        { key: 'tester',    label: '測試員', emoji: '🧪', color: '#4ec9b0', systemPrompt: '你的職責是【測試員】：思考邊界情況、撰寫測試案例、找出可能的錯誤與漏洞、確保功能穩定性。' },
+        { key: 'writer',    label: '撰寫者', emoji: '📝', color: '#89d185', systemPrompt: '你的職責是【撰寫者】：清晰解釋技術概念、撰寫說明文件、確保溝通明確易懂。' }
+      ];
       const _debateNodes = {}; // speaker -> { node, body, thinkNode, thinkChars, thinkStart, thinkTimer }
       let _debateLabelA = '', _debateLabelB = '', _debateLabelJ = '';
       let _debateColorA = '#4fc1ff', _debateColorB = '#ce9178', _debateColorJ = '#89d185';
@@ -1496,6 +1534,24 @@ export class OllamaChatPanel {
       }
       prompt.addEventListener('input', resizePrompt);
 
+      // ── 貼上影像 ──────────────────────────────────────────────────────────
+      prompt.addEventListener('paste', function(e) {
+        var items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf('image') !== -1) {
+            e.preventDefault();
+            var file = items[i].getAsFile();
+            if (!file) continue;
+            var reader = new FileReader();
+            (function(f) {
+              reader.onload = function(evt) { addImageChip(evt.target.result); setSendEnabled(true); };
+            })(file);
+            reader.readAsDataURL(file);
+          }
+        }
+      });
+
       // ── Jira key auto-detect ──────────────────────────────────────────────
       var _jiraChips = document.createElement('div');
       _jiraChips.id = 'jiraChips';
@@ -1545,7 +1601,22 @@ export class OllamaChatPanel {
         const m = modelSelect ? modelSelect.value : undefined;
         const label = text.length > 60 ? text.slice(0, 60) + '\u2026' : text;
         autoTitleFromPrompt(text);
-        appendMessage('user', label + (attachedFiles.length ? ' (\uD83D\uDCCE ' + attachedFiles.length + ')' : ''), undefined, undefined, text);
+        appendMessage('user', label + (attachedFiles.length ? ' (\uD83D\uDCCE ' + attachedFiles.length + ')' : '') + (attachedImages.length ? ' (\uD83D\uDDBC\uFE0F ' + attachedImages.length + ')' : ''), undefined, undefined, text);
+        if (attachedImages.length) {
+          var _imgSnap = attachedImages.slice();
+          var _lastUsr = chat.querySelector('.msg.user:last-child');
+          if (_lastUsr) {
+            var _thumbRow = document.createElement('div');
+            _thumbRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-top:4px';
+            _imgSnap.forEach(function(d) {
+              var _t = document.createElement('img');
+              _t.src = d;
+              _t.style.cssText = 'width:72px;height:72px;object-fit:cover;border-radius:4px;border:1px solid rgba(128,128,128,0.3)';
+              _thumbRow.appendChild(_t);
+            });
+            _lastUsr.querySelector('.bubble').appendChild(_thumbRow);
+          }
+        }
         if (teamMode) {
             var selModels = getSelectedTeamModels();
             var roundsEl = document.getElementById('teamRoundsSelect');
@@ -1554,7 +1625,7 @@ export class OllamaChatPanel {
             var teamExecMode = teamModeEl ? teamModeEl.value : 'task';
             var maxParEl = document.getElementById('teamMaxParallelSelect');
             var maxParVal = maxParEl ? parseInt(maxParEl.value) : 3;
-            var tModeLabel = teamExecMode === 'discussion' ? '\u{1F4AC} \u8a0e\u8ad6\u4e2d\u2026' : teamExecMode === 'agent' ? '\u{1F916} Agent \u57f7\u884c\u4e2d\u2026' : teamExecMode === 'manager' ? '\u{1F3E2} \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : teamExecMode === 'clone' ? '\u{1FA84} \u5206\u8eab Agent \u57f7\u884c\u4e2d\u2026' : '\u{1F465} \u5718\u968a\u8a0e\u8ad6\u4e2d\u2026';
+            var tModeLabel = teamExecMode === 'manager' ? '\u{1F3E2} \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : '\u26A1 \u5e73\u884c\u5354\u4f5c\u4e2d\u2026';
             vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, roles: getTeamModelRoles(), rounds: roundsVal, teamExecMode: teamExecMode, maxParallel: maxParVal, sessionId: _activeChatSessionId });
             prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
             if (statusBar) statusBar.textContent = tModeLabel;
@@ -1580,7 +1651,8 @@ export class OllamaChatPanel {
             if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u4e2d\u2026';
             return;
         }
-        vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId });
+        var _imgs = attachedImages.map(function(d){ return d.replace(/^data:[^;]+;base64,/, ''); });
+        vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId, images: _imgs.length ? _imgs : undefined });
         prompt.value = ''; resizePrompt(); clearFiles();
         setSendEnabled(false);
         appendLoadingBubble();
@@ -1641,6 +1713,67 @@ export class OllamaChatPanel {
       });
       var tpr = document.getElementById('teamPickerRefresh');
       if (tpr) tpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
+
+      // ⚡ 快速 5-slot 配置：依模型廠商自動指派角色
+      // Claude → 工程師角色 (architect / developer / integrator)
+      // OpenAI (gpt/o1/o3) 或其他 → 主管 / 測試員
+      var tqs = document.getElementById('teamQuickSetupBtn');
+      if (tqs) tqs.addEventListener('click', function() {
+        var rows = document.querySelectorAll('#teamPickerList .team-pick-row');
+        if (rows.length < 1) return;
+
+        // 分類模型
+        var _claudeRows = [], _openRows = [];
+        rows.forEach(function(row) {
+          var cb = row.querySelector('input[type=checkbox]');
+          if (!cb) return;
+          var id = (cb.value || '').toLowerCase();
+          var isClaude = id.indexOf('claude') !== -1;
+          if (isClaude) _claudeRows.push(row); else _openRows.push(row);
+        });
+
+        // 角色分配：OpenAI 先拿 manager，剩餘 OpenAI 拿 tester；Claude 依序拿工程師角色
+        var _engRoles = ['architect', 'developer', 'integrator'];
+        var _managerRow = _openRows[0] || null;
+        var _testerRows = _openRows.slice(1);          // 額外 OpenAI → tester
+        var _engRows = _claudeRows.slice(0, 3);        // 最多 3 個 Claude → 工程師
+        var _extraRows = _claudeRows.slice(3).concat(_testerRows.slice(1)); // 超出的全部勾掉
+
+        // 先全部取消勾選
+        rows.forEach(function(row) {
+          var cb = row.querySelector('input[type=checkbox]');
+          var cs = row.querySelector('.team-pick-step-count');
+          var stepper = row.querySelector('.team-pick-stepper');
+          var cloneCount = row.querySelector('.team-pick-clone-count');
+          if (cb) cb.checked = false;
+          if (stepper) stepper.style.display = 'none';
+          if (cs) cs.textContent = '1';
+          if (cloneCount) cloneCount.style.display = 'none';
+        });
+
+        function _assignRole(row, roleKey) {
+          var cb = row.querySelector('input[type=checkbox]');
+          var stepper = row.querySelector('.team-pick-stepper');
+          var roleSelect = row.querySelector('select.team-pick-role');
+          if (!cb) return;
+          cb.checked = true;
+          if (stepper) stepper.style.display = 'inline-flex';
+          if (roleSelect) {
+            var found = false;
+            Array.from(roleSelect.options).forEach(function(opt) { if (opt.value === roleKey) { roleSelect.value = roleKey; found = true; } });
+            if (!found && roleSelect.options.length > 0) roleSelect.value = roleSelect.options[0].value;
+          }
+        }
+
+        if (_managerRow) _assignRole(_managerRow, 'manager');
+        _engRows.forEach(function(row, i) { _assignRole(row, _engRoles[i] || 'developer'); });
+        // 若有第二個 OpenAI → tester
+        if (_testerRows.length > 0) _assignRole(_testerRows[0], 'tester');
+
+        updateTeamPickerCount();
+        updateTeamRoleLabels();
+      });
+
       var tmodeEl = document.getElementById('teamModeSelect');
       if (tmodeEl) tmodeEl.addEventListener('change', function() { updateTeamRoleLabels(); });
 
@@ -1731,8 +1864,23 @@ export class OllamaChatPanel {
         chip.appendChild(rm); af.appendChild(chip);
       }
 
+      function addImageChip(dataUrl) {
+        var idx = attachedImages.length;
+        attachedImages.push(dataUrl);
+        const af = document.getElementById('attachedFiles');
+        const chip = document.createElement('span'); chip.className = 'img-chip';
+        const thumb = document.createElement('img'); thumb.src = dataUrl; thumb.alt = '\uD83D\uDDBC\uFE0F';
+        const rm = document.createElement('button'); rm.className = 'rm'; rm.textContent = '\u00D7'; rm.title = '\u79fb\u9664';
+        rm.addEventListener('click', function() {
+          attachedImages.splice(attachedImages.indexOf(dataUrl), 1);
+          chip.remove();
+        });
+        chip.appendChild(thumb); chip.appendChild(rm); af.appendChild(chip);
+      }
+
       function clearFiles() {
         attachedFiles = [];
+        attachedImages = [];
         const af = document.getElementById('attachedFiles'); if (af) af.innerHTML = '';
       }
 
@@ -2202,6 +2350,23 @@ export class OllamaChatPanel {
         }
       }
 
+      var _todoListNode = null;
+      function createTeamTodoListBubble() {
+        var node = document.createElement('div'); node.className = 'msg assistant team-todolist-node';
+        var bub = document.createElement('div'); bub.className = 'bubble';
+        var hdr = document.createElement('div'); hdr.className = 'team-todolist-header';
+        hdr.textContent = '\u2705 \u57f7\u884c\u8a08\u756b\uff08ToDo List\uff09';
+        var body = document.createElement('div'); body.className = 'response-body'; body.style.whiteSpace = 'pre-wrap';
+        bub.appendChild(hdr); bub.appendChild(body); node.appendChild(bub);
+        chat.appendChild(node); chat.scrollTop = chat.scrollHeight;
+        _todoListNode = { node: node, body: body };
+      }
+      function appendTeamTodoListChunk(chunk) {
+        if (!_todoListNode) return;
+        _todoListNode.body.textContent += chunk;
+        chat.scrollTop = chat.scrollHeight;
+      }
+
       function createTeamSynthBubble() {
         var node = document.createElement('div'); node.className = 'msg assistant team-synth-node';
         var bub = document.createElement('div'); bub.className = 'bubble';
@@ -2368,41 +2533,84 @@ export class OllamaChatPanel {
         _teamAvailModels.forEach(function(m, i) {
           var row = document.createElement('div'); row.className = 'team-pick-row';
           var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'tp' + i; cb.value = m.id;
-          cb.addEventListener('change', updateTeamPickerCount);
           var lbl = document.createElement('label'); lbl.htmlFor = 'tp' + i;
           lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
           lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label + (m.vendor === 'copilot' && m.multiplier ? '  ' + m.multiplier : '');
+          // \u00d7N clone count span (sibling, not inside label)
+          var cloneCount = document.createElement('span'); cloneCount.className = 'team-pick-clone-count';
+          cloneCount.style.cssText = 'display:none;font-size:10px;font-weight:700;color:var(--vscode-charts-orange,#f7a534);margin-left:2px;vertical-align:middle';
+          // count stepper
+          var stepper = document.createElement('span'); stepper.className = 'team-pick-stepper'; stepper.style.cssText = 'display:none;align-items:center;gap:2px;margin-left:4px';
+          var btnMinus = document.createElement('button'); btnMinus.type = 'button'; btnMinus.textContent = '\u2212'; btnMinus.className = 'team-pick-step-btn';
+          var countSpan = document.createElement('span'); countSpan.textContent = '1'; countSpan.className = 'team-pick-step-count'; countSpan.style.cssText = 'min-width:14px;text-align:center;font-size:11px;font-weight:700';
+          var btnPlus = document.createElement('button'); btnPlus.type = 'button'; btnPlus.textContent = '+'; btnPlus.className = 'team-pick-step-btn';
+          btnMinus.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); var n = parseInt(countSpan.textContent)||1; if (n > 1) { countSpan.textContent = String(n-1); cloneCount.textContent = '\u00D7' + (n-1); cloneCount.style.display = n-1 > 1 ? 'inline' : 'none'; } else { cb.checked = false; stepper.style.display = 'none'; countSpan.textContent = '1'; cloneCount.style.display = 'none'; } updateTeamPickerCount(); });
+          btnPlus.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); var total = getTeamTotalCount(); if (total >= 5) return; var n = parseInt(countSpan.textContent)||1; if (n < 5) { countSpan.textContent = String(n+1); cloneCount.textContent = '\u00D7' + (n+1); cloneCount.style.display = 'inline'; } updateTeamPickerCount(); });
+          stepper.appendChild(btnMinus); stepper.appendChild(countSpan); stepper.appendChild(btnPlus);
+          cb.addEventListener('change', function() { if (cb.checked) { stepper.style.display = 'inline-flex'; countSpan.textContent = '1'; cloneCount.style.display = 'none'; } else { stepper.style.display = 'none'; countSpan.textContent = '1'; cloneCount.style.display = 'none'; } updateTeamPickerCount(); });
           var roleSelect = document.createElement('select');
           roleSelect.className = 'team-pick-role'; roleSelect.dataset.modelId = m.id;
-          [['\u{1F5FA}\uFE0F \u898f\u5283\u8005','planner'],['\uD83D\uDCBB \u958b\u767c\u8005','developer'],['\uD83D\uDD0D \u8A55\u5BE9\u54E1','reviewer'],['\uD83E\uDDEA \u6E2C\u8A66\u54E1','tester'],['\uD83D\uDCDD \u64B0\u5BEB\u8005','writer']].forEach(function(opt) {
-            var o = document.createElement('option'); o.value = opt[1]; o.textContent = opt[0]; roleSelect.appendChild(o);
+          _teamRolesConfig.forEach(function(r) {
+            var o = document.createElement('option'); o.value = r.key; o.textContent = r.emoji + ' ' + r.label; roleSelect.appendChild(o);
           });
+          // auto-assign default role by slot index
+          if (_teamRolesConfig.length) roleSelect.value = _teamRolesConfig[i % _teamRolesConfig.length].key;
           roleSelect.addEventListener('change', updateTeamRoleLabels);
-          row.appendChild(cb); row.appendChild(lbl); row.appendChild(roleSelect); list.appendChild(row);
+          row.appendChild(cb); row.appendChild(lbl); row.appendChild(cloneCount); row.appendChild(stepper); row.appendChild(roleSelect); list.appendChild(row);
         });
         updateTeamPickerCount();
       }
+      function getTeamTotalCount() {
+        var total = 0;
+        document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
+          var cb = row.querySelector('input[type=checkbox]');
+          var cs = row.querySelector('.team-pick-step-count');
+          if (cb && cb.checked) total += cs ? (parseInt(cs.textContent)||1) : 1;
+        });
+        return total;
+      }
       function updateTeamPickerCount() {
-        var cbs = document.querySelectorAll('#teamPickerList input[type=checkbox]');
-        var n = 0; cbs.forEach(function(c) { if (c.checked) n++; });
-        var el = document.getElementById('teamPickerCount'); if (el) el.textContent = n + '/5 \u5df2\u9078';
-        cbs.forEach(function(c) { if (!c.checked) c.disabled = n >= 5; });
+        var total = getTeamTotalCount();
+        var el = document.getElementById('teamPickerCount'); if (el) el.textContent = total + '/5 \u5df2\u9078';
+        document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
+          var cb = row.querySelector('input[type=checkbox]');
+          var btnPlus = row.querySelector('.team-pick-step-btn:last-child');
+          if (cb && !cb.checked) cb.disabled = total >= 5;
+          if (btnPlus) btnPlus.disabled = total >= 5;
+        });
         updateTeamRoleLabels();
       }
       function updateTeamRoleLabels() {
-        var _ROLE_LABELS = { planner: '\uD83D\uDDFA\uFE0F \u898f\u5283\u8005', developer: '\uD83D\uDCBB \u958b\u767c\u8005', reviewer: '\uD83D\uDD0D \u8A55\u5BE9\u54E1', tester: '\uD83E\uDDEA \u6E2C\u8A66\u54E1', writer: '\uD83D\uDCDD \u64B0\u5BEB\u8005' };
-        var _ROLE_CLS   = { planner: 'role-badge role-badge-planner', developer: 'role-badge role-badge-developer', reviewer: 'role-badge role-badge-reviewer', tester: 'role-badge role-badge-tester', writer: 'role-badge role-badge-writer' };
+        var _rc = {}; var _rcolor = {};
+        _teamRolesConfig.forEach(function(r) { _rc[r.key] = r.emoji + ' ' + r.label; _rcolor[r.key] = r.color || '#4fc1ff'; });
         document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
           var cb = row.querySelector('input[type=checkbox]');
           var lbl = row.querySelector('label');
           var roleSel = row.querySelector('select.team-pick-role');
+          var cs = row.querySelector('.team-pick-step-count');
           if (!cb || !lbl) return;
           if (roleSel) roleSel.style.display = cb.checked ? '' : 'none';
           var badge = lbl.querySelector('.role-badge');
           if (!badge) { badge = document.createElement('span'); badge.className = 'role-badge'; lbl.appendChild(badge); }
           if (cb.checked && roleSel) {
-            var r = roleSel.value || 'developer';
-            badge.textContent = _ROLE_LABELS[r] || r; badge.className = _ROLE_CLS[r] || 'role-badge role-badge-member'; badge.style.display = '';
+            var baseKey = roleSel.value || (_teamRolesConfig[0] && _teamRolesConfig[0].key) || 'developer';
+            var n = cs ? (parseInt(cs.textContent)||1) : 1;
+            var baseIdx = _teamRolesConfig.findIndex(function(r) { return r.key === baseKey; });
+            if (n <= 1 || _teamRolesConfig.length === 0) {
+              // 單個：只顯示 base role
+              badge.textContent = _rc[baseKey] || baseKey;
+              badge.style.cssText = 'display:inline-block;font-size:10px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:5px;vertical-align:middle;white-space:nowrap;background:' + (_rcolor[baseKey]||'#4fc1ff') + ';color:#1e1e1e';
+            } else {
+              // ×N：顯示所有循環角色序列
+              var parts = [];
+              for (var k = 0; k < n; k++) {
+                var ri = baseIdx >= 0 ? (baseIdx + k) % _teamRolesConfig.length : -1;
+                var rk = ri >= 0 ? _teamRolesConfig[ri].key : baseKey;
+                parts.push(_teamRolesConfig[ri >= 0 ? ri : 0].emoji + ' ' + _teamRolesConfig[ri >= 0 ? ri : 0].label);
+              }
+              badge.textContent = parts.join(' → ');
+              badge.style.cssText = 'display:inline-block;font-size:10px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:5px;vertical-align:middle;white-space:nowrap;background:linear-gradient(90deg,#f7a534,#4fc1ff);color:#1e1e1e';
+            }
           } else {
             badge.style.display = 'none';
           }
@@ -2410,17 +2618,30 @@ export class OllamaChatPanel {
       }
       function getSelectedTeamModels() {
         var r = [];
-        document.querySelectorAll('#teamPickerList input[type=checkbox]:checked').forEach(function(c) { r.push(c.value); });
+        document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
+          var cb = row.querySelector('input[type=checkbox]');
+          var cs = row.querySelector('.team-pick-step-count');
+          if (cb && cb.checked) { var n = cs ? (parseInt(cs.textContent)||1) : 1; for (var k = 0; k < n; k++) r.push(cb.value); }
+        });
         return r;
       }
       function getTeamModelRoles() {
-        var roles = {};
+        var arr = [];
         document.querySelectorAll('#teamPickerList .team-pick-row').forEach(function(row) {
           var cb = row.querySelector('input[type=checkbox]');
+          var cs = row.querySelector('.team-pick-step-count');
           var roleSel = row.querySelector('select.team-pick-role');
-          if (cb && cb.checked && roleSel) roles[cb.value] = roleSel.value || 'developer';
+          if (cb && cb.checked && roleSel) {
+            var n = cs ? (parseInt(cs.textContent)||1) : 1;
+            var baseRole = roleSel.value || (_teamRolesConfig[0] && _teamRolesConfig[0].key) || 'developer';
+            var baseIdx = _teamRolesConfig.findIndex(function(r) { return r.key === baseRole; });
+            for (var k = 0; k < n; k++) {
+              var ri = baseIdx >= 0 ? (baseIdx + k) % _teamRolesConfig.length : -1;
+              arr.push(ri >= 0 ? _teamRolesConfig[ri].key : baseRole);
+            }
+          }
         });
-        return roles;
+        return arr;
       }
 
       function populateComparePicker(models) {
@@ -2964,20 +3185,99 @@ export class OllamaChatPanel {
       // JS-side safety net: if connectionStatus never arrives in 5s, ask again
       // ── Permission dialog ───────────────────────────────────────────────
       var _currentPermCategory = '';
-      function showPermissionBar(category, description, forceConfirm) {
+      function buildUnifiedDiff(before, after) {
+        var NO_BEFORE = !before && after;
+        var bLines = NO_BEFORE ? [] : (before || '').split('\\n');
+        var aLines = (after  || '').split('\\n');
+        var result = [];
+        var LIMIT = 300;
+        var bi = 0, ai = 0;
+        while (bi < bLines.length || ai < aLines.length) {
+          if (result.length >= LIMIT) { result.push({ t: '~', s: '... (' + (bLines.length + aLines.length - bi - ai) + ' more lines)' }); break; }
+          var bl = bi < bLines.length ? bLines[bi] : null;
+          var al = ai < aLines.length ? aLines[ai] : null;
+          if (bl === null) { result.push({ t: '+', s: al }); ai++; }
+          else if (al === null) { result.push({ t: '-', s: bl }); bi++; }
+          else if (bl === al) { result.push({ t: ' ', s: bl }); bi++; ai++; }
+          else { result.push({ t: '-', s: bl }); result.push({ t: '+', s: al }); bi++; ai++; }
+        }
+        // Trim context: only keep lines near changes (+/-)
+        var CTX = 3;
+        var keep = {};
+        for (var ri = 0; ri < result.length; ri++) {
+          if (result[ri].t !== ' ') {
+            for (var d = -CTX; d <= CTX; d++) { if (ri + d >= 0 && ri + d < result.length) keep[ri + d] = true; }
+          }
+        }
+        var trimmed = [], lastKept = -1;
+        for (var ri = 0; ri < result.length; ri++) {
+          if (keep[ri]) {
+            if (lastKept >= 0 && ri > lastKept + 1) trimmed.push({ t: '~', s: '' });
+            trimmed.push(result[ri]);
+            lastKept = ri;
+          }
+        }
+        return trimmed.length > 0 ? trimmed : [{ t: ' ', s: '(no changes)' }];
+      }
+
+      function showDiffPanel(diff) {
+        var panel = document.getElementById('permDiffPanel');
+        if (!panel) return;
+        if (!diff) { panel.classList.remove('has-diff'); return; }
+        panel.classList.add('has-diff');
+        var before = diff.before || '';
+        var after  = diff.after  || '';
+        // Unified pane
+        var unifiedPre = document.querySelector('#diffPaneUnified pre');
+        if (unifiedPre) {
+          unifiedPre.innerHTML = '';
+          var lines = buildUnifiedDiff(before, after);
+          for (var li = 0; li < lines.length; li++) {
+            var item = lines[li];
+            var span = document.createElement('span');
+            var prefix = item.t === '+' ? '+  ' : item.t === '-' ? '-  ' : item.t === '~' ? '   ' : '   ';
+            span.className = item.t === '+' ? 'diff-line-add' : item.t === '-' ? 'diff-line-del' : 'diff-line-ctx';
+            span.textContent = prefix + (item.s || '') + '\\n';
+            unifiedPre.appendChild(span);
+          }
+        }
+        // Before pane
+        var beforePre = document.querySelector('#diffPaneBefore pre');
+        if (beforePre) { beforePre.textContent = before || '(new file)'; }
+        // After pane
+        var afterPre = document.querySelector('#diffPaneAfter pre');
+        if (afterPre) { afterPre.textContent = after; }
+      }
+
+      // Diff tab switching
+      document.querySelectorAll('.diff-tab').forEach(function(tab) {
+        tab.addEventListener('click', function() {
+          var pane = this.dataset.pane;
+          document.querySelectorAll('.diff-tab').forEach(function(t) { t.classList.remove('active'); });
+          this.classList.add('active');
+          document.querySelectorAll('.diff-pane').forEach(function(p) { p.classList.remove('active'); });
+          var target = document.getElementById('diffPane' + pane.charAt(0).toUpperCase() + pane.slice(1));
+          if (target) target.classList.add('active');
+        });
+      });
+
+      function showPermissionBar(category, description, forceConfirm, diff) {
         _currentPermCategory = category || '';
         var bar = document.getElementById('permissionBar');
         var desc = document.getElementById('permissionDesc');
         if (!bar || !desc) return;
-        var catLabel = { write: '\u{1F4BE} \u5beb\u5165\u6a94\u6848', delete: '\u{1F5D1} \u522a\u9664\u6a94\u6848', run: '\u{25B6}\uFE0F \u57f7\u884c\u6307\u4ee4' }[category] || '\u26A0\uFE0F \u654f\u611f\u64cd\u4f5c';
+        var catLabel = { write: '\uD83D\uDCBE \u5beb\u5165\u6a94\u6848', delete: '\uD83D\uDDD1 \u522a\u9664\u6a94\u6848', run: '\u25B6\uFE0F \u57f7\u884c\u6307\u4ee4' }[category] || '\u26A0\uFE0F \u654f\u611f\u64cd\u4f5c';
         desc.textContent = catLabel + '\uff1a' + description;
         bar.classList.add('visible');
         var permAlwaysEl = document.getElementById('permAlways');
         if (permAlwaysEl) { permAlwaysEl.style.display = forceConfirm ? 'none' : ''; }
+        showDiffPanel(diff || null);
       }
       function hidePermissionBar() {
         var bar = document.getElementById('permissionBar');
         if (bar) bar.classList.remove('visible');
+        var panel = document.getElementById('permDiffPanel');
+        if (panel) panel.classList.remove('has-diff');
         _currentPermCategory = '';
       }
       var permAllow = document.getElementById('permAllow');
@@ -3044,7 +3344,7 @@ export class OllamaChatPanel {
 </html>`;
   }
 
-  private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number, teamExecMode?: string, maxParallel?: number, roles?: Record<string, string>): Promise<void> {
+  private async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number, teamExecMode?: string, maxParallel?: number, roles?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const defaultBaseUrl = urls[0];
@@ -3058,6 +3358,9 @@ export class OllamaChatPanel {
       ? selectedModels.find(m => isOllamaModel(m)) ?? selectedModels[0]
       : configuredModel;
     const allModels = (selectedModels && selectedModels.length > 0) ? selectedModels.slice(0, 5) : (primaryOllamaModel ? [primaryOllamaModel] : []);
+    // role display helper — shared across all team modes within handleTeamSend
+    const _tsRolesCfg = cfg.get<Array<{key:string;label:string;emoji:string}>>('teamRoles', []);
+    const _tsRolePrefix = (idx: number) => { const k = roles?.[idx]; const r = k ? _tsRolesCfg.find(c => c.key === k) : undefined; return r ? `${r.emoji} ${r.label} ` : ''; };
 
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
     this._teamCancel = false;
@@ -3074,15 +3377,13 @@ export class OllamaChatPanel {
       return this._handleTeamDiscussion(prompt, allModels, roundsNum, roles);
     }
 
-    // ── Agent 模式：每個成員用 handleAgent（含工具）各自獨立完成任務 ──────
-    if (teamExecMode === 'agent') {
+    // ── 平行協作 Agent：包含旗下 task/discussion/parallel ────────────────────────
+    if (teamExecMode === 'task' || teamExecMode === 'discussion' || teamExecMode === 'parallel') {
       return this._handleTeamAgent(prompt, allModels, roles);
     }
-    if (teamExecMode === 'manager') {
+    // ── Agent 模式已合併入主管模式 ──────────────────────────────────────────
+    if (teamExecMode === 'agent' || teamExecMode === 'manager') {
       return this._handleTeamManager(prompt, allModels, roundsNum, roles);
-    }
-    if (teamExecMode === 'clone') {
-      return this._handleTeamClone(prompt, allModels[0] ?? (selectedModels?.[0] ?? ''));
     }
     if (teamExecMode === 'compare') {
       return this._handleTeamCompare(prompt, allModels);
@@ -3360,8 +3661,8 @@ export class OllamaChatPanel {
 
           const id = `team_t${activeItem.index}`;
           const color = COLORS[activeItem.index % COLORS.length];
-          this._panel.webview.postMessage({ type: 'teamTodoStart', idx: activeItem.index, worker: model });
-          this._panel.webview.postMessage({ type: 'teamMemberStart', id, model, color, task: activeItem.task });
+          this._panel.webview.postMessage({ type: 'teamTodoStart', idx: activeItem.index, worker: _tsRolePrefix(workerIdx - 1) + getDisplay(model) });
+          this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: _tsRolePrefix(workerIdx - 1) + getDisplay(model), color, task: activeItem.task });
           if (activeItem.retries > 0) {
             this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: `\uD83D\uDD04 \u7b2c ${activeItem.retries} \u6b21\u91cd\u8a66\uff0c\u6539\u7528 ${getDisplay(model)}...\n` });
           }
@@ -3443,6 +3744,9 @@ export class OllamaChatPanel {
   }
 
   private static buildRoleSystemNote(role: string): string {
+    const configured = vscode.workspace.getConfiguration('amiAiClaw').get<Array<{key:string;systemPrompt:string}>>('teamRoles', []);
+    const found = configured.find(r => r.key === role);
+    if (found?.systemPrompt) return found.systemPrompt;
     switch (role) {
       case 'planner':   return '你的職責是【規劃者】：分析需求、制定解題架構、將任務拆分為有序步驟、確保整體方向正確。';
       case 'developer': return '你的職責是【開發者】：撰寫程式碼、實作功能、提供具體技術解決方案、確保程式邏輯正確。';
@@ -3455,7 +3759,7 @@ export class OllamaChatPanel {
 
   // ── Team 討論模式 ────────────────────────────────────────────────────────
   /** 全員同題作答，每回合每人輪流發言，最後一輪收尾合成 */
-  private async _handleTeamDiscussion(prompt: string, allModels: string[], maxRounds: number, roles?: Record<string, string>): Promise<void> {
+  private async _handleTeamDiscussion(prompt: string, allModels: string[], maxRounds: number, roles?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
@@ -3562,9 +3866,10 @@ export class OllamaChatPanel {
         const color = COLORS[mi % COLORS.length];
         const display = getDisplay(model);
         const speakerKey = String(mi); // use index as "speaker" for debateTurn
-        this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: speakerKey, round, label: display, color });
+        const _discRolePrefix = (() => { const k = roles?.[mi]; const r = k ? cfg.get<Array<{key:string;label:string;emoji:string}>>('teamRoles', []).find(c => c.key === k) : undefined; return r ? `${r.emoji} ${r.label} ` : ''; })();
+        this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: speakerKey, round, label: _discRolePrefix + display, color });
 
-        const hist = histories.get(model)!;
+        const hist = histories.get(model)!
         let response = '';
         try {
           if (model.startsWith('copilot::')) {
@@ -3573,7 +3878,7 @@ export class OllamaChatPanel {
               (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); });
           } else {
             const { url, model: mName } = decodeOllamaModel(model, urls);
-            const _roleNote = (roles && roles[model]) ? OllamaChatPanel.buildRoleSystemNote(roles[model]) + ' ' : '';
+            const _roleNote = roles?.[mi] ? OllamaChatPanel.buildRoleSystemNote(roles[mi]) + ' ' : '';
             const messages: ChatMessage[] = [
               { role: 'system', content: `你是 ${display}，正在和其他 AI 討論以下問題。${_roleNote}你可以參考工作區檔案內容進行分析。每次回答請根據前幾輪的對話內容延伸，不要重複，請提出新觀點或補充說明。` },
               ...hist.map(h => ({ role: h.role as 'user'|'assistant', content: h.content }))
@@ -3655,9 +3960,14 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
   }
 
-  // ── Team Agent 模式 ──────────────────────────────────────────────────────
-  /** 每個選定的模型各自以 Agent 身份（含工具）處理同一個任務 */
-  private async _handleTeamAgent(prompt: string, allModels: string[], roles?: Record<string, string>): Promise<void> {
+  // ── Team 平行協作討論模式 ──────────────────────────────────────────────────
+  /**
+   * Phase-1：多輪討論，每人每輪都能看到前面所有人的觀點並回應
+   * Phase-1.5：依據討論意見生成 ToDo List
+   * Phase-2：各成員依角色循序以 Agent 能力執行（含工具）
+   * Phase-3：合成共識結論存入 teamscontext.md
+   */
+  private async _handleTeamAgent(prompt: string, allModels: string[], roles?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
@@ -3666,55 +3976,175 @@ export class OllamaChatPanel {
       const { url, model } = decodeOllamaModel(m, urls);
       try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; }
     };
+    const _agentRolesCfg = cfg.get<Array<{key:string;label:string;emoji:string;systemPrompt:string}>>('teamRoles', []);
+    const _roleCfg  = (idx: number) => { const k = roles?.[idx]; return k ? _agentRolesCfg.find(c => c.key === k) : undefined; };
+    const _rolePrefix = (idx: number) => { const r = _roleCfg(idx); return r ? `${r.emoji} ${r.label} ` : '💬 '; };
+    const _roleNote   = (idx: number) => { const r = _roleCfg(idx); return r?.systemPrompt ? r.systemPrompt + '\n\n' : (roles?.[idx] ? OllamaChatPanel.buildRoleSystemNote(roles[idx]) + '\n\n' : ''); };
 
-    this._panel.webview.postMessage({ type: 'teamTodoList', tasks: allModels.map(m => `[Agent] ${getDisplay(m)}`) });
+    const ROUNDS = 2; // 討論輪數（可擴展為設定）
+    // todoList = 討論輪數 × 人數 + ToDo 1項 + 執行人數
+    const tasks: string[] = [];
+    for (let r = 0; r < ROUNDS; r++) {
+      for (let mi = 0; mi < allModels.length; mi++) {
+        tasks.push(`💬 第${r + 1}輪 ${_rolePrefix(mi)}${getDisplay(allModels[mi])}`);
+      }
+    }
+    tasks.push('📋 生成 ToDo List');
+    for (let mi = 0; mi < allModels.length; mi++) {
+      tasks.push(`⚡ 執行 ${_rolePrefix(mi)}${getDisplay(allModels[mi])}`);
+    }
+    this._panel.webview.postMessage({ type: 'teamTodoList', tasks });
 
+    // 每個成員的對話歷史（跨輪共用，讓成員記住自己說過的話）
+    const memberHistory: ChatMessage[][] = allModels.map(() => []);
+    // 全域討論紀錄（用於讓後發言者看到前面所有人說了什麼）
+    const discussionLog: { roleLabel: string; text: string }[] = [];
+
+    // ── 多輪討論 ─────────────────────────────────────────────────────────────
+    let todoIdx = 0;
+    for (let round = 0; round < ROUNDS && !this._teamCancel; round++) {
+      for (let mi = 0; mi < allModels.length && !this._teamCancel; mi++) {
+        const model = allModels[mi];
+        const color = COLORS[mi % COLORS.length];
+        const roleLabel = _rolePrefix(mi) + getDisplay(model);
+        const id = `tdisc_r${round}_m${mi}`;
+
+        this._panel.webview.postMessage({ type: 'teamTodoStart', idx: todoIdx++, worker: `💬 第${round + 1}輪 ${roleLabel}` });
+        this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `第${round + 1}輪 ${roleLabel}`, color, task: `第 ${round + 1} 輪討論` });
+
+        // 讓此成員看到「在他之前」的所有人在本輪或所有輪的完整發言
+        const prevContext = discussionLog.length > 0
+          ? '\n\n【目前討論紀錄】\n' + discussionLog.map(e => `**${e.roleLabel}**：${e.text}`).join('\n\n---\n\n')
+          : '';
+
+        let userMsg: string;
+        if (round === 0) {
+          userMsg = `${_roleNote(mi)}你是「${roleLabel}」，正在和團隊一起討論以下主題。\n請從你的職責與觀點出發，提出你的看法、疑問或建議。\n\n【討論主題】\n${prompt}${prevContext}`;
+        } else {
+          userMsg = `你是「${roleLabel}」，請根據以上討論，進一步回應、補充或挑戰前面成員的觀點，深化討論。`;
+        }
+
+        memberHistory[mi].push({ role: 'user', content: userMsg });
+
+        let reply = '';
+        try {
+          const messages = memberHistory[mi];
+          if (model.startsWith('copilot::')) {
+            reply = await this.copilotStream(model.slice('copilot::'.length), userMsg,
+              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); });
+          } else {
+            const { url, model: mName } = decodeOllamaModel(model, urls);
+            reply = await ollamaChatStream(url, mName, messages,
+              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); });
+          }
+        } catch { /* continue */ }
+
+        if (reply) { memberHistory[mi].push({ role: 'assistant', content: reply }); }
+        discussionLog.push({ roleLabel, text: reply || '（無回應）' });
+
+        this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+        this._panel.webview.postMessage({ type: 'teamTodoDone', idx: todoIdx - 1 });
+      }
+    }
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false }); return; }
+
+    const fullDiscussionLog = discussionLog.map(e => `【${e.roleLabel}】\n${e.text}`).join('\n\n---\n\n');
+
+    // ── Phase-1.5：依據討論生成 ToDo List ────────────────────────────────────
+    let todoListText = '';
+    const todoTaskIdx = ROUNDS * allModels.length;
+    this._panel.webview.postMessage({ type: 'teamTodoStart', idx: todoTaskIdx, worker: '📋 生成 ToDo List' });
+    {
+      const todoModel = allModels.find(m => !m.startsWith('copilot/') && !m.startsWith('copilot::')) ?? allModels[0];
+      const todoPrompt = `【討論主題】\n${prompt}\n\n【完整討論紀錄】\n${fullDiscussionLog}\n\n根據以上討論，整理出一份具體可執行的 ToDo List，每一項以 "- [ ] " 開頭，按優先順序排列，標註負責角色。只輸出 ToDo List，不需要其他說明。`;
+      this._panel.webview.postMessage({ type: 'teamTodoListStart' });
+      try {
+        if (todoModel.startsWith('copilot::')) {
+          todoListText = await this.copilotStream(todoModel.slice('copilot::'.length), todoPrompt,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamTodoListChunk', chunk: c }); });
+        } else {
+          const { url, model: mName } = decodeOllamaModel(todoModel, urls);
+          todoListText = await ollamaGenerateStream(url, mName, todoPrompt,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamTodoListChunk', chunk: c }); });
+        }
+      } catch { /* continue */ }
+      this._panel.webview.postMessage({ type: 'teamTodoListEnd' });
+    }
+    this._panel.webview.postMessage({ type: 'teamTodoDone', idx: todoTaskIdx });
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false }); return; }
+
+    // ── Phase-2：依角色循序 Agent 執行 ──────────────────────────────────────
+    const execOutputs: { label: string; output: string }[] = [];
     for (let mi = 0; mi < allModels.length && !this._teamCancel; mi++) {
       const model = allModels[mi];
       const color = COLORS[mi % COLORS.length];
-      const display = getDisplay(model);
-      const id = `tagent_${mi}`;
-      this._panel.webview.postMessage({ type: 'teamTodoStart', idx: mi, worker: display });
-      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `🤖 ${display}`, color, task: prompt });
+      const roleLabel = _rolePrefix(mi) + getDisplay(model);
+      const id = `tagent_ex_${mi}`;
+      const execTaskIdx = todoTaskIdx + 1 + mi;
+      this._panel.webview.postMessage({ type: 'teamTodoStart', idx: execTaskIdx, worker: `⚡ 執行 ${roleLabel}` });
+      this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `⚡ ${roleLabel}`, color, task: '執行' });
 
-      // Pipe agent output to the team member bubble
       const origPost = this._panel.webview.postMessage.bind(this._panel.webview);
+      let captured = '';
       const patchedPost = (msg: object & { type?: string }): Thenable<boolean> => {
         const t = (msg as { type?: string }).type;
-        if (t === 'assistant') {
-          origPost({ type: 'teamResponseChunk', id, chunk: (msg as { text?: string }).text ?? '' });
-          return Promise.resolve(true);
-        }
-        if (t === 'assistantChunk') {
-          origPost({ type: 'teamResponseChunk', id, chunk: (msg as { chunk?: string }).chunk ?? '' });
-          return Promise.resolve(true);
-        }
-        if (t === 'agentStep' || t === 'agentStepDone' || t === 'agentStatus') {
-          return origPost(msg); // pass through agent step indicators
-        }
+        if (t === 'assistant') { const c = (msg as { text?: string }).text ?? ''; captured += c; origPost({ type: 'teamResponseChunk', id, chunk: c }); return Promise.resolve(true); }
+        if (t === 'assistantChunk') { const c = (msg as { chunk?: string }).chunk ?? ''; captured += c; origPost({ type: 'teamResponseChunk', id, chunk: c }); return Promise.resolve(true); }
+        if (t === 'agentStep' || t === 'agentStepDone' || t === 'agentStatus') { return origPost(msg); }
         return origPost(msg);
       };
       (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = patchedPost;
-
-      // Reset agent state for this worker
       this._agentMessages = [];
       this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
 
-      try {
-        const _agentRolePrefix = (roles && roles[model]) ? OllamaChatPanel.buildRoleSystemNote(roles[model]) + '\n\n' : '';
-        await this.handleAgent(_agentRolePrefix + prompt, model, false);
-      } catch { /* continue with next worker */ }
+      const execPrompt = `${_roleNote(mi)}【討論主題】\n${prompt}\n\n【團隊討論紀錄】\n${fullDiscussionLog}${todoListText ? `\n\n【執行 ToDo List】\n${todoListText}` : ''}\n\n請根據以上討論與 ToDo List，從你的職責角度執行你負責的項目。使用工具完成實際操作。`;
+      try { await this.handleAgent(execPrompt, model, false); } catch { /* continue */ }
 
-      // Restore original postMessage
       (this._panel.webview as { postMessage: (msg: object) => Thenable<boolean> }).postMessage = origPost;
-
+      execOutputs.push({ label: roleLabel, output: captured });
       this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
-      this._panel.webview.postMessage({ type: 'teamTodoDone', idx: mi });
+      this._panel.webview.postMessage({ type: 'teamTodoDone', idx: execTaskIdx });
     }
 
-    // restore a clean agent context
-    this._agentMessages = [];
-    this._agentMessagesBySession[this._activeSessionId] = this._agentMessages;
+    // ── Phase-3：合成共識結論 ─────────────────────────────────────────────────
+    if (!this._teamCancel) {
+      const synthModel = allModels.find(m => !m.startsWith('copilot/') && !m.startsWith('copilot::')) ?? allModels[0];
+      const execSummary = execOutputs.length > 0 ? '\n\n【各成員執行結果】\n' + execOutputs.map(o => `【${o.label}】\n${o.output}`).join('\n\n---\n\n') : '';
+      const synthPrompt = `【討論主題】\n${prompt}\n\n【完整討論紀錄】\n${fullDiscussionLog}${execSummary}\n\n請整合以上討論與執行結果，提出共識結論與具體行動建議：`;
+      this._panel.webview.postMessage({ type: 'teamSynthStart' });
+      let synthResult = '';
+      try {
+        if (synthModel.startsWith('copilot::')) {
+          synthResult = await this.copilotStream(synthModel.slice('copilot::'.length), synthPrompt,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: c }); });
+        } else {
+          const { url, model: mName } = decodeOllamaModel(synthModel, urls);
+          synthResult = await ollamaGenerateStream(url, mName, synthPrompt,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: c }); });
+        }
+      } catch { /* ignore */ }
+      if (synthResult) {
+        this._chatHistory.push({ role: 'assistant', content: synthResult });
+        this._chatHistories[this._activeSessionId] = this._chatHistory;
+        this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
+      }
+      const _final = synthResult || fullDiscussionLog;
+      if (_final.trim()) {
+        const _wsRoot = (vscode.workspace.workspaceFolders ?? [])[0]?.uri.fsPath ?? process.cwd();
+        const _ctxPath = path.join(_wsRoot, 'teamscontext.md');
+        try {
+          const _now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+          let _existing = '';
+          try { _existing = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(_ctxPath))).toString('utf-8').trim() + '\n\n---\n\n'; } catch { /* new file */ }
+          await vscode.workspace.fs.writeFile(vscode.Uri.file(_ctxPath),
+            Buffer.from(`${_existing}## 討論紀錄 ${_now}\n\n**主題：** ${prompt.slice(0, 200)}${prompt.length > 200 ? '…' : ''}\n\n${_final}`, 'utf-8'));
+          this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `\n\n---\n📝 討論結果已儲存至 teamscontext.md` });
+        } catch (e) {
+          this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `\n\n⚠️ 無法儲存 teamscontext.md: ${e instanceof Error ? e.message : String(e)}` });
+        }
+      }
+    }
+
     this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
     this._panel.webview.postMessage({ type: 'agentStatus', running: false });
   }
@@ -3894,7 +4324,7 @@ export class OllamaChatPanel {
    * → Phase-3 Agent 執行 → Phase-4 全員 Review
    * 人格與記憶分離：每個模型擁有自己獨立的系統提示詞與對話歷史。
    */
-  private async _handleTeamManager(prompt: string, allModels: string[], maxRounds: number, roles?: Record<string, string>): Promise<void> {
+  private async _handleTeamManager(prompt: string, allModels: string[], maxRounds: number, roles?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
     const COLORS = ['#f7cc65', '#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa'];
@@ -3991,23 +4421,64 @@ export class OllamaChatPanel {
 
     const managerModel   = allModels[0];
     const memberModels   = allModels.slice(1);
-    const managerDisplay = '🏢 主管 (' + getDisplay(managerModel) + ')';
-    const memberDisplays = memberModels.map((m, i) => `👨‍💻 工程師 #${i + 1} (${getDisplay(m)})`);
+    // 從設定讀取角色設定（含 emoji + label + systemPrompt）
+    const _mgrRolesCfg = cfg.get<Array<{key:string;label:string;emoji:string;color:string;systemPrompt:string}>>('teamRoles', []);
+    const _getMemberRoleInfo = (idx: number) => {
+      const roleKey = roles?.[idx + 1]; // allModels[0]=manager, members start at 1
+      const roleCfg = roleKey ? _mgrRolesCfg.find(r => r.key === roleKey) : undefined;
+      return {
+        display: roleCfg ? `${roleCfg.emoji} ${roleCfg.label}` : `👨‍💻 工程師 #${idx + 1}`,
+        systemNote: roleCfg?.systemPrompt ?? OllamaChatPanel.buildRoleSystemNote(roleKey ?? ''),
+        label: roleCfg?.label ?? `工程師 #${idx + 1}`,
+      };
+    };
+    // 主管永遠顯示 🏢 主管，成員才依 picker 角色顯示
+    const managerDisplay = `🏢 主管 (${getDisplay(managerModel)})`;
+    const memberDisplays = memberModels.map((m, i) => `${_getMemberRoleInfo(i).display} (${getDisplay(m)})`);
 
     // ─ 人格設定（分離，含工作區資訊）
     const _wsBlock = _mgrWsContext ? `\n\n你可以參考以下工作區資訊進行分析：\n${_mgrWsContext}` : '';
+    // ── 角色人格宣告 ────────────────────────────────────────────────────────
+    // 🏢 主管：架構規劃 → 審核討論計劃 → Code Review，不寫程式碼
     const managerPersona =
-      `你是資深技術主管兼架構師。職責：\n` +
-      `1. 分析技術需求與架構\n` +
-      `2. 指派任務給工程師\n` +
-      `3. 審查提案並給出具體改進意見\n` +
-      `4. 確認方案無誤後才核准（回覆末尾輸出 [APPROVED]）\n` +
-      `5. 對執行結果進行最終 Review\n` +
-      `風格：嚴謹簡潔，繁體中文回答。${_wsBlock}`;
-    const memberPersona = (i: number) => {
-      const _mRoleNote = (roles && roles[memberModels[i]]) ? '\n' + OllamaChatPanel.buildRoleSystemNote(roles[memberModels[i]]) : '';
-      return `你是工程師 #${i + 1}。職責：根據主管指示提出具體實作方案與程式碼修改建議。${_mRoleNote}\n` +
-        `重要：你只看得到自己的對話歷史，不知道其他工程師的內容。繁體中文回答。${_wsBlock}`;
+      `你是【🏢 技術主管】，整個開發團隊的決策者與品質守門人。\n` +
+      `你在此次任務中負責三個階段：\n` +
+      `  【A - 架構計劃】：分析需求，制定整體架構方向，明確將任務分配給各工程師。\n` +
+      `  【B - 審核討論計劃】：閱讀工程師的技術討論，確認方案可行後於回覆末尾輸出 [APPROVED]；\n` +
+      `    否則給出具體調整意見（不輸出 [APPROVED]）。\n` +
+      `  【C - Code Review】：工程師實作完成後，使用 read_file 工具逐一閱讀修改的檔案，\n` +
+      `    檢查程式碼品質、命名規範、邏輯正確性、錯誤處理，給出具體 Review 意見與評分。\n` +
+      `你只負責審核與決策，不自行寫程式碼。風格：嚴謹直接，繁體中文。${_wsBlock}`;
+
+    // 💻 工程師（非測試員）：先討論後實作；🧪 測試員：只撰寫測試工具
+    const _isTester = (mi: number) => (roles?.[mi + 1] ?? '') === 'tester';
+    const _engSpecializations = [
+      '你負責架構設計與模組拆分，主導整體結構決策，確保元件邊界清晰、依賴關係合理。',
+      '你負責核心邏輯與功能實作，專注演算法正確性、資料流與商業邏輯的實現。',
+      '你負責整合層與 API 邊界，確保各模組協作順暢，並妥善處理錯誤情境與邊界條件。',
+    ];
+    const memberPersona = (mi: number) => {
+      const info = _getMemberRoleInfo(mi);
+      if (_isTester(mi)) {
+        return (
+          `你是【🧪 ${info.label}】（測試員）。工程師實作完成後，你負責撰寫完整的自動化測試工具。\n` +
+          `工作流程：\n` +
+          `  1. 使用 read_file 工具閱讀工程師實作的每個重要模組，理解程式結構\n` +
+          `  2. 針對每個功能模組撰寫測試案例（unit test / integration test）\n` +
+          `  3. 使用 write_file 工具建立測試檔案（如 test_xxx.py、xxx.test.ts、xxx.spec.ts）\n` +
+          `  4. 測試案例必須覆蓋：正常情境、邊界條件、錯誤處理、異常輸入\n` +
+          `重要：不得修改非測試檔案；所有測試直接用工具寫入，不可只描述計劃。繁體中文。${_wsBlock}`
+        );
+      }
+      const engIdx = Math.min(mi, _engSpecializations.length - 1);
+      const roleNote = info.systemNote ? `\n${info.systemNote}` : '';
+      return (
+        `你是【💻 ${info.label}】（工程師 #${mi + 1}）。${_engSpecializations[engIdx]}${roleNote}\n` +
+        `工作分兩階段：\n` +
+        `  【討論階段】與其他工程師共同討論實作方案，提出技術觀點，明確說明你打算修改哪些檔案與函式。\n` +
+        `  【實作階段】主管核准後，使用 write_file / replace_in_file 工具直接修改程式碼——不要只說計劃，立即行動。\n` +
+        `重要：你只看得到自己的對話歷史，不知道其他成員內容。繁體中文。${_wsBlock}`
+      );
     };
 
     // ─ 記憶分離：各自獨立的對話歷史，以批次閱讀歷史預填
@@ -4177,7 +4648,64 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
     if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-    // ── Phase-1/2  組員提案 ↔ 主管審核（循環）────────────────────────────────
+    // ── 工程師 / 測試員 索引 ────────────────────────────────────────────────
+    const _engineerIdxs = memberModels.map((_, i) => i).filter(mi => !_isTester(mi));
+    const _testerIdxs   = memberModels.map((_, i) => i).filter(mi =>  _isTester(mi));
+
+    // ── Phase-DISC：工程師討論實作計劃 ────────────────────────────────────────
+    // 工程師們先互相討論技術方案，達成共識後交由主管審核
+    let _approvedDiscPlan = '';
+    if (_engineerIdxs.length > 0 && !this._teamCancel) {
+      const _discLog: { label: string; text: string }[] = [];
+      for (const mi of _engineerIdxs) {
+        if (this._teamCancel) break;
+        const prevCtx = _discLog.length > 0
+          ? `\n\n【目前討論紀錄】\n${_discLog.map(e => `**${e.label}**：\n${e.text}`).join('\n\n---\n\n')}`
+          : '';
+        const discMsg =
+          `【主管架構計劃與任務分配】\n${managerAnalysis}\n\n` +
+          `請從你的職責角度提出討論：你準備如何實作你負責的部分？打算修改哪些具體檔案與函式？有哪些技術風險或依賴？${prevCtx}`;
+        const id = `mgr_disc_${mi}`;
+        const color = COLORS[(mi + 1) % COLORS.length];
+        this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `💬 討論 ${memberDisplays[mi]}`, color, task: '討論實作計劃' });
+        let discReply = '';
+        try {
+          discReply = await callModel(memberModels[mi], memberPersona(mi), memberHists[mi], discMsg,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); },
+            (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: t }); });
+        } catch (e) { discReply = '[討論失敗: ' + (e instanceof Error ? e.message : String(e)) + ']'; }
+        _discLog.push({ label: memberDisplays[mi], text: discReply });
+        memberHists[mi].push({ role: 'user', content: discMsg });
+        memberHists[mi].push({ role: 'assistant', content: discReply });
+        this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+      }
+      if (!this._teamCancel && _discLog.length > 0) {
+        // 主管審核討論計劃
+        const _discSummary = _discLog.map(e => `【${e.label}】\n${e.text}`).join('\n\n---\n\n');
+        const _planReviewMsg =
+          `【工程師討論計劃】\n${_discSummary}\n\n` +
+          `請審核工程師的討論計劃：\n` +
+          `- 若方案合理可行，回覆末尾輸出 [APPROVED] 以開始實作\n` +
+          `- 若有問題，指出需要調整的地方（不輸出 [APPROVED]）`;
+        this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: `${managerDisplay} — 審核討論計劃` });
+        let _planReviewResp = '';
+        try {
+          _planReviewResp = await callModel(managerModel, managerPersona, managerHist, _planReviewMsg,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: c }); },
+            (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamOrchestratorThinkChunk', chunk: t }); },
+            MGR_MANAGER_TOOLS);
+        } catch (e) { _planReviewResp = '[計劃審核失敗]'; }
+        managerHist.push({ role: 'user', content: _planReviewMsg });
+        managerHist.push({ role: 'assistant', content: _planReviewResp });
+        this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
+        _approvedDiscPlan = _planReviewResp.includes('[APPROVED]')
+          ? `【已核准的實作計劃】\n${_discSummary}`
+          : `【討論計劃（主管要求修改）】\n${_planReviewResp}\n\n【原始討論】\n${_discSummary}`;
+      }
+    }
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // ── Phase-1/2  工程師實作 ↔ 主管審核（循環）──────────────────────────────
     const roundsLimit = isFinite(maxRounds) ? Math.min(maxRounds, 10) : 5;
     let approved = false;
     let managerFeedback = '';
@@ -4190,8 +4718,8 @@ export class OllamaChatPanel {
         const id = `mgr_r${round}_m${mi}`;
         const color = COLORS[(mi + 1) % COLORS.length];
         const taskMsg = round === 0
-          ? `【主管架構分析與任務分配】\n${managerAnalysis}\n\n你是工程師 #${mi + 1}，請根據主管分配給你的工作項目，直接使用工具讀取相關檔案並實作（write_file / replace_in_file）。若模型不支援工具，請提出含完整程式碼的詳細方案：`
-          : `【主管第 ${round} 輪審核意見】\n${managerFeedback}\n\n請根據主管意見修改並改進，直接使用工具更新檔案：`;
+          ? `【主管架構計劃】\n${managerAnalysis}${_approvedDiscPlan ? `\n\n${_approvedDiscPlan}` : ''}\n\n依據以上計劃，請立即使用工具（先 read_file 閱讀，再 write_file / replace_in_file 修改）完成你的實作任務：`
+          : `【主管第 ${round} 輪 Code Review 意見】\n${managerFeedback}\n\n請根據主管意見，直接用工具更新對應檔案：`;
         this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: memberDisplays[mi], color, task: `第 ${round + 1} 輪提案` });
         let proposal = '';
         try {
@@ -4269,12 +4797,48 @@ export class OllamaChatPanel {
     }
     if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
 
-    // ── Phase-4  全員 Review（人格與記憶分離）──────────────────────────────────
+    // ── Phase-TEST：測試員撰寫自動化測試工具 ─────────────────────────────────
+    if (_testerIdxs.length > 0 && !this._teamCancel) {
+      for (const mi of _testerIdxs) {
+        if (this._teamCancel) break;
+        const testMsg =
+          `【原始任務】\n${prompt}\n\n【實作狀態】\n${execResult}\n\n` +
+          `工程師已完成所有實作。請立即執行以下步驟：\n` +
+          `  1. 用 read_file 工具閱讀主要實作檔案，了解程式結構與介面\n` +
+          `  2. 用 write_file 工具建立測試檔案，覆蓋所有重要功能\n` +
+          `  3. 確保測試包含：正常情境、邊界條件、錯誤處理、異常輸入\n` +
+          `不要只描述計劃，直接用工具完成測試撰寫。`;
+        const id = `mgr_test_${mi}`;
+        const color = COLORS[(mi + 1) % COLORS.length];
+        this._panel.webview.postMessage({ type: 'teamMemberStart', id, model: `🧪 ${memberDisplays[mi]} — 撰寫測試`, color, task: '撰寫自動化測試' });
+        let testReply = '';
+        try {
+          testReply = await callModel(memberModels[mi], memberPersona(mi), memberHists[mi], testMsg,
+            (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); },
+            (t) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamThinkChunk', id, color, chunk: t }); },
+            MGR_MEMBER_TOOLS);
+        } catch (e) { testReply = '[測試撰寫失敗: ' + (e instanceof Error ? e.message : String(e)) + ']'; }
+        memberHists[mi].push({ role: 'user', content: testMsg });
+        memberHists[mi].push({ role: 'assistant', content: testReply });
+        this._panel.webview.postMessage({ type: 'teamMemberEnd', id });
+      }
+    }
+    if (this._teamCancel) { this._panel.webview.postMessage({ type: 'teamEnd' }); return; }
+
+    // ── Phase-4  主管 Code Review + 全員審查 ─────────────────────────────────
     const rvHdrId = 'mgr_rv_hdr';
-    this._panel.webview.postMessage({ type: 'teamMemberStart', id: rvHdrId, model: '📋 全員 Review', color: '#aaaaaa', task: '各成員獨立審查執行結果' });
-    this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvHdrId, chunk: '主管與工程師將各自獨立進行 Review（記憶分離，互不影響）...' });
+    this._panel.webview.postMessage({ type: 'teamMemberStart', id: rvHdrId, model: '🔍 Code Review & 全員審查', color: '#aaaaaa', task: '主管 Code Review，各成員獨立審查' });
+    this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvHdrId, chunk: '主管進行 Code Review（使用工具讀取檔案），工程師/測試員各自獨立審查（記憶分離）...' });
     this._panel.webview.postMessage({ type: 'teamMemberEnd', id: rvHdrId });
 
+    // 主管用 Code Review 提示（含工具讀檔）；其他成員用一般 Review 提示
+    const _mgrCodeReviewPrompt =
+      `【原始任務】\n${prompt}\n\n【執行狀態】\n${execResult}\n\n` +
+      `請進行 Code Review：\n` +
+      `  1. 使用 read_file 工具逐一閱讀工程師修改過的每個重要檔案\n` +
+      `  2. 檢查：命名規範、邏輯正確性、錯誤處理、程式碼可維護性\n` +
+      `  3. 列出具體問題（附檔案名稱與修改建議）\n` +
+      `  4. 給出整體評價（通過 / 需小修 / 需大改）`;
     const rvPrompt =
       `【原始任務】\n${prompt}\n\n【執行狀態】\n${execResult}\n\n` +
       `請以你的專業角色對執行結果進行 Review：\n` +
@@ -4291,9 +4855,12 @@ export class OllamaChatPanel {
       this._panel.webview.postMessage({ type: 'teamMemberStart', id: rvId, model: `🔍 ${display}`, color, task: 'Review' });
       let rvResp = '';
       try {
-        rvResp = await callModel(allModels[ri], rvPersonas[ri], rvHists[ri], rvPrompt,
+        const _rvPrompt = ri === 0 ? _mgrCodeReviewPrompt : rvPrompt;
+        const _rvTools  = ri === 0 ? MGR_MANAGER_TOOLS : [];
+        rvResp = await callModel(allModels[ri], rvPersonas[ri], rvHists[ri], _rvPrompt,
           (c) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvId, chunk: c }); } },
-          (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id: rvId, color, chunk: t }); } });
+          (t) => { if (!this._teamCancel) { this._panel.webview.postMessage({ type: 'teamThinkChunk', id: rvId, color, chunk: t }); } },
+          _rvTools);
       } catch (e) {
         rvResp = '[Review 失敗: ' + (e instanceof Error ? e.message : String(e)) + ']';
         this._panel.webview.postMessage({ type: 'teamResponseChunk', id: rvId, chunk: rvResp });
@@ -4662,6 +5229,8 @@ export class OllamaChatPanel {
         if (!seen.has(id)) { seen.add(id); teamModels.push({ id, label: cleanName, vendor: 'copilot', multiplier: getCopilotMultiplier(m) }); }
       }
     } catch { /* Copilot not available */ }
+    const _rolesConfig = cfg.get<Array<{key:string;label:string;emoji:string;color:string;systemPrompt:string}>>('teamRoles', []);
+    this._panel.webview.postMessage({ type: 'teamRolesConfig', roles: _rolesConfig });
     this._panel.webview.postMessage({ type: 'teamModelList', models: teamModels });
   }
 
@@ -4774,7 +5343,7 @@ ${reviewText.replace('[APPROVED]', '').trim()}
     }
   }
 
-  private async handleSend(prompt: string, modelOverride?: string, sessionId?: string): Promise<void> {
+  private async handleSend(prompt: string, modelOverride?: string, sessionId?: string, images?: string[]): Promise<void> {
     this.switchChatSession(sessionId);
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = getOllamaUrls(cfg);
@@ -4833,7 +5402,8 @@ ${reviewText.replace('[APPROVED]', '').trim()}
             // 即時發送，不緩衝，確保 think block 在回應內容前顯示
             this._panel.webview.postMessage({ type: 'thinkChunk', chunk: thinkChunk });
           },
-          (tokens, tps) => { this._panel.webview.postMessage({ type: 'streamStats', tokens, tps }); this.trackUsage(model, tokens); }
+          (tokens, tps) => { this._panel.webview.postMessage({ type: 'streamStats', tokens, tps }); this.trackUsage(model, tokens); },
+          images
         );
       }
       // Save assistant response to short-term memory
@@ -5064,7 +5634,7 @@ ${historyText}
    *  - 設定 toolAlwaysAllow：含 category 或 toolName 則自動允許（不彈確認對話框）。
    *  - 設定 toolAlwaysConfirm：含 toolName 則每次必問（不能被 session 永遠允許覆蓋）。
    */
-  private requestPermission(category: string, description: string, toolName = ''): Promise<boolean> {
+  private requestPermission(category: string, description: string, toolName = '', diff?: { filePath: string; before: string; after: string; mode?: 'replace' | 'write'; oldStr?: string; newStr?: string }): Promise<boolean> {
     const pcfg = vscode.workspace.getConfiguration('amiAiClaw');
     const alwaysAllowList = pcfg.get<string[]>('toolAlwaysAllow') ?? [];
     const alwaysConfirmList = pcfg.get<string[]>('toolAlwaysConfirm') ?? [];
@@ -5084,7 +5654,7 @@ ${historyText}
     if (!forceConfirm && this._alwaysAllow.has(category)) { return Promise.resolve(true); }
     return new Promise<boolean>((resolve) => {
       this._pendingPermission = resolve;
-      this._panel.webview.postMessage({ type: 'permissionRequest', category, description, forceConfirm });
+      this._panel.webview.postMessage({ type: 'permissionRequest', category, description, forceConfirm, diff });
     });
   }
 
@@ -6221,7 +6791,10 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
       case 'write_file': {
         const fpath = resolvePath(args.path as string);
         const content = (args.content as string) ?? '';
-        const allowed = await this.requestPermission('write', `寫入檔案: ${fpath}（${content.length} 字元）`, 'write_file');
+        let wfBefore = '';
+        try { wfBefore = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(fpath))).toString('utf8'); } catch { /* new file */ }
+        const wfDiff = { filePath: fpath, before: wfBefore, after: content, mode: 'write' as const };
+        const allowed = await this.requestPermission('write', `寫入檔案: ${path.basename(fpath)}（${content.length} 字元）`, 'write_file', wfDiff);
         if (!allowed) { return '使用者已拒絕寫入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
         this._toolCache.delete(`rf:${fpath}`);
@@ -6234,7 +6807,8 @@ ${ltmForAgent.trim() ? '\n## 長期記憶\n' + ltmForAgent.trim() : ''}
         const oldStr = args.old_str as string;
         const newStr = (args.new_str as string) ?? '';
         if (!original.includes(oldStr)) { return `錯誤：在 ${fpath} 中找不到指定的字串`; }
-        const allowed = await this.requestPermission('write', `編輯檔案: ${fpath}`, 'replace_in_file');
+        const rifDiff = { filePath: fpath, before: original, after: original.replace(oldStr, newStr), mode: 'replace' as const, oldStr, newStr };
+        const allowed = await this.requestPermission('write', `編輯檔案: ${path.basename(fpath)}`, 'replace_in_file', rifDiff);
         if (!allowed) { return '使用者已拒絕編輯操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.replace(oldStr, newStr), 'utf8'));
         this._toolCache.delete(`rf:${fpath}`);
@@ -8140,6 +8714,7 @@ interface ChatMessage {
   thinking?: string;
   tool_calls?: Array<{ id?: string; function: { name: string; arguments: Record<string, unknown> | string } }>;
   tool_call_id?: string;
+  images?: string[];
 }
 
 const AGENT_TOOLS = [
@@ -8869,13 +9444,15 @@ function ollamaGenerateStream(
   baseUrl: string, model: string, prompt: string,
   onResponseChunk: (chunk: string) => void,
   onThinkChunk?: (chunk: string) => void,
-  onStats?: (tokens: number, tps: number) => void
+  onStats?: (tokens: number, tps: number) => void,
+  images?: string[]
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     try {
       const url = new URL('/api/generate', baseUrl);
       const params: Record<string, unknown> = { model, prompt, stream: true };
       if (supportsThinking(model)) { params.think = true; }
+      if (images && images.length > 0) { params.images = images; }
       const body = JSON.stringify(params);
       const protocol = url.protocol === 'https:' ? https : http;
 

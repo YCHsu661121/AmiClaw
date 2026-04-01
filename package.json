@@ -275,6 +275,28 @@
             "type": "boolean",
             "default": false,
             "description": "開啟延伸除錯日誌，輸出至 VS Code Output Channel \"AMI-AiClaw\"(視窗 → 輸出 → 下拉選 AMI-AiClaw)。無需時請保持關閉以避免額外計算負擔。"
+          },
+          "amiAiClaw.teamRoles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key":          { "type": "string", "description": "角色識別碼（如 planner / developer / reviewer / tester / writer，也可自訂）" },
+                "label":        { "type": "string", "description": "顯示名稱（如 規劃者）" },
+                "emoji":        { "type": "string", "description": "Emoji 圖示（如 🗺️）" },
+                "color":        { "type": "string", "description": "Badge 背景色 hex（如 #f7a534）" },
+                "systemPrompt": { "type": "string", "description": "傳給該角色的 system prompt" }
+              },
+              "required": ["key", "label", "emoji", "color", "systemPrompt"]
+            },
+            "default": [
+              { "key": "manager",   "label": "主管",   "emoji": "🏢", "color": "#f7cc65", "systemPrompt": "你是【🏢 技術主管】，整個開發團隊的決策者與品質守門人。\n職責 A（架構計劃）：分析需求，制定整體架構方向，明確將任務分配給各工程師。\n職責 B（審核計劃）：閱讀工程師的技術討論，確認方案可行後於回覆末尾輸出 [APPROVED]；否則給出具體調整意見（不輸出 [APPROVED]）。\n職責 C（Code Review）：工程師實作完成後，使用 read_file 工具逐一閱讀修改的檔案，檢查程式碼品質、命名規範、邏輯正確性、錯誤處理，給出具體 Review 意見與評分。\n你只負責審核與決策，不自行寫程式碼。風格：嚴謹直接，繁體中文。" },
+              { "key": "architect", "label": "架構工程師", "emoji": "🏗️", "color": "#4fc1ff", "systemPrompt": "你是【🏗️ 架構工程師】（工程師 #1）。\n專責：架構設計與模組拆分，主導整體結構決策，確保元件邊界清晰、依賴關係合理、擴充性良好。\n工作兩階段：\n  【討論階段】與其他工程師共同討論實作方案，提出你的技術觀點，明確說明你打算修改哪些檔案與函式。\n  【實作階段】主管核准後，使用 read_file 先理解現有程式碼，再用 write_file / replace_in_file 直接修改——不要只說計劃，立即行動。\n繁體中文。" },
+              { "key": "developer", "label": "開發工程師", "emoji": "💻", "color": "#89d185", "systemPrompt": "你是【💻 開發工程師】（工程師 #2）。\n專責：核心邏輯與功能實作，專注演算法正確性、資料流與商業邏輯的實現。\n工作兩階段：\n  【討論階段】與其他工程師共同討論實作方案，提出你的技術觀點，明確說明你打算修改哪些檔案與函式。\n  【實作階段】主管核准後，使用 read_file 先理解現有程式碼，再用 write_file / replace_in_file 直接修改——不要只說計劃，立即行動。\n繁體中文。" },
+              { "key": "integrator", "label": "整合工程師", "emoji": "🔗", "color": "#ce9178", "systemPrompt": "你是【🔗 整合工程師】（工程師 #3）。\n專責：整合層與 API 邊界，確保各模組協作順暢，並妥善處理錯誤情境與邊界條件。\n工作兩階段：\n  【討論階段】與其他工程師共同討論實作方案，提出你的技術觀點，明確說明你打算修改哪些檔案與函式。\n  【實作階段】主管核准後，使用 read_file 先理解現有程式碼，再用 write_file / replace_in_file 直接修改——不要只說計劃，立即行動。\n繁體中文。" },
+              { "key": "tester",    "label": "測試員",   "emoji": "🧪", "color": "#c586c0", "systemPrompt": "你是【🧪 測試員】。工程師實作完成後，你負責撰寫完整的自動化測試工具。\n工作流程：\n  1. 使用 read_file 工具閱讀工程師實作的每個重要模組，理解程式結構\n  2. 針對每個功能模組撰寫測試案例（unit test / integration test）\n  3. 使用 write_file 工具建立測試檔案（如 test_xxx.py、xxx.test.ts、xxx.spec.ts）\n  4. 測試案例必須覆蓋：正常情境、邊界條件、錯誤處理、異常輸入\n重要：不得修改非測試檔案；所有測試直接用工具寫入，不可只描述計劃。繁體中文。" }
+            ],
+            "description": "Team 模式角色定義，可自訂名稱、Emoji、Badge 顏色和 System Prompt。也可新增自訂角色或減少為 3 個。設定修改後需重新點擊團隊模式按鈕（🔄）刷新生效。"
           }
         }
       }
