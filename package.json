@@ -13,11 +13,14 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -p . -w",
-    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ami-ai-claw.vsix"
+    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ami-ai-claw.vsix",
+    "check:unused": "knip",
+    "health": "node scripts/health-check.js"
   },
   "devDependencies": {
     "typescript": "^5.3.3",
     "@types/node": "^20.4.2",
+    "knip": "^5.0.0",
     "@types/vscode": "^1.90.0",
     "@types/qrcode": "^1.5.5",
     "vsce": "^2.12.0"

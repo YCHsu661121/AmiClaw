@@ -34,6 +34,15 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
+  # ── General npm runner (e.g. npm run health / check:unused / compile) ────
+  npm:
+    image: node:20-slim
+    working_dir: /workspace
+    volumes:
+      - .:/workspace              # mount project root
+    entrypoint: ["npm"]
+    command: ["run", "health"]   # override at runtime: docker compose run --rm npm run check:unused
+
   # ── Extension builder (produces ./dist/ollama-chat.vsix) ─────────────────
   builder:
     image: node:20-slim
