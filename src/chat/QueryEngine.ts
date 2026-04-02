@@ -53,6 +53,21 @@ export interface QueryEngineServices {
   estimateTokens: (text: string) => number;
 }
 
+interface WebviewModelOption {
+  id: string;
+  label: string;
+  provider: string;
+  providerLabel: string;
+  multiplier?: string;
+}
+
+interface ProviderInfo {
+  id: string;
+  label: string;
+  modelId: string;
+  displayName: string;
+}
+
 export class QueryEngine {
   private _pendingSendCts: vscode.CancellationTokenSource | null = null;
   private _lastOllamaUrl = '';
@@ -62,6 +77,66 @@ export class QueryEngine {
     private readonly _callbacks: QueryEngineCallbacks,
     private readonly _services: QueryEngineServices
   ) {}
+
+  private normalizeConfiguredModelId(modelId: string): string {
+    return modelId.startsWith('copilot/') ? `copilot::${modelId.slice('copilot/'.length)}` : modelId;
+  }
+
+  private getProviderId(modelId: string): string {
+    if (modelId.startsWith('copilot::') || modelId.startsWith('copilot/')) {
+      return 'copilot';
+    }
+    if (modelId.startsWith('openai::')) {
+      return 'openai';
+    }
+    return 'ollama';
+  }
+
+  private getProviderLabel(providerId: string): string {
+    switch (providerId) {
+      case 'copilot':
+        return 'Copilot';
+      case 'openai':
+        return 'OpenAI Compatible';
+      default:
+        return 'Ollama';
+    }
+  }
+
+  private normalizeModelOptions(
+    ollamaModels: { id: string; label: string }[],
+    copilotModels: { id: string; name: string; multiplier: string }[]
+  ): WebviewModelOption[] {
+    return [
+      ...ollamaModels.map((model) => ({
+        id: model.id,
+        label: model.label,
+        provider: 'ollama',
+        providerLabel: 'Ollama',
+      })),
+      ...copilotModels.map((model) => ({
+        id: `copilot::${model.id}`,
+        label: model.name,
+        provider: 'copilot',
+        providerLabel: 'Copilot',
+        multiplier: model.multiplier,
+      })),
+    ];
+  }
+
+  private buildProviderInfo(modelId: string, models?: WebviewModelOption[]): ProviderInfo {
+    const normalizedModelId = this.normalizeConfiguredModelId(modelId);
+    const providerId = this.getProviderId(normalizedModelId);
+    const displayName = models?.find((model) => model.id === normalizedModelId)?.label
+      ?? normalizedModelId.replace(/^copilot::/, '').replace(/^openai::/, '');
+
+    return {
+      id: providerId,
+      label: this.getProviderLabel(providerId),
+      modelId: normalizedModelId,
+      displayName,
+    };
+  }
 
   public async handleSend(
     prompt: string,
@@ -73,10 +148,15 @@ export class QueryEngine {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = this._services.getOllamaUrls(cfg);
     const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
-    const normalizedModel = rawModel.startsWith('copilot/') ? `copilot::${rawModel.slice('copilot/'.length)}` : rawModel;
+    const normalizedModel = this.normalizeConfiguredModelId(rawModel);
     const { url: baseUrl, model } = normalizedModel.startsWith('copilot::')
       ? { url: urls[0], model: normalizedModel }
       : this._services.decodeOllamaModel(normalizedModel, urls);
+
+    this._callbacks.postToWebview({
+      type: 'providerInfo',
+      providerInfo: this.buildProviderInfo(normalizedModel),
+    });
 
     await this.ensureModelReady(baseUrl, model);
 
@@ -275,14 +355,20 @@ export class QueryEngine {
       // Copilot not available
     }
 
-    const currentModel = cfg.get<string>('model') ?? liveModels[0]?.id ?? '';
+    const currentModel = this.normalizeConfiguredModelId(cfg.get<string>('model') ?? liveModels[0]?.id ?? '');
     if (currentModel && !currentModel.startsWith('copilot::')) {
       const { url, model } = this._services.decodeOllamaModel(currentModel, ollamaUrls);
       this._services.ollamaWarmupModel(url, model);
       this._callbacks.log(`Model warmup: ${model} @ ${url}`);
     }
 
-    this._callbacks.postToWebview({ type: 'modelList', models: liveModels, copilotModels, current: currentModel });
+    const models = this.normalizeModelOptions(liveModels, copilotModels);
+    this._callbacks.postToWebview({
+      type: 'modelList',
+      models,
+      current: currentModel,
+      providerInfo: this.buildProviderInfo(currentModel, models),
+    });
     this._callbacks.postToWebview({ type: 'connectionStatus', ok: connectionOk, url: connectionUrl, message: connectionMessage });
     this._callbacks.log('fetchModelsFromServer postMessage done');
   }

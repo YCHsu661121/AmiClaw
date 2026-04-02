@@ -87,6 +87,67 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage({ type: 'latencyUpdate', log: this._latencyLog });
   }
 
+  private normalizeConfiguredModelId(modelId: string): string {
+    return modelId.startsWith('copilot/') ? `copilot::${modelId.slice('copilot/'.length)}` : modelId;
+  }
+
+  private getProviderId(modelId: string): string {
+    if (modelId.startsWith('copilot::') || modelId.startsWith('copilot/')) {
+      return 'copilot';
+    }
+    if (modelId.startsWith('openai::')) {
+      return 'openai';
+    }
+    return 'ollama';
+  }
+
+  private getProviderLabel(providerId: string): string {
+    switch (providerId) {
+      case 'copilot':
+        return 'Copilot';
+      case 'openai':
+        return 'OpenAI Compatible';
+      default:
+        return 'Ollama';
+    }
+  }
+
+  private normalizeModelOptions(
+    ollamaModels: { id: string; label: string }[],
+    copilotModels: { id: string; name: string; multiplier: string }[]
+  ): WebviewModelOption[] {
+    return [
+      ...ollamaModels.map((model) => ({
+        id: model.id,
+        label: model.label,
+        provider: 'ollama',
+        providerLabel: 'Ollama',
+      })),
+      ...copilotModels.map((model) => ({
+        id: `copilot::${model.id}`,
+        label: model.name,
+        provider: 'copilot',
+        providerLabel: 'Copilot',
+        multiplier: model.multiplier,
+      })),
+    ];
+  }
+
+  private buildProviderInfo(modelId?: string, models?: WebviewModelOption[]): ProviderInfo {
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const normalizedModelId = this.normalizeConfiguredModelId(modelId ?? cfg.get<string>('model') ?? '');
+    const providerId = this.getProviderId(normalizedModelId);
+    const displayName = models?.find((model) => model.id === normalizedModelId)?.label
+      ?? normalizedModelId.replace(/^copilot::/, '').replace(/^openai::/, '');
+
+    return {
+      id: providerId,
+      label: this.getProviderLabel(providerId),
+      modelId: normalizedModelId,
+      displayName,
+    };
+  }
+
   private constructor(panel: vscode.WebviewPanel, context: vscode.ExtensionContext) {
     this._panel = panel;
     this._context = context;
@@ -266,6 +327,11 @@ export class OllamaChatPanel {
             break;
           case 'webviewReady':
             OllamaChatPanel.log('webviewReady received — calling fetchModelsFromServer');
+            this._panel.webview.postMessage({
+              type: 'initialState',
+              providerInfo: this.buildProviderInfo(),
+              streamMode: this._streamMode,
+            });
             await this._queryEngine.fetchModelsFromServer();
             break;
           case 'agentSend':
@@ -426,6 +492,10 @@ export class OllamaChatPanel {
               const cfg3 = vscode.workspace.getConfiguration('amiAiClaw');
               await cfg3.update('model', newModel, vscode.ConfigurationTarget.Global);
               OllamaChatPanel.log('saveModel: ' + newModel);
+              this._panel.webview.postMessage({
+                type: 'providerInfo',
+                providerInfo: this.buildProviderInfo(newModel),
+              });
             }
             break;
           }
@@ -524,15 +594,21 @@ export class OllamaChatPanel {
           if (!seen0.has(m.id)) { seen0.add(m.id); const n0 = (m.name || m.family).replace(/\s+\d+x\b|\s+x\d+\b/gi,'').trim(); copilotModels0.push({ id: m.id, name: n0, multiplier: getCopilotMultiplier(m) }); }
         }
       } catch { /* Copilot not available */ }
-      const current = cfg.get<string>('model') ?? liveModels[0]?.id ?? '';
+      const current = _self.normalizeConfiguredModelId(cfg.get<string>('model') ?? liveModels[0]?.id ?? '');
       // 預熱模型（keep_alive=600s）：讓 Ollama 提前載入，減少第一次請求延遲
       if (current && !current.startsWith('copilot::')) {
         const { url: warmUrl, model: warmModel } = decodeOllamaModel(current, ollamaUrls);
         ollamaWarmupModel(warmUrl, warmModel);
         OllamaChatPanel.log(`Model warmup (init): ${warmModel} @ ${warmUrl}`);
       }
+      const normalizedModels = _self.normalizeModelOptions(liveModels, copilotModels0);
       // Push result to webview via postMessage (safe: listener is already registered)
-      const r1 = await _webview.postMessage({ type: 'modelList', models: liveModels, copilotModels: copilotModels0, current });
+      const r1 = await _webview.postMessage({
+        type: 'modelList',
+        models: normalizedModels,
+        current,
+        providerInfo: _self.buildProviderInfo(current, normalizedModels),
+      });
       OllamaChatPanel.log('postMessage modelList delivered=' + r1);
       const r2 = await _webview.postMessage({ type: 'connectionStatus', ok: connOk, url: connUrl, message: connMsg });
       OllamaChatPanel.log('postMessage connectionStatus delivered=' + r2);
@@ -688,13 +764,18 @@ export class OllamaChatPanel {
   private async fetchTeamModels(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const ollamaUrls = getOllamaUrls(cfg);
-    const teamModels: { id: string; label: string; vendor: string; multiplier?: string }[] = [];
+    const teamModels: { id: string; label: string; provider: string; providerLabel: string; multiplier?: string }[] = [];
     // Ollama models — all servers
     for (const url of ollamaUrls) {
       try {
         const models = await ollamaListModels(url);
         for (const m of models) {
-          teamModels.push({ id: encodeOllamaModelId(url, m, ollamaUrls), label: ollamaDisplayLabel(url, m, ollamaUrls), vendor: 'ollama' });
+          teamModels.push({
+            id: encodeOllamaModelId(url, m, ollamaUrls),
+            label: ollamaDisplayLabel(url, m, ollamaUrls),
+            provider: 'ollama',
+            providerLabel: 'Ollama',
+          });
         }
       } catch { /* server not reachable */ }
     }
@@ -706,7 +787,16 @@ export class OllamaChatPanel {
         const id = `copilot::${m.id}`;
         const rawName = m.name || m.family;
         const cleanName = rawName.replace(/\s+\d+x\b|\s+x\d+\b/gi, '').trim();
-        if (!seen.has(id)) { seen.add(id); teamModels.push({ id, label: cleanName, vendor: 'copilot', multiplier: getCopilotMultiplier(m) }); }
+        if (!seen.has(id)) {
+          seen.add(id);
+          teamModels.push({
+            id,
+            label: cleanName,
+            provider: 'copilot',
+            providerLabel: 'Copilot',
+            multiplier: getCopilotMultiplier(m),
+          });
+        }
       }
     } catch { /* Copilot not available */ }
     const _rolesConfig = cfg.get<Array<{key:string;label:string;emoji:string;color:string;systemPrompt:string}>>('teamRoles', []);
@@ -838,6 +928,21 @@ export interface ChatMessage {
   tool_calls?: Array<{ id?: string; function: { name: string; arguments: Record<string, unknown> | string } }>;
   tool_call_id?: string;
   images?: string[];
+}
+
+interface WebviewModelOption {
+  id: string;
+  label: string;
+  provider: string;
+  providerLabel: string;
+  multiplier?: string;
+}
+
+interface ProviderInfo {
+  id: string;
+  label: string;
+  modelId: string;
+  displayName: string;
 }
 
 export const AGENT_TOOLS = [

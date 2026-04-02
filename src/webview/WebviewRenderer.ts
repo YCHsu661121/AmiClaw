@@ -32,7 +32,9 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       pre{background:rgba(0,0,0,0.08);padding:8px;border-radius:4px;white-space:pre-wrap;margin:4px 0;font-size:0.88em}
       .bubble button{font-size:11px;padding:2px 7px;margin:3px 3px 0 0;cursor:pointer;border-radius:4px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.25);color:inherit}
       #bottomBar{border-top:1px solid rgba(128,128,128,0.15);background:var(--vscode-editor-background);padding:6px 8px;display:flex;flex-direction:column;gap:4px}
-      #topBar{display:flex;align-items:center;gap:4px 6px;padding:0 2px 2px;flex-wrap:wrap;row-gap:3px}
+      #topBar{display:flex;align-items:center;gap:6px;padding:0 2px 2px;flex-wrap:wrap;row-gap:6px}
+      .toolbar-group{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 6px;border:1px solid rgba(128,128,128,0.16);border-radius:8px;background:rgba(128,128,128,0.05)}
+      .toolbar-spacer{flex:1 1 auto}
       #chatSessionSelect{max-width:170px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
       #chatSearchBar{display:none;align-items:center;gap:4px;padding:2px 0}
       #chatSearchInput{flex:1;font-size:12px;padding:3px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));border-radius:4px;outline:none}
@@ -43,19 +45,23 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .search-hit-title{font-weight:600;font-size:11px}
       .search-hit-snippet{opacity:0.65;font-size:11px;white-space:pre-wrap;word-break:break-all}
       .session-tag{font-size:10px;padding:1px 5px;border-radius:9px;background:rgba(79,193,255,0.18);color:var(--vscode-editorInfo-foreground,#4fc1ff);margin-left:3px;vertical-align:middle}
-      #modelSelect{flex:1;max-width:220px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
+      #modelSelect{flex:1;min-width:180px;max-width:260px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
       .icon-btn{background:none;border:none;cursor:pointer;padding:3px 6px;border-radius:4px;font-size:15px;color:var(--vscode-editor-foreground);opacity:0.7;line-height:1}
       .icon-btn:hover{opacity:1;background:rgba(128,128,128,0.15)}
       .icon-btn.active{color:var(--vscode-button-background,#0e639c);opacity:1}
+      .provider-badge{display:inline-flex;align-items:center;gap:4px;min-height:22px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid rgba(128,128,128,0.25);background:rgba(128,128,128,0.1);white-space:nowrap}
+      [data-provider="ollama"] .provider-badge,[data-provider="ollama"].provider-badge,.provider-label[data-provider="ollama"]{color:#4fc1ff}
+      [data-provider="copilot"] .provider-badge,[data-provider="copilot"].provider-badge,.provider-label[data-provider="copilot"]{color:#f7cc65}
+      [data-provider="openai"] .provider-badge,[data-provider="openai"].provider-badge,.provider-label[data-provider="openai"]{color:#89d185}
       #inputRow{display:flex;align-items:flex-end;gap:6px}
       #prompt{flex:1;min-height:36px;max-height:160px;resize:none;padding:7px 10px;font-size:13px;font-family:inherit;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));border-radius:8px;outline:none;overflow-y:auto;line-height:1.4}
       #prompt:focus{border-color:var(--vscode-focusBorder,#007fd4)}
       #sendBtn{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;border-radius:8px;padding:7px 13px;cursor:pointer;font-size:16px;line-height:1;align-self:flex-end;flex-shrink:0}
       #sendBtn:disabled{opacity:0.4;cursor:default}
       #statusBar{font-size:11px;opacity:0.75;padding:1px 4px;text-align:center;min-height:14px}
-      #attachedFiles{display:flex;flex-wrap:wrap;gap:3px;padding:0 2px}
-      .file-chip{display:inline-flex;align-items:center;gap:3px;background:rgba(0,120,215,0.14);border:1px solid rgba(0,120,215,0.3);border-radius:10px;padding:1px 8px;font-size:11px}
-      .file-chip .rm{padding:0 2px;font-size:12px;background:none;border:none;cursor:pointer;opacity:0.6;color:inherit;line-height:1}
+      #attachedFiles{padding:2px 8px;display:flex;flex-wrap:wrap;gap:4px;min-height:0}
+      .file-chip{display:inline-flex;align-items:center;gap:3px;background:rgba(0,120,215,0.14);border:1px solid rgba(0,120,215,0.3);border-radius:999px;padding:1px 8px;font-size:11px}
+      .file-chip .rm{padding:0 2px;font-size:11px;background:none;border:none;cursor:pointer;opacity:0.6;color:inherit;line-height:1}
       details.think { border:1px solid rgba(79,193,255,0.5); margin:8px 0 4px; padding:0; background:rgba(79,193,255,0.06); border-radius:6px; overflow:hidden; width:100% }
       details.think summary { background:rgba(79,193,255,0.2); padding:5px 10px; cursor:pointer; color:var(--vscode-editorInfo-foreground,#4fc1ff); font-size:0.83em; font-weight:600; user-select:none; list-style:none; display:flex; align-items:center; gap:6px }
       details.think summary .think-icon { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--vscode-editorInfo-foreground,#4fc1ff); flex-shrink:0 }
@@ -64,9 +70,6 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       details.think summary::before { content:none }
       details.think[open] summary::before { content:none }
       details.think pre { margin:0; padding:6px 10px; white-space:pre-wrap; color:var(--vscode-editor-foreground); opacity:0.85; font-size:0.82em; max-height:96px; overflow-y:auto; background:transparent }
-      .file-chip { display:inline-flex; align-items:center; gap:3px; background:rgba(0,120,215,0.14); border:1px solid rgba(0,120,215,0.3); border-radius:3px; padding:1px 6px; font-size:11px; margin:2px }
-      .file-chip .rm { padding:0 2px; font-size:11px; background:none; border:none; cursor:pointer; opacity:0.6; color:inherit; line-height:1 }
-      #attachedFiles { padding:2px 8px; display:flex; flex-wrap:wrap; min-height:0 }
       .img-chip{display:inline-flex;align-items:center;gap:4px;background:rgba(180,100,215,0.12);border:1px solid rgba(180,100,215,0.35);border-radius:4px;padding:2px 4px 2px 2px;font-size:11px;margin:2px}
       .img-chip img{width:36px;height:36px;object-fit:cover;border-radius:3px;display:block}
       .img-chip .rm{padding:0 2px;font-size:11px;background:none;border:none;cursor:pointer;opacity:0.6;color:inherit;line-height:1}
@@ -140,7 +143,6 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       #teamPickerBar,#debatePickerBar,#comparePickerBar{display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap}
       .team-pick-row{display:flex;align-items:center;gap:5px;padding:1px 2px}
       .team-pick-row label{font-size:12px;cursor:pointer;user-select:none}
-      .tpl-copilot{color:#f7cc65}.tpl-ollama{color:#4fc1ff}
       .role-badge{font-size:10px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:5px;vertical-align:middle;white-space:nowrap}
       .role-badge-manager{background:#f7cc65;color:#1e1e1e}.role-badge-member{background:#4fc1ff;color:#1e1e1e}.role-badge-coordinator{background:#4ec9b0;color:#1e1e1e}.role-badge-discussor{background:#c586c0;color:#fff}.role-badge-agent{background:#ce9178;color:#1e1e1e}
       .role-badge-planner{background:#f7a534;color:#1e1e1e}.role-badge-developer{background:#4fc1ff;color:#1e1e1e}.role-badge-reviewer{background:#c586c0;color:#fff}.role-badge-tester{background:#4ec9b0;color:#1e1e1e}.role-badge-writer{background:#89d185;color:#1e1e1e}
@@ -186,6 +188,9 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .latency-bar-track{flex:1;background:rgba(128,128,128,0.15);border-radius:3px;height:12px;overflow:hidden}
       .latency-bar-fill{height:100%;border-radius:3px;background:#4fc1ff;transition:width 0.3s}
       .latency-bar-val{width:54px;flex-shrink:0;opacity:0.7}
+      body[data-provider="copilot"] #statusBar{color:#f7cc65}
+      body[data-provider="ollama"] #statusBar{color:#4fc1ff}
+      body[data-provider="openai"] #statusBar{color:#89d185}
       /* 棋盤視覺化 */
       .debate-board{background:var(--vscode-editor-background,#1e1e1e);border:1px solid rgba(128,128,128,0.25);border-radius:4px;padding:6px 10px;font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.4;white-space:pre;overflow-x:auto;margin:4px 0;color:var(--vscode-editor-foreground,#d4d4d4)}
       #debateSwapBar{padding:6px 8px;border-top:1px solid rgba(128,128,128,0.2);display:flex;flex-wrap:wrap;align-items:center;gap:4px}
@@ -268,30 +273,40 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .user-edit-actions{display:flex;gap:5px}
     </style>
   </head>
-  <body>
+  <body data-provider="ollama">
     <div id="chat"></div>
     <div id="bottomBar">
       <div id="topBar">
-        <select id="chatSessionSelect" aria-label="選擇聊天"></select>
-        <button class="icon-btn" id="newChat" title="新增聊天">➕</button>
-        <button class="icon-btn" id="renameChat" title="&#x8A2D;&#x5B9A;&#x8173;&#x5929;&#x6A19;&#x984C;">&#x1F3F7;&#xFE0F;</button>
-        <button class="icon-btn" id="exportChat" title="&#x532F;&#x51FA;&#x5C0D;&#x8A71;">&#x1F4E4;</button>
-        <button class="icon-btn" id="importChat" title="&#x532F;&#x5165;&#x5C0D;&#x8A71;">&#x1F4E5;</button>
-        <button class="icon-btn" id="searchChatBtn" title="&#x641C;&#x5C0B;&#x6240;&#x6709;&#x5C0D;&#x8A71;">&#x1F50D;</button>
-        <select id="modelSelect" aria-label="&#x9078;&#x64C7;&#x6A21;&#x578B;">${optionsHtml}</select><span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
-        <button class="icon-btn" id="refreshModels" title="重整模型 / 測試連線">🔄</button>
-        <button class="icon-btn" id="pickFile" title="附加檔案">📎</button>
-        <button class="icon-btn" id="toggleStream" title="切換串流模式">⚡</button>
-        <button class="icon-btn" id="agentMode" title="Agent 模式 (AI 可讀寫檔案、執行命令)">🤖</button>
-        <button class="icon-btn" id="teamMode" title="團隊討論模式 (多個 AI 並行思考👥)">👥</button>
-        <button class="icon-btn" id="compareMode" title="模型比較：同一問題對多個 AI，並排回答 🆚">🆚</button>
-        <button class="icon-btn" id="debateMode" title="對話模式：2 個 AI 辯論/對弈，可加第 3 個裁判 ⚔️">⚔️</button>
-        <button class="icon-btn" id="stopAgent" title="停止 Agent">⏹</button>
-        <button class="icon-btn" id="memBtn" title="記憶管理">🧠</button>
-        <button class="icon-btn" id="statsBtn" title="使用統計 / 效能分析">📊</button>
-        <button class="icon-btn" id="clear" title="清除對話">🗑</button>
-        <button class="icon-btn" id="debugBtn" title="Debug Console" style="font-size:12px;">🐛</button>
-        <span style="flex:1"></span>
+        <div class="toolbar-group" aria-label="聊天管理">
+          <select id="chatSessionSelect" aria-label="選擇聊天"></select>
+          <button class="icon-btn" id="newChat" title="新增聊天" aria-label="新增聊天">➕</button>
+          <button class="icon-btn" id="renameChat" title="設定聊天標題" aria-label="設定聊天標題">&#x1F3F7;&#xFE0F;</button>
+          <button class="icon-btn" id="exportChat" title="匯出對話" aria-label="匯出對話">&#x1F4E4;</button>
+          <button class="icon-btn" id="importChat" title="匯入對話" aria-label="匯入對話">&#x1F4E5;</button>
+          <button class="icon-btn" id="searchChatBtn" title="搜尋所有對話" aria-label="搜尋所有對話">&#x1F50D;</button>
+        </div>
+        <div class="toolbar-group" aria-label="模型與供應商">
+          <span id="providerBadge" class="provider-badge" data-provider="ollama" title="目前供應商">Ollama</span>
+          <select id="modelSelect" aria-label="選擇模型">${optionsHtml}</select>
+          <span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
+          <button class="icon-btn" id="refreshModels" title="重整模型 / 測試連線" aria-label="重整模型 / 測試連線">🔄</button>
+        </div>
+        <div class="toolbar-group" aria-label="聊天模式">
+          <button class="icon-btn" id="pickFile" title="附加檔案" aria-label="附加檔案">📎</button>
+          <button class="icon-btn" id="toggleStream" title="切換串流模式" aria-label="切換串流模式">⚡</button>
+          <button class="icon-btn" id="agentMode" title="Agent 模式 (AI 可讀寫檔案、執行命令)" aria-label="Agent 模式">🤖</button>
+          <button class="icon-btn" id="teamMode" title="團隊討論模式 (多個 AI 並行思考)" aria-label="團隊討論模式">👥</button>
+          <button class="icon-btn" id="compareMode" title="模型比較：同一問題對多個 AI，並排回答" aria-label="模型比較模式">🆚</button>
+          <button class="icon-btn" id="debateMode" title="對話模式：2 個 AI 辯論/對弈，可加第 3 個裁判" aria-label="對話模式">⚔️</button>
+          <button class="icon-btn" id="stopAgent" title="停止目前執行中的 Agent / Team / Debate" aria-label="停止執行">⏹</button>
+        </div>
+        <div class="toolbar-group" aria-label="工具與面板">
+          <button class="icon-btn" id="memBtn" title="記憶管理" aria-label="記憶管理">🧠</button>
+          <button class="icon-btn" id="statsBtn" title="使用統計 / 效能分析" aria-label="使用統計 / 效能分析">📊</button>
+          <button class="icon-btn" id="clear" title="清除對話" aria-label="清除對話">🗑</button>
+          <button class="icon-btn" id="debugBtn" title="Debug Console" aria-label="Debug Console" style="font-size:12px;">🐛</button>
+        </div>
+        <span class="toolbar-spacer"></span>
         <span id="connStatus" style="font-size:11px;opacity:0.8">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
       </div>
       <div id="attachedFiles"></div>
@@ -304,7 +319,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       <div id="teamPicker">
         <div id="teamPickerBar">
           <span style="font-size:11px;font-weight:700">&#x1F465; 選擇團隊成員（最多 5 個）</span>
-            <button class="team-pick-mini-btn" id="teamPickerRefresh">&#x1F504;</button>
+            <button class="team-pick-mini-btn" id="teamPickerRefresh" title="重新整理團隊模型">&#x1F504;</button>
             <label style="font-size:11px;margin-left:8px">模式：</label>
             <select id="teamModeSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
               <option value="parallel" selected>&#x26A1; 平行協作 Agent</option>
@@ -334,7 +349,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       <div id="comparePicker">
         <div id="comparePickerBar">
           <span style="font-size:11px;font-weight:700">&#x1F19A; 模型比較（選 2-5 個，同一問題各自作答）</span>
-          <button class="team-pick-mini-btn" id="comparePickerRefresh">&#x1F504;</button>
+           <button class="team-pick-mini-btn" id="comparePickerRefresh" title="重新整理比較模型">&#x1F504;</button>
           <span style="flex:1"></span>
           <span id="comparePickerCount">0/5 已選</span>
         </div>
@@ -343,7 +358,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       <div id="debatePicker">
         <div id="debatePickerBar">
           <span style="font-size:11px;font-weight:700">&#x2694;&#xFE0F; 對話成員（2 個應戰，可加第 3 個裁判）</span>
-            <button class="team-pick-mini-btn" id="debatePickerRefresh">&#x1F504;</button>
+            <button class="team-pick-mini-btn" id="debatePickerRefresh" title="重新整理對話模型">&#x1F504;</button>
             <label style="font-size:11px;margin-left:8px">回合：</label>
             <select id="debateRoundsSelect" style="font-size:11px;padding:3px 6px;border-radius:4px">
               <option value="10">10</option>
@@ -367,7 +382,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       </div>
       <div id="inputRow">
         <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
-        <button id="sendBtn" title="送出 (Enter)">&#9658;</button>
+        <button id="sendBtn" title="送出">&#9658;</button>
       </div>
       <div id="permissionBar">
         <div id="permissionDesc"></div>
@@ -495,26 +510,148 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       var cfgSendKey = ${JSON.stringify(sendKey)};
 
       // ── Debug Console ──────
-      window._debugLog = [];
+      window._debugLog = window._debugLog || [];
       function dbg(msg) { var t = new Date().toISOString().slice(11,23); window._debugLog.push(t + ' ' + msg); var dp = document.getElementById('debugPanel'); if (dp && dp.style.display !== 'none') { dp.textContent = window._debugLog.slice(-10).join('\\n'); } }
       dbg('webview init start');
-      var debugPanel = document.createElement('pre');
-      debugPanel.id = 'debugPanel';
-      debugPanel.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.85);color:#0f0;font-size:11px;padding:6px 10px;overflow:hidden;white-space:pre-wrap;font-family:Consolas,monospace;max-height:160px;border-bottom:1px solid #0f0;';
-      document.body.appendChild(debugPanel);
+      var debugPanel = document.getElementById('debugPanel');
       window.onerror = function(msg, src, line, col) { dbg('ERROR: ' + msg + ' at line ' + line + ':' + col); return false; };
 
       // ── 使用者訊息計數 / 歷史長度追蹤 ────
       var _userMsgCount = 0;   // 已加入的 user message 數（用於 editMessage / forkSession）
-      var _lastHistLen  = 0;   // 最近一次 historyCount 回傳的後端歷史長度
       var _lastTokenInfo = ''; // streamEnd 設定的 token 資訊文字（供 agentStatus restore 用）
+      var _providerInfo = { id: 'ollama', label: 'Ollama', modelId: '', displayName: '' };
+
+      function getProviderAppearance(providerId) {
+        return {
+          ollama: { icon: '🦙', label: 'Ollama' },
+          copilot: { icon: '🧠', label: 'Copilot' },
+          openai: { icon: '✨', label: 'OpenAI Compatible' }
+        }[providerId] || { icon: '🤖', label: providerId || 'Provider' };
+      }
+
+      function inferProviderFromModelId(modelId) {
+        if (!modelId) return 'ollama';
+        if (modelId.indexOf('copilot::') === 0 || modelId.indexOf('copilot/') === 0) return 'copilot';
+        if (modelId.indexOf('openai::') === 0) return 'openai';
+        return 'ollama';
+      }
+
+      function applyProviderInfo(providerInfo) {
+        if (!providerInfo) return;
+        _providerInfo = {
+          id: providerInfo.id || inferProviderFromModelId(providerInfo.modelId),
+          label: providerInfo.label || '',
+          modelId: providerInfo.modelId || '',
+          displayName: providerInfo.displayName || ''
+        };
+        document.body.dataset.provider = _providerInfo.id || 'ollama';
+        var badge = document.getElementById('providerBadge');
+        if (badge) {
+          var meta = getProviderAppearance(_providerInfo.id);
+          badge.dataset.provider = _providerInfo.id;
+          badge.textContent = meta.icon + ' ' + (_providerInfo.label || meta.label);
+          badge.title = (_providerInfo.displayName ? _providerInfo.displayName + ' · ' : '') + (_providerInfo.label || meta.label);
+        }
+      }
+
+      function normalizeModelItems(msg) {
+        if (msg.models && msg.models.length && typeof msg.models[0] === 'object' && msg.models[0].provider) {
+          return msg.models.map(function(m) {
+            return {
+              id: m.id,
+              label: m.label,
+              provider: m.provider,
+              providerLabel: m.providerLabel || getProviderAppearance(m.provider).label,
+              multiplier: m.multiplier || ''
+            };
+          });
+        }
+        var normalized = [];
+        (msg.models || []).forEach(function(m) {
+          normalized.push({
+            id: typeof m === 'string' ? m : m.id,
+            label: typeof m === 'string' ? m : m.label,
+            provider: 'ollama',
+            providerLabel: 'Ollama',
+            multiplier: ''
+          });
+        });
+        (msg.copilotModels || []).forEach(function(cm) {
+          normalized.push({
+            id: 'copilot::' + cm.id,
+            label: cm.name,
+            provider: 'copilot',
+            providerLabel: 'Copilot',
+            multiplier: cm.multiplier || ''
+          });
+        });
+        return normalized;
+      }
+
+      function decorateProviderLabel(model, includeMultiplier) {
+        var meta = getProviderAppearance(model.provider);
+        return meta.icon + ' ' + model.label + (includeMultiplier && model.multiplier ? '  ' + model.multiplier : '');
+      }
+
+      function setInteractionMode(mode, shouldFetchModels) {
+        agentMode = mode === 'agent';
+        teamMode = mode === 'team';
+        compareMode = mode === 'compare';
+        debateMode = mode === 'debate';
+        var modeButtons = {
+          agent: document.getElementById('agentMode'),
+          team: document.getElementById('teamMode'),
+          compare: document.getElementById('compareMode'),
+          debate: document.getElementById('debateMode')
+        };
+        Object.keys(modeButtons).forEach(function(key) {
+          if (modeButtons[key]) modeButtons[key].classList.toggle('active', key === mode);
+        });
+        var teamPicker = document.getElementById('teamPicker');
+        var comparePicker = document.getElementById('comparePicker');
+        var debatePicker = document.getElementById('debatePicker');
+        if (teamPicker) teamPicker.classList.toggle('visible', teamMode);
+        if (comparePicker) comparePicker.classList.toggle('visible', compareMode);
+        if (debatePicker) debatePicker.classList.toggle('visible', debateMode);
+        var sendHint = cfgSendKey === 'Ctrl+Enter' ? 'Ctrl+Enter 送出' : 'Enter 送出';
+        if (prompt) {
+          prompt.placeholder = agentMode
+            ? '輸入任務… Agent 會自動使用工具 (' + sendHint + ')'
+            : teamMode
+              ? '輸入問題… 所選 AI 會同時回答 (' + sendHint + ')'
+              : compareMode
+                ? '輸入問題… 多個 AI 並排回答 (' + sendHint + ')'
+                : debateMode
+                  ? '輸入議題或任務… (' + sendHint + ')'
+                  : '輸入訊息… (' + sendHint + (cfgSendKey === 'Ctrl+Enter' ? ' / Enter 換行' : ' / Ctrl+Enter 換行') + ')';
+        }
+        if (sendBtn) {
+          sendBtn.title = agentMode
+            ? '送出任務給 Agent (' + sendHint + ')'
+            : '送出訊息 (' + sendHint + ')';
+        }
+        if (statusBar) {
+          statusBar.textContent = agentMode
+            ? '🤖 Agent 模式 — AI 可自動讀寫檔案、執行命令'
+            : teamMode
+              ? '👥 選擇團隊成員後輸入問題'
+              : compareMode
+                ? '🆚 選擇比較模型後輸入問題'
+                : debateMode
+                  ? '⚔️ 對話模式：選 2 個 AI 辯論，可加第 3 個裁判'
+                  : '💬 Ask 模式 — 直接對話，不使用工具';
+        }
+        if (shouldFetchModels && (teamMode || compareMode || debateMode)) {
+          vscode.postMessage({ type: 'fetchTeamModels' });
+        }
+      }
 
       // ── 訊息處理 (最先掛上，避免後續程式碼拋例外導致 listener 遺失) ──────
       window.addEventListener('message', function(event) {
         try {
           const msg = event.data;
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
-          if (debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
+          if (debugPanel && debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
           if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); if (statusBar && msg.tokens) { var _aML = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F'); statusBar.textContent = _aML + '\u2003\u2014\u2003~' + msg.tokens + ' tokens'; } }
           else if (msg.type === 'streamStart')   { _streamNode = null; /* dots stay until first thinkChunk/assistantChunk */ }
           else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk, msg.model); }
@@ -641,13 +778,21 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           }
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
-          else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); if (t) t.classList.toggle('active', msg.enabled); }
-          else if (msg.type === 'modelList')     { dbg('modelList received: ' + (msg.models||[]).length + ' ollama + ' + (msg.copilotModels||[]).length + ' copilot'); updateModelSelect(msg.models, msg.current, msg.copilotModels); var _pickerModels = []; (msg.models||[]).forEach(function(m) { var id = (typeof m === 'string') ? m : m.id; var label = (typeof m === 'string') ? m : m.label; _pickerModels.push({ id: id, label: label, vendor: 'ollama' }); }); (msg.copilotModels||[]).forEach(function(cm) { _pickerModels.push({ id: 'copilot::' + cm.id, label: cm.name, vendor: 'copilot', multiplier: cm.multiplier || '' }); }); if (_pickerModels.length) { populateTeamPicker(_pickerModels); populateDebatePicker(_pickerModels); populateComparePicker(_pickerModels); } }
+          else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); streamMode = !!msg.enabled; if (t) t.classList.toggle('active', streamMode); }
+          else if (msg.type === 'modelList')     {
+            var normalizedModels = normalizeModelItems(msg);
+            dbg('modelList received: ' + normalizedModels.length + ' models');
+            updateModelSelect(normalizedModels, msg.current);
+            applyProviderInfo(msg.providerInfo || { modelId: msg.current, id: inferProviderFromModelId(msg.current) });
+            if (normalizedModels.length) { populateTeamPicker(normalizedModels); populateDebatePicker(normalizedModels); populateComparePicker(normalizedModels); }
+          }
+          else if (msg.type === 'initialState')  { if (msg.providerInfo) applyProviderInfo(msg.providerInfo); if (msg.streamMode) { streamMode = true; var ts = document.getElementById('toggleStream'); if (ts) ts.classList.add('active'); } }
+          else if (msg.type === 'providerInfo')  { applyProviderInfo(msg.providerInfo); }
           else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
           else if (msg.type === 'memorySaved')   { var slb = document.getElementById('saveLtmBtn'); if (slb) { slb.textContent = '\u2713 \u5df2\u5132\u5b58'; setTimeout(function() { slb.textContent = '\uD83D\uDCBE \u5132\u5b58\u9577\u671f\u8a18\u61b6'; }, 1500); } }
-          else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; _lastHistLen = msg.count || 0; } }
+          else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; } }
           else if (msg.type === 'consolidateStart') { var cs = document.getElementById('consolidateStatus'); if (cs) { cs.style.display = ''; cs.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026'; } var clb = document.getElementById('consolidateLtmBtn'); if (clb) clb.disabled = true; }
           else if (msg.type === 'consolidateChunk') { var cs2 = document.getElementById('consolidateStatus'); if (cs2) cs2.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026 ' + (msg.chunk || '').slice(0, 40); }
           else if (msg.type === 'usageUpdate') { renderUsageTable(msg.stats); renderStatsUsageTable(msg.stats); }
@@ -880,25 +1025,6 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         persistSessionState();
       }
 
-      function deleteChatSession(sessionId) {
-        if (_chatSessions.length <= 1) return; // keep at least one session
-        var idx = -1;
-        for (var i = 0; i < _chatSessions.length; i++) { if (_chatSessions[i].id === sessionId) { idx = i; break; } }
-        if (idx === -1) return;
-        _chatSessions.splice(idx, 1);
-        if (_activeChatSessionId === sessionId) {
-          var newIdx = Math.min(idx, _chatSessions.length - 1);
-          _activeChatSessionId = _chatSessions[newIdx].id;
-          var ns = _chatSessions[newIdx];
-          resetTransientNodes();
-          chat.innerHTML = ns.html || '';
-          clearFiles();
-          vscode.postMessage({ type: 'switchChatSession', sessionId: _activeChatSessionId });
-        }
-        renderChatSessionSelect();
-        persistSessionState();
-      }
-
       renderChatSessionSelect();
       switchChatSession(_activeChatSessionId);
       if (chatSessionSelect) chatSessionSelect.addEventListener('change', function() { switchChatSession(chatSessionSelect.value); });
@@ -1078,12 +1204,6 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       prompt.addEventListener('input', function() { setSendEnabled(prompt.value.trim().length > 0); });
       setSendEnabled(true);
 
-      // Apply default agentMode=true state to UI
-      document.getElementById('agentMode').classList.add('active');
-      var _skHint = cfgSendKey === 'Ctrl+Enter' ? 'Ctrl+Enter \u9001\u51fa' : 'Enter \u9001\u51fa';
-      prompt.placeholder = '\u8f38\u5165\u4efb\u52d9\u2026 Agent \u6703\u81ea\u52d5\u4f7f\u7528\u5de5\u5177 (' + _skHint + ')';
-      if (statusBar) statusBar.textContent = '\uD83E\uDD16 Agent \u6a21\u5f0f';
-
       sendBtn.addEventListener('click', doSend);
 
       // Enter/Ctrl+Enter 送出設定由 cfgSendKey 控制
@@ -1103,27 +1223,11 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       });
 
       document.getElementById('agentMode').addEventListener('click', function() {
-        agentMode = !agentMode;
-        document.getElementById('agentMode').classList.toggle('active', agentMode);
-        if (agentMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
-        if (agentMode && compareMode) { compareMode = false; document.getElementById('compareMode').classList.remove('active'); document.getElementById('comparePicker').classList.remove('visible'); }
-        if (agentMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
-        if (statusBar) statusBar.textContent = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F \u2014 AI \u53EF\u81EA\u52D5\u8B80\u5BEB\u6A94\u6848\u3001\u57F7\u884C\u547D\u4EE4' : '\uD83D\uDCAC Ask \u6A21\u5F0F \u2014 \u76F4\u63A5\u5C0D\u8A71\uFF0C\u4E0D\u4F7F\u7528\u5DE5\u5177';
-        var _ph = cfgSendKey === 'Ctrl+Enter' ? 'Ctrl+Enter \u9001\u51fa' : 'Enter \u9001\u51fa';
-        prompt.placeholder = agentMode ? '\u8f38\u5165\u4efb\u52d9\u2026 Agent \u6703\u81ea\u52d5\u4f7f\u7528\u5de5\u5177 (' + _ph + ')' : '\u8f38\u5165\u8a0a\u606f\u2026 (' + _ph + (cfgSendKey === 'Ctrl+Enter' ? ' / Enter \u63db\u884c' : ' / Ctrl+Enter \u63db\u884c') + ')';
+        setInteractionMode(agentMode ? 'ask' : 'agent');
       });
 
       document.getElementById('teamMode').addEventListener('click', function() {
-        teamMode = !teamMode;
-        document.getElementById('teamMode').classList.toggle('active', teamMode);
-        if (teamMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
-        if (teamMode && compareMode) { compareMode = false; document.getElementById('compareMode').classList.remove('active'); document.getElementById('comparePicker').classList.remove('visible'); }
-        if (teamMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
-        var picker = document.getElementById('teamPicker');
-        if (picker) picker.classList.toggle('visible', teamMode);
-        if (teamMode) { vscode.postMessage({ type: 'fetchTeamModels' }); if (statusBar) statusBar.textContent = '\u{1F465} \u9078\u64c7\u5718\u968a\u6210\u54e1\u5f8c\u8f38\u5165\u554f\u984c'; }
-        else { if (statusBar) statusBar.textContent = ''; }
-        prompt.placeholder = teamMode ? '\u8f38\u5165\u554f\u984c\u2026 \u6240\u9078 AI \u6703\u540c\u6642\u56de\u7b54 (Enter \u9001\u51fa)' : '\u8f38\u5165\u8a0a\u606f\u2026 (Enter \u9001\u51fa / Ctrl+Enter \u63db\u884c)';
+        setInteractionMode(teamMode ? 'ask' : 'team', !teamMode);
       });
       var tpr = document.getElementById('teamPickerRefresh');
       if (tpr) tpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
@@ -1193,32 +1297,14 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
 
       var compareModeBtn = document.getElementById('compareMode');
       if (compareModeBtn) compareModeBtn.addEventListener('click', function() {
-        compareMode = !compareMode;
-        compareModeBtn.classList.toggle('active', compareMode);
-        if (compareMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
-        if (compareMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
-        if (compareMode && debateMode) { debateMode = false; document.getElementById('debateMode').classList.remove('active'); document.getElementById('debatePicker').classList.remove('visible'); }
-        var cp = document.getElementById('comparePicker');
-        if (cp) cp.classList.toggle('visible', compareMode);
-        if (compareMode) { vscode.postMessage({ type: 'fetchTeamModels' }); if (statusBar) statusBar.textContent = '\uD83C\uDD9A \u9078\u64c7\u6bd4\u8f03\u6a21\u578b\u5f8c\u8f38\u5165\u554f\u984c'; }
-        else { if (statusBar) statusBar.textContent = ''; }
-        prompt.placeholder = compareMode ? '\u8f38\u5165\u554f\u984c\u2026 \u591a\u500b AI \u4e26\u6392\u56de\u7b54 (Enter \u9001\u51fa)' : '\u8f38\u5165\u8a0a\u606f\u2026 (Enter \u9001\u51fa / Ctrl+Enter \u63db\u884c)';
+        setInteractionMode(compareMode ? 'ask' : 'compare', !compareMode);
       });
       var cpr = document.getElementById('comparePickerRefresh');
       if (cpr) cpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
 
       var debateModeBtn = document.getElementById('debateMode');
       if (debateModeBtn) debateModeBtn.addEventListener('click', function() {
-        debateMode = !debateMode;
-        debateModeBtn.classList.toggle('active', debateMode);
-        if (debateMode && agentMode) { agentMode = false; document.getElementById('agentMode').classList.remove('active'); }
-        if (debateMode && teamMode) { teamMode = false; document.getElementById('teamMode').classList.remove('active'); document.getElementById('teamPicker').classList.remove('visible'); }
-        if (debateMode && compareMode) { compareMode = false; document.getElementById('compareMode').classList.remove('active'); document.getElementById('comparePicker').classList.remove('visible'); }
-        var dp = document.getElementById('debatePicker');
-        if (dp) dp.classList.toggle('visible', debateMode);
-        if (debateMode) { vscode.postMessage({ type: 'fetchTeamModels' }); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u6a21\u5f0f\uff1a\u9078 2 \u500b AI \u8f2f\u8ad6\uff0c\u53ef\u52a0\u5730 3 \u500b\u88c1\u5224'; }
-        else { if (statusBar) statusBar.textContent = ''; }
-        prompt.placeholder = debateMode ? '\u8f38\u5165\u8bae\u9898\u6216\u4efb\u52d9\u2026 (Enter \u9001\u51fa)' : '\u8f38\u5165\u8a0a\u606f\u2026 (Enter \u9001\u51fa / Ctrl+Enter \u63db\u884c)';
+        setInteractionMode(debateMode ? 'ask' : 'debate', !debateMode);
       });
       var dpr = document.getElementById('debatePickerRefresh');
       if (dpr) dpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
@@ -1253,9 +1339,17 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           var selOpt = modelSelect.options[modelSelect.selectedIndex];
           var multEl = document.getElementById('modelMultiplier');
           if (multEl) multEl.textContent = selOpt && selOpt.dataset.multiplier ? selOpt.dataset.multiplier : '';
+          applyProviderInfo({
+            id: selOpt && selOpt.dataset.provider ? selOpt.dataset.provider : inferProviderFromModelId(modelSelect.value),
+            label: selOpt && selOpt.dataset.providerLabel ? selOpt.dataset.providerLabel : '',
+            modelId: modelSelect.value,
+            displayName: selOpt ? selOpt.textContent : modelSelect.value
+          });
           vscode.postMessage({ type: 'saveModel', model: modelSelect.value });
         });
       }
+      applyProviderInfo({ modelId: modelSelect ? modelSelect.value : '', id: inferProviderFromModelId(modelSelect ? modelSelect.value : '') });
+      setInteractionMode('agent');
 
       // ── 附加檔案 ─────────────────────────────────────────────────────────
       function buildPromptWithFiles(text) {
@@ -1946,10 +2040,12 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         }
         _teamAvailModels.forEach(function(m, i) {
           var row = document.createElement('div'); row.className = 'team-pick-row';
+          row.dataset.provider = m.provider || inferProviderFromModelId(m.id);
           var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'tp' + i; cb.value = m.id;
           var lbl = document.createElement('label'); lbl.htmlFor = 'tp' + i;
-          lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
-          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label + (m.vendor === 'copilot' && m.multiplier ? '  ' + m.multiplier : '');
+          lbl.className = 'provider-label';
+          lbl.dataset.provider = m.provider || inferProviderFromModelId(m.id);
+          lbl.textContent = decorateProviderLabel(m, true);
           // \u00d7N clone count span (sibling, not inside label)
           var cloneCount = document.createElement('span'); cloneCount.className = 'team-pick-clone-count';
           cloneCount.style.cssText = 'display:none;font-size:10px;font-weight:700;color:var(--vscode-charts-orange,#f7a534);margin-left:2px;vertical-align:middle';
@@ -2065,6 +2161,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         if (!_cmpModels.length) { list.innerHTML = '<span style="font-size:11px;opacity:0.6">\u7121\u53ef\u7528\u6a21\u578b</span>'; return; }
         _cmpModels.forEach(function(m, i) {
           var row = document.createElement('div'); row.className = 'team-pick-row';
+          row.dataset.provider = m.provider || inferProviderFromModelId(m.id);
           var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'cmp' + i; cb.value = m.id;
           cb.addEventListener('change', function() {
             var cbs = document.querySelectorAll('#comparePickerList input[type=checkbox]');
@@ -2073,8 +2170,9 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             cbs.forEach(function(c) { if (!c.checked) c.disabled = n >= 5; });
           });
           var lbl = document.createElement('label'); lbl.htmlFor = 'cmp' + i;
-          lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
-          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label + (m.vendor === 'copilot' && m.multiplier ? '  ' + m.multiplier : '');
+          lbl.className = 'provider-label';
+          lbl.dataset.provider = m.provider || inferProviderFromModelId(m.id);
+          lbl.textContent = decorateProviderLabel(m, true);
           row.appendChild(cb); row.appendChild(lbl); list.appendChild(row);
         });
       }
@@ -2094,11 +2192,13 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         }
         _teamAvailModels.forEach(function(m, i) {
           var row = document.createElement('div'); row.className = 'team-pick-row';
+          row.dataset.provider = m.provider || inferProviderFromModelId(m.id);
           var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'dp' + i; cb.value = m.id;
           cb.addEventListener('change', updateDebatePickerCount);
           var lbl = document.createElement('label'); lbl.htmlFor = 'dp' + i;
-          lbl.className = m.vendor === 'copilot' ? 'tpl-copilot' : 'tpl-ollama';
-          lbl.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label + (m.vendor === 'copilot' && m.multiplier ? '  ' + m.multiplier : '');
+          lbl.className = 'provider-label';
+          lbl.dataset.provider = m.provider || inferProviderFromModelId(m.id);
+          lbl.textContent = decorateProviderLabel(m, true);
           row.appendChild(cb); row.appendChild(lbl); list.appendChild(row);
         });
         updateDebatePickerCount();
@@ -2110,7 +2210,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           ss.innerHTML = _optBase;
           _teamAvailModels.forEach(function(m) {
             var opt = document.createElement('option'); opt.value = m.id;
-            opt.textContent = (m.vendor === 'copilot' ? '\uD83D\uDC19 ' : '\uD83E\uDD99 ') + m.label;
+            opt.dataset.provider = m.provider || inferProviderFromModelId(m.id);
+            opt.textContent = decorateProviderLabel(m, false);
             ss.appendChild(opt);
           });
           if (curVal) ss.value = curVal;
@@ -2241,49 +2342,47 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
       }
 
-      function updateModelSelect(models, current, copilotModels) {
+      function updateModelSelect(models, current) {
         if (!modelSelect) return;
         modelSelect.innerHTML = '';
         var hasAny = false;
-        if (models && models.length) {
-          // 支援 {id,label}[] 格式（多 URL 模式）和舊版 string[] 格式
-          var serverGroups = {}; var serverOrder = [];
-          models.forEach(function(m) {
-            var id = (typeof m === 'string') ? m : m.id;
-            var label = (typeof m === 'string') ? m : m.label;
-            var grpKey = 'Ollama';
-            if (id.indexOf('||') !== -1) {
-              var urlPart = id.slice(0, id.indexOf('||'));
-              try { var u = new URL(urlPart); grpKey = u.hostname + ':' + (u.port || '11434'); } catch { grpKey = urlPart; }
-            }
-            if (!serverGroups[grpKey]) { serverGroups[grpKey] = []; serverOrder.push(grpKey); }
-            serverGroups[grpKey].push({ id: id, label: label });
-          });
-          serverOrder.forEach(function(grpKey) {
-            var grpO = document.createElement('optgroup'); grpO.label = '\u2B2C ' + grpKey;
-            serverGroups[grpKey].forEach(function(m) {
-              var opt = document.createElement('option'); opt.value = m.id; opt.textContent = m.label;
-              if (m.id === current || m.label === current) opt.selected = true;
-              grpO.appendChild(opt); hasAny = true;
-            });
-            modelSelect.appendChild(grpO);
-          });
-        }
-        if (copilotModels && copilotModels.length) {
-          var grpC = document.createElement('optgroup'); grpC.label = '\u2728 Copilot';
-          copilotModels.forEach(function(cm) {
+        var providerGroups = {};
+        var providerOrder = [];
+        (models || []).forEach(function(model) {
+          var provider = model.provider || inferProviderFromModelId(model.id);
+          var groupKey = model.providerLabel || getProviderAppearance(provider).label;
+          if (!providerGroups[groupKey]) { providerGroups[groupKey] = []; providerOrder.push(groupKey); }
+          providerGroups[groupKey].push(model);
+        });
+        providerOrder.forEach(function(groupKey) {
+          var grp = document.createElement('optgroup');
+          grp.label = groupKey;
+          providerGroups[groupKey].forEach(function(model) {
             var opt = document.createElement('option');
-            var val = 'copilot::' + cm.id;
-            opt.value = val; opt.textContent = cm.name + (cm.multiplier ? '  ' + cm.multiplier : '');
-            if (cm.multiplier) opt.dataset.multiplier = cm.multiplier;
-            if (val === current) opt.selected = true;
-            grpC.appendChild(opt); hasAny = true;
+            opt.value = model.id;
+            opt.textContent = model.label + (model.multiplier ? '  ' + model.multiplier : '');
+            opt.dataset.provider = model.provider || inferProviderFromModelId(model.id);
+            opt.dataset.providerLabel = model.providerLabel || getProviderAppearance(opt.dataset.provider).label;
+            if (model.multiplier) opt.dataset.multiplier = model.multiplier;
+            if (model.id === current || model.label === current) opt.selected = true;
+            grp.appendChild(opt);
+            hasAny = true;
           });
-          modelSelect.appendChild(grpC);
-        }
+          modelSelect.appendChild(grp);
+        });
         if (!modelSelect.value && hasAny) { var firstOpt = modelSelect.querySelector('option'); if (firstOpt) modelSelect.value = firstOpt.value; }
         // 更新倍數標籤
-        (function() { var selOpt = modelSelect.options[modelSelect.selectedIndex]; var multEl = document.getElementById('modelMultiplier'); if (multEl) multEl.textContent = selOpt && selOpt.dataset.multiplier ? selOpt.dataset.multiplier : ''; })();
+        (function() {
+          var selOpt = modelSelect.options[modelSelect.selectedIndex];
+          var multEl = document.getElementById('modelMultiplier');
+          if (multEl) multEl.textContent = selOpt && selOpt.dataset.multiplier ? selOpt.dataset.multiplier : '';
+          applyProviderInfo({
+            id: selOpt && selOpt.dataset.provider ? selOpt.dataset.provider : inferProviderFromModelId(modelSelect.value),
+            label: selOpt && selOpt.dataset.providerLabel ? selOpt.dataset.providerLabel : '',
+            modelId: modelSelect.value,
+            displayName: selOpt ? selOpt.textContent : modelSelect.value
+          });
+        })();
         // 同步當前選擇到後端設定（確保 handleAgent fallback 不使用舊模型名稱）
         if (modelSelect.value) { vscode.postMessage({ type: 'saveModel', model: modelSelect.value }); }
       }
