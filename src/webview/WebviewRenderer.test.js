@@ -15,6 +15,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const Module = require('module');
 
 // ─── Mock vscode module ───────────────────────────────────────────────────────
@@ -109,4 +111,26 @@ test('output does not contain ARCHIVED or debug markers', () => {
   const html = withConfig({}, () => getHtmlForWebview(null));
   assert.ok(!html.includes('_ARCHIVED'), 'no ARCHIVED markers in output');
   assert.ok(!html.includes('TODO:'), 'no leftover TODO comments in output HTML');
+});
+
+test('source template does not contain raw newline escapes in inline script strings', () => {
+  const sourcePath = path.resolve(__dirname, 'WebviewRenderer.ts');
+  const source = fs.readFileSync(sourcePath, 'utf8');
+  const templateStart = source.indexOf('return `<!doctype html>');
+  const templateEnd = source.lastIndexOf('`;');
+
+  assert.ok(templateStart !== -1, 'should find HTML template start');
+  assert.ok(templateEnd !== -1 && templateEnd > templateStart, 'should find HTML template end');
+
+  const template = source.slice(templateStart, templateEnd);
+  const rawEscapeLines = template
+    .split(/\r?\n/)
+    .map((line, index) => ({ lineNumber: index + 1, line }))
+    .filter(({ line }) => /(?<!\\)\\[nr]/.test(line));
+
+  assert.deepEqual(
+    rawEscapeLines,
+    [],
+    'inline webview JS must use \\\\n / \\\\r inside the outer TypeScript template literal'
+  );
 });

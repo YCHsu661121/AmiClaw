@@ -62,6 +62,10 @@
         "title": "AMI-AiClaw"
       },
       {
+        "command": "amiAiClaw.runTodoFile",
+        "title": "AmiClaw: 執行 AmiClawToClaudeToDo.md"
+      },
+      {
         "command": "amiAiClaw.sendToChat",
         "title": "傳送到 AMI-AiClaw"
       },
@@ -228,6 +232,23 @@
             "default": false,
             "description": "Agent 模式中自動允許鍪案寫入與變更（write_file、replace_in_file），不彈出確認提示。刪除與機密操作仍然需要確認。"
           },
+          "amiAiClaw.autoPilotEnabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "AutoPilot：用小型分類器自動判斷工具呼叫是否安全（中間檔，介於手動確認與全自動之間）。讀檔等唯讀工具直接放行；具風險的動作交給分類器評估，連續被拒會自動回退到人工確認。"
+          },
+          "amiAiClaw.thinkingLevel": {
+            "type": "string",
+            "enum": ["off", "low", "medium", "high"],
+            "enumDescriptions": [
+              "強制關閉思考：即使是 thinking 模型（qwen3/deepseek-r1/qwq）也跳過 reasoning 階段，回應更快、token 更省",
+              "低度思考：啟用思考，預期淺度推理（Ollama 目前僅支援 boolean，等級差異留待 API 支援）",
+              "中度思考（預設）：thinking 模型的標準推理模式",
+              "高度思考：保留欄位，預期長度較長的深度推理"
+            ],
+            "default": "medium",
+            "description": "Thinking 模型的推理等級。off = 強制關閉思考；low/medium/high = 啟用思考（Ollama API 目前僅接受 boolean，等級差異等 API 升級後生效；OpenAI o-系列 / Anthropic extended thinking 整合 TBD）。"
+          },
           "amiAiClaw.autoIncludeActiveFile": {
             "type": "boolean",
             "default": true,
@@ -239,6 +260,31 @@
             "minimum": 1,
             "maximum": 64,
             "description": "自動附帶作用中檔案內容的最大 KB（超過會截斷，模型可呼叫 read_file 取完整內容）。"
+          },
+          "amiAiClaw.contextDepth": {
+            "type": "string",
+            "enum": ["file", "outline", "full"],
+            "enumDescriptions": [
+              "一般：只附帶作用中編輯器的檔案（預設，最省 token）",
+              "摘要：在 system prompt 注入工作區結構摘要（檔案樹 + 副檔名分佈 + 最大檔的前 N 行 outline）",
+              "全讀：把整個工作區原始碼倒進 system prompt（受 deepAnalysisMaxKb 容量上限保護）"
+            ],
+            "default": "file",
+            "description": "深度解析層級。Ask 與 Agent 模式皆生效。提升到 outline/full 可讓模型在 thinking 前先看完整個 codebase，但會大幅增加 token 消耗。"
+          },
+          "amiAiClaw.deepAnalysisMaxKb": {
+            "type": "number",
+            "default": 64,
+            "minimum": 8,
+            "maximum": 512,
+            "description": "contextDepth = full 時整個工作區原始碼注入的總容量上限（KB）。預設 64 KB 避免卡住；超出上限會提早停止，剩餘檔案可由模型呼叫 read_workspace / read_files 取得。"
+          },
+          "amiAiClaw.outlineMaxKb": {
+            "type": "number",
+            "default": 24,
+            "minimum": 4,
+            "maximum": 256,
+            "description": "contextDepth = outline 時工作區結構摘要的總容量上限（KB）。"
           },
           "amiAiClaw.expandFileMentions": {
             "type": "boolean",

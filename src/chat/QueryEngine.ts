@@ -1,5 +1,17 @@
 import * as vscode from 'vscode';
 import { findRelevantMemories } from '../memdir/findRelevantMemories';
+import { buildSystemPrompt, truncateMemoryIndex } from '../context/SystemPromptBuilder';
+import { formatCompactSummary } from '../context/HistoryCompactor';
+import { buildWorkspaceDigest, getCurrentContextDepth, fmtSize } from '../context/WorkspaceDigest';
+import {
+  addProviderPrefix,
+  getProviderKind,
+  getProviderLabel,
+  isCopilotModel,
+  isOllamaModel,
+  normalizeProviderModelId,
+  stripProviderPrefix,
+} from '../providers/ProviderRegistry';
 
 export interface QueryEngineChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -97,28 +109,15 @@ export class QueryEngine {
   ) {}
 
   private normalizeConfiguredModelId(modelId: string): string {
-    return modelId.startsWith('copilot/') ? `copilot::${modelId.slice('copilot/'.length)}` : modelId;
+    return normalizeProviderModelId(modelId);
   }
 
   private getProviderId(modelId: string): string {
-    if (modelId.startsWith('copilot::') || modelId.startsWith('copilot/')) {
-      return 'copilot';
-    }
-    if (modelId.startsWith('openai::')) {
-      return 'openai';
-    }
-    return 'ollama';
+    return getProviderKind(modelId);
   }
 
   private getProviderLabel(providerId: string): string {
-    switch (providerId) {
-      case 'copilot':
-        return 'Copilot';
-      case 'openai':
-        return 'OpenAI Compatible';
-      default:
-        return 'Ollama';
-    }
+    return getProviderLabel(providerId as ReturnType<typeof getProviderKind>);
   }
 
   private normalizeModelOptions(
@@ -133,7 +132,7 @@ export class QueryEngine {
         providerLabel: 'Ollama',
       })),
       ...copilotModels.map((model) => ({
-        id: `copilot::${model.id}`,
+        id: addProviderPrefix('copilot', model.id),
         label: model.name,
         provider: 'copilot',
         providerLabel: 'Copilot',
@@ -146,7 +145,7 @@ export class QueryEngine {
     const normalizedModelId = this.normalizeConfiguredModelId(modelId);
     const providerId = this.getProviderId(normalizedModelId);
     const displayName = models?.find((model) => model.id === normalizedModelId)?.label
-      ?? normalizedModelId.replace(/^copilot::/, '').replace(/^openai::/, '');
+      ?? stripProviderPrefix(normalizedModelId);
 
     return {
       id: providerId,
@@ -285,7 +284,7 @@ export class QueryEngine {
     const urls = this._services.getOllamaUrls(cfg);
     const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
     const normalizedModel = this.normalizeConfiguredModelId(rawModel);
-    const { url: baseUrl, model } = normalizedModel.startsWith('copilot::')
+    const { url: baseUrl, model } = isCopilotModel(normalizedModel)
       ? { url: urls[0], model: normalizedModel }
       : this._services.decodeOllamaModel(normalizedModel, urls);
 
@@ -300,6 +299,28 @@ export class QueryEngine {
     const expandedPrompt = await this.expandFileMentions(prompt);
 
     let systemContent = this.buildSystemContent(false);
+    // 深度解析：當 contextDepth 為 outline / full 時，附加整個工作區摘要或完整原始碼到 system prompt
+    try {
+      const depth = getCurrentContextDepth();
+      if (depth !== 'file') {
+        const cfgDepth = vscode.workspace.getConfiguration('amiAiClaw');
+        const digest = await buildWorkspaceDigest({
+          depth,
+          maxTotalKb: Math.max(8, cfgDepth.get<number>('outlineMaxKb', 24)),
+          modelContextLength: this._modelContextLength,
+          onProgress: (msg) => this._callbacks.postToWebview({ type: 'agentStepProgress', text: msg }),
+        });
+        if (digest.text) {
+          systemContent += `\n\n${digest.text}`;
+          this._callbacks.postToWebview({
+            type: 'agentStepProgress',
+            text: `🔬 深度解析（${depth}）：注入 ${digest.fileCount} 檔 / ${fmtSize(digest.bytes)} / ${digest.durationMs}ms${digest.truncated ? '（已截斷）' : ''}`,
+          });
+        }
+      }
+    } catch (e: unknown) {
+      this._callbacks.log(`buildWorkspaceDigest failed: ${(e as Error)?.message ?? e}`);
+    }
     const chatHistory = this._callbacks.getChatHistory();
     await this.autoSummarizeHistory(chatHistory, model, baseUrl);
     // 通知 webview 更新 context 百分比
@@ -351,8 +372,8 @@ export class QueryEngine {
     }
 
     try {
-      if (model.startsWith('copilot::')) {
-        const copilotId = model.slice('copilot::'.length);
+      if (isCopilotModel(model)) {
+        const copilotId = stripProviderPrefix(model);
         const cts = new vscode.CancellationTokenSource();
         this._pendingSendCts = cts;
         try {
@@ -532,9 +553,8 @@ export class QueryEngine {
 
   public buildSystemContent(includeAtlassian = true): string {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
-    const persona = cfg.get<string>('systemPrompt') ?? '';
+    const persona = (cfg.get<string>('systemPrompt') ?? '').trim();
     const ltm = this._callbacks.getLongTermMemory();
-    let content = persona.trim();
 
     const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
     const workspaceRoot = workspaceFolders.length > 0 ? workspaceFolders.map((folder) => folder.uri.fsPath).join(', ') : process.cwd();
@@ -544,18 +564,18 @@ export class QueryEngine {
       .map((tab) => (tab.input as { uri?: vscode.Uri })?.uri?.fsPath ?? '')
       .filter(Boolean) ?? [];
 
-    let workspaceInfo = `\n\n## 工作區資訊\n【工作區路徑】${workspaceRoot}`;
+    let workspaceBody = `【工作區路徑】${workspaceRoot}`;
     if (activeFile) {
-      workspaceInfo += `\n【作用中檔案】${activeFile}`;
+      workspaceBody += `\n【作用中檔案】${activeFile}`;
     }
     if (openFiles.length > 0) {
-      workspaceInfo += `\n【開啟的檔案】\n${openFiles.map((file) => `  - ${file}`).join('\n')}`;
+      workspaceBody += `\n【開啟的檔案】\n${openFiles.map((file) => `  - ${file}`).join('\n')}`;
     }
-    content += workspaceInfo;
 
     // 自動附帶作用中檔案內容（Copilot-like）：可由設定關閉，限制大小避免 token 爆量
     const autoIncludeActive = cfg.get<boolean>('autoIncludeActiveFile', true);
     const maxActiveBytes = Math.max(1024, Math.min(64 * 1024, (cfg.get<number>('autoIncludeActiveMaxKb', 16) || 16) * 1024));
+    let activeFileBody = '';
     if (autoIncludeActive && activeEditor && !activeEditor.document.isUntitled && activeEditor.document.uri.scheme === 'file') {
       const text = activeEditor.document.getText();
       const fileName = activeEditor.document.uri.fsPath;
@@ -563,23 +583,30 @@ export class QueryEngine {
       const truncated = text.length > maxActiveBytes
         ? text.slice(0, maxActiveBytes) + `\n…（內容已截斷至 ${Math.floor(maxActiveBytes / 1024)}KB，原始 ${Math.round(text.length / 1024)}KB；如需完整內容請呼叫 read_file）`
         : text;
-      content += `\n\n## 作用中檔案內容（自動附帶）\n【路徑】${fileName}\n\`\`\`${lang}\n${truncated}\n\`\`\``;
+      activeFileBody = `【路徑】${fileName}\n\`\`\`${lang}\n${truncated}\n\`\`\``;
     }
 
-    if (ltm.trim()) {
-      content += `\n\n## 長期記憶（關於使用者的重要資訊）\n${ltm.trim()}`;
-    }
-    if (includeAtlassian) {
-      content += '\n\n## Atlassian 整合（atlassian.atlascode）\n'
-        + '【強制規則—不得違反】\n'
+    const memoryIndex = truncateMemoryIndex(ltm.trim(), 200);
+
+    const atlassianRules = includeAtlassian
+      ? '【強制規則—不得違反】\n'
         + '1. 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。\n'
         + '2. 種類判斷與動作：\n'
         + '   - 「幫我分析 / RCA / 查看內容」任何分析請求 → 第一步必須立即呼叫 `jira_fetch`，取得內容後才可分析回答。\n'
         + '   - 「開啟 / 查看 / 顯示」 → 呼叫 `jira_open`（純 UI，不回傳內容）。\n'
         + '   - 建立 Issue → jira_create | 轉換狀態 → jira_transition | 開 PR → bb_create_pr | 問 Rovo Dev（AI 分析）→ rovo_ask（回傳回覆）\n'
-        + '3. 【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖的語句而不實際呼叫工具。看到 Jira Key 就直接呼叫工具，立即執行，不囉嗦。';
-    }
-    return content;
+        + '3. 【絕對禁止】不得說「我將查詢」「我會去取得」等宣告意圖的語句而不實際呼叫工具。看到 Jira Key 就直接呼叫工具，立即執行，不囉嗦。'
+      : '';
+
+    return buildSystemPrompt({
+      persona,
+      extraSections: [
+        { title: '工作區資訊', content: workspaceBody },
+        { title: '作用中檔案內容（自動附帶）', content: activeFileBody },
+        { title: '長期記憶（關於使用者的重要資訊）', content: memoryIndex },
+        { title: 'Atlassian 整合（atlassian.atlascode）', content: atlassianRules },
+      ],
+    });
   }
 
   public async summarizeText(text: string, modelOverride?: string): Promise<void> {
@@ -647,7 +674,7 @@ export class QueryEngine {
     }
 
     const currentModel = this.normalizeConfiguredModelId(cfg.get<string>('model') ?? liveModels[0]?.id ?? '');
-    if (currentModel && !currentModel.startsWith('copilot::') && !currentModel.startsWith('openai::')) {
+    if (currentModel && isOllamaModel(currentModel)) {
       const { url, model } = this._services.decodeOllamaModel(currentModel, ollamaUrls);
       this._services.ollamaWarmupModel(url, model);
       this._callbacks.log(`Model warmup: ${model} @ ${url}`);
@@ -672,7 +699,7 @@ export class QueryEngine {
   }
 
   public async ensureModelReady(baseUrl: string, model: string): Promise<void> {
-    if (model.startsWith('copilot::') || model.startsWith('openai::')) {
+    if (!isOllamaModel(model)) {
       return;
     }
 
@@ -726,7 +753,7 @@ export class QueryEngine {
     const cfgThreshold = cfg.get<number>('autoSummarizeThreshold', 8000);
 
     // 向 Ollama/vLLM 查詢實際 context window；Copilot 模型回傳 0
-    if (!model.startsWith('copilot::')) {
+    if (!isCopilotModel(model)) {
       const ctxLen = await this._services.ollamaGetContextLength(baseUrl, model);
       if (ctxLen > 0) { this._modelContextLength = ctxLen; }
     } else {
@@ -788,18 +815,14 @@ export class QueryEngine {
 
     let summary = '';
     try {
-      if (this._services.ollamaChatCallStream && !model.startsWith('copilot::')) {
+      if (this._services.ollamaChatCallStream && !isCopilotModel(model)) {
         const resp = await this._services.ollamaChatCallStream(baseUrl, model, summaryMessages, []);
-        const raw = (resp?.content ?? '').trim();
-        const m = raw.match(/<摘要>([\s\S]*?)<\/摘要>/);
-        summary = m ? `摘要：\n${m[1].trim()}` : raw;
+        summary = formatCompactSummary((resp?.content ?? '').trim());
       }
       if (!summary) {
         const resp = await this._services.ollamaGenerate(baseUrl, model,
           summaryMessages[0].content + '\n\n' + summaryMessages[1].content);
-        const raw = (resp.response ?? '').trim();
-        const m = raw.match(/<摘要>([\s\S]*?)<\/摘要>/);
-        summary = m ? `摘要：\n${m[1].trim()}` : raw;
+        summary = formatCompactSummary((resp.response ?? '').trim());
       }
     } catch { /* fall through to trim fallback */ }
 

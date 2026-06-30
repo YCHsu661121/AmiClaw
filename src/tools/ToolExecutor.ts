@@ -9,26 +9,15 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { URL } from 'url';
+import { ToolCache } from './ToolCache';
+import { AuditEntry, ToolAuditLog, summarizeToolArgsForAudit } from './ToolAuditLog';
+import { ToolPermissionDiff, ToolPolicies } from './ToolPolicies';
+import type { ToolExecutorCallbacks } from './ToolTypes';
 
-export type AuditEntry = { ts: number; session: string; tool: string; argsSnippet: string; error: boolean };
-
-export interface ToolPermissionDiff {
-  filePath: string;
-  before: string;
-  after: string;
-  mode?: 'replace' | 'write';
-  oldStr?: string;
-  newStr?: string;
-}
-
-export interface ToolExecutorCallbacks {
-  postToWebview: (msg: object) => void;
-  getExtensionContext: () => vscode.ExtensionContext;
-  isWaAgentMode: () => boolean;
-  log: (msg: string) => void;
-  getActiveSessionId: () => string;
-  handleWhatsAppTool: (name: string, args: Record<string, unknown>) => Promise<string>;
-}
+// 對外保留型別重新匯出，避免改動 consumer
+export type { AuditEntry } from './ToolAuditLog';
+export type { ToolPermissionDiff } from './ToolPolicies';
+export type { ToolExecutorCallbacks } from './ToolTypes';
 
 // ─── Unified Diff helper ──────────────────────────────────────────────────────
 function computeUnifiedDiff(
@@ -103,61 +92,41 @@ function computeUnifiedDiff(
 }
 
 export class ToolExecutor {
-  private _toolCache = new Map<string, { value: string; ts: number }>();
-  private static readonly TOOL_CACHE_TTL = 30_000;
-  private _alwaysAllow = new Set<string>();
-  private _auditLog: AuditEntry[] = [];
-  private _pendingPermission: ((allow: boolean) => void) | null = null;
+  private _cache = new ToolCache(30_000);
+  private _audit: ToolAuditLog;
+  private _policy: ToolPolicies;
   private _agentTodos: { id: number; text: string; done: boolean }[] = [];
   private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
   private _rovoDevCache: { url: string; token: string; expiry: number } | undefined = undefined;
   private _rovoDevNullUntil = 0;
 
   public constructor(private readonly _callbacks: ToolExecutorCallbacks) {
-    this._auditLog = this._callbacks.getExtensionContext().globalState.get<AuditEntry[]>('amiAiClaw.auditLog') ?? [];
-  }
-
-  public requestPermission(category: string, description: string, toolName = '', diff?: ToolPermissionDiff): Promise<boolean> {
-    const pcfg = vscode.workspace.getConfiguration('amiAiClaw');
-    const alwaysAllowList = pcfg.get<string[]>('toolAlwaysAllow') ?? [];
-    const alwaysConfirmList = pcfg.get<string[]>('toolAlwaysConfirm') ?? [];
-    const forceConfirm = toolName ? alwaysConfirmList.includes(toolName) : false;
-    if (this._callbacks.isWaAgentMode() && !forceConfirm && category !== 'delete') {
-      this._callbacks.log(`WA agent: auto-allow tool category=${category} tool=${toolName || '(none)'}`);
-      return Promise.resolve(true);
-    }
-    const _autoWriteTools = new Set(['write_file','replace_in_file','insert_in_file','replace_all_in_file','batch_replace','rename_file','copy_file','todo_write','memory_write']);
-    if (pcfg.get<boolean>('agentAutoApproveWrite', false) && (category === 'write' || (toolName && _autoWriteTools.has(toolName)))) {
-      return Promise.resolve(true);
-    }
-    if ((toolName && alwaysAllowList.includes(toolName)) || alwaysAllowList.includes(category)) {
-      return Promise.resolve(true);
-    }
-    if (!forceConfirm && this._alwaysAllow.has(category)) { return Promise.resolve(true); }
-    return new Promise<boolean>((resolve) => {
-      this._pendingPermission = resolve;
-      this._callbacks.postToWebview({ type: 'permissionRequest', category, description, forceConfirm, diff });
+    this._audit = new ToolAuditLog(this._callbacks.getExtensionContext());
+    this._policy = new ToolPolicies({
+      postToWebview: this._callbacks.postToWebview,
+      isWaAgentMode: this._callbacks.isWaAgentMode,
+      log: this._callbacks.log,
     });
   }
 
+  public requestPermission(category: string, description: string, toolName = '', diff?: ToolPermissionDiff): Promise<boolean> {
+    return this._policy.requestPermission(category, description, toolName, diff);
+  }
+
   public hasPendingPermission(): boolean {
-    return this._pendingPermission !== null;
+    return this._policy.hasPending();
   }
 
   public resolvePendingPermission(allow: boolean): boolean {
-    if (!this._pendingPermission) { return false; }
-    const resolve = this._pendingPermission;
-    this._pendingPermission = null;
-    resolve(allow);
-    return true;
+    return this._policy.resolvePending(allow);
   }
 
   public getAlwaysAllow(): ReadonlySet<string> {
-    return this._alwaysAllow;
+    return this._policy.getAlwaysAllow();
   }
 
   public addAlwaysAllow(category: string): void {
-    this._alwaysAllow.add(category);
+    this._policy.addAlwaysAllow(category);
   }
 
   public clearAgentTodos(): void {
@@ -165,30 +134,17 @@ export class ToolExecutor {
   }
 
   public getAuditLog(): AuditEntry[] {
-    const entries = this._callbacks.getExtensionContext().globalState.get<AuditEntry[]>('amiAiClaw.auditLog') ?? this._auditLog;
-    this._auditLog = entries.slice(-200);
-    return entries;
+    return this._audit.getAll();
   }
 
   public recordAuditEntry(tool: string, args: Record<string, unknown>, error: boolean): void {
-    const entry: AuditEntry = {
+    this._audit.push({
       ts: Date.now(),
       session: this._callbacks.getActiveSessionId(),
       tool,
-      argsSnippet: this.summarizeToolArgsForAudit(tool, args),
+      argsSnippet: summarizeToolArgsForAudit(args),
       error,
-    };
-    this._auditLog.push(entry);
-    if (this._auditLog.length > 200) { this._auditLog.shift(); }
-    const context = this._callbacks.getExtensionContext();
-    const saved = context.globalState.get<AuditEntry[]>('amiAiClaw.auditLog') ?? [];
-    saved.push(entry);
-    if (saved.length > 500) { saved.splice(0, saved.length - 500); }
-    void context.globalState.update('amiAiClaw.auditLog', saved);
-  }
-
-  private summarizeToolArgsForAudit(_name: string, args: Record<string, unknown>): string {
-    return JSON.stringify(args).slice(0, 120);
+    });
   }
 
   /** 從 atlassian.atlascode 擷取 Jira auth (bearer token + baseApiUrl)。
@@ -591,8 +547,8 @@ export class ToolExecutor {
       case 'read_file': {
         const fpath = await resolvePathWithPriority(args.path as string);
         const rfKey = `rf:${fpath}`;
-        const rfCached = this._toolCache.get(rfKey);
-        if (rfCached && Date.now() - rfCached.ts < ToolExecutor.TOOL_CACHE_TTL) { return rfCached.value; }
+        const rfCached = this._cache.get(rfKey);
+        if (rfCached !== undefined) { return rfCached; }
         // 先檢查檔案大小，避免大型二進位/文字檔案讓 webview 凍結
         let fileStat: vscode.FileStat;
         try { fileStat = await vscode.workspace.fs.stat(vscode.Uri.file(fpath)); }
@@ -624,7 +580,7 @@ export class ToolExecutor {
         const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
         const text = Buffer.from(bytes).toString('utf8');
         const rfResult = text.length > 50000 ? text.slice(0, 50000) + '\n…（已截斷至 50KB）' : text;
-        if (text.length <= 10000) { this._toolCache.set(rfKey, { value: rfResult, ts: Date.now() }); }
+        if (text.length <= 10000) { this._cache.set(rfKey, rfResult); }
         return rfResult;
       }
       case 'read_file_smart': {
@@ -822,7 +778,7 @@ export class ToolExecutor {
         const allowed = await this.requestPermission('write', `寫入檔案: ${path.basename(fpath)}（${content.length} 字元）`, 'write_file', wfDiff);
         if (!allowed) { return '使用者已拒絕寫入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
-        this._toolCache.delete(`rf:${fpath}`);
+        this._cache.delete(`rf:${fpath}`);
         this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now() });
         return `已寫入 ${fpath}（${content.length} 字元）`;
       }
@@ -837,7 +793,7 @@ export class ToolExecutor {
         const allowed = await this.requestPermission('write', `編輯檔案: ${path.basename(fpath)}`, 'replace_in_file', rifDiff);
         if (!allowed) { return '使用者已拒絕編輯操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.replace(oldStr, newStr), 'utf8'));
-        this._toolCache.delete(`rf:${fpath}`);
+        this._cache.delete(`rf:${fpath}`);
         this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'replace', ts: Date.now() });
         return `已更新 ${fpath}`;
       }
@@ -867,7 +823,7 @@ export class ToolExecutor {
         const ifAllowed = await this.requestPermission('write', `插入檔案: ${path.basename(fpath)} 第 ${lineNum} 行後（${insertLines.length} 行）`, 'insert_in_file', ifDiff);
         if (!ifAllowed) { return '使用者已拒絕插入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(newContent, 'utf8'));
-        this._toolCache.delete(`rf:${fpath}`);
+        this._cache.delete(`rf:${fpath}`);
         this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'insert', ts: Date.now() });
         return `已在 ${fpath} 第 ${lineNum} 行後插入 ${insertLines.length} 行`;
       }
@@ -953,7 +909,7 @@ export class ToolExecutor {
           return `無需更改 ${twFpath}`;
         }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(twFpath), Buffer.from(updated, 'utf8'));
-        this._toolCache.delete(`rf:${twFpath}`);
+        this._cache.delete(`rf:${twFpath}`);
         this._callbacks.postToWebview({ type: 'fileModified', filePath: twFpath, op: 'write', ts: Date.now() });
         return `已更新 ${twFpath}: ${target}`;
       }
@@ -999,7 +955,7 @@ export class ToolExecutor {
           }
         }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(mwFpath), Buffer.from(mwUpdated, 'utf8'));
-        this._toolCache.delete(`rf:${mwFpath}`);
+        this._cache.delete(`rf:${mwFpath}`);
         this._callbacks.postToWebview({ type: 'fileModified', filePath: mwFpath, op: 'write', ts: Date.now() });
         return `已更新記憶：${mwFpath}（${mwAction}）`;
       }
@@ -1013,8 +969,8 @@ export class ToolExecutor {
         try {
           const overwrite = !!(args.overwrite as boolean);
           await vscode.workspace.fs.rename(vscode.Uri.file(rfSrc), vscode.Uri.file(rfDst), { overwrite });
-          this._toolCache.delete(`rf:${rfSrc}`);
-          this._toolCache.delete(`rf:${rfDst}`);
+          this._cache.delete(`rf:${rfSrc}`);
+          this._cache.delete(`rf:${rfDst}`);
           this._callbacks.postToWebview({ type: 'fileModified', filePath: rfDst, op: 'rename', ts: Date.now() });
           return `已重新命名: ${rfSrc} → ${rfDst}`;
         } catch (e) { return `rename_file 錯誤: ${e}`; }
@@ -1029,7 +985,7 @@ export class ToolExecutor {
         try {
           const overwrite = !!(args.overwrite as boolean);
           await vscode.workspace.fs.copy(vscode.Uri.file(cfSrc), vscode.Uri.file(cfDst), { overwrite });
-          this._toolCache.delete(`rf:${cfDst}`);
+          this._cache.delete(`rf:${cfDst}`);
           this._callbacks.postToWebview({ type: 'fileModified', filePath: cfDst, op: 'write', ts: Date.now() });
           return `已複製: ${cfSrc} → ${cfDst}`;
         } catch (e) { return `copy_file 錯誤: ${e}`; }
@@ -1067,7 +1023,7 @@ export class ToolExecutor {
           const count = original.split(raOld).length - 1;
           const updated = original.split(raOld).join(raNew);
           await vscode.workspace.fs.writeFile(vscode.Uri.file(raPath), Buffer.from(updated, 'utf8'));
-          this._toolCache.delete(`rf:${raPath}`);
+          this._cache.delete(`rf:${raPath}`);
           this._callbacks.postToWebview({ type: 'fileModified', filePath: raPath, op: 'replace', ts: Date.now() });
           return `已取代 ${count} 處於 ${raPath}`;
         } catch (e) { return `replace_all_in_file 錯誤: ${e}`; }
@@ -1096,7 +1052,7 @@ export class ToolExecutor {
             const updated = original.replace(brRe, brReplace);
             if (updated !== original) {
               await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
-              this._toolCache.delete(`rf:${uri.fsPath}`);
+              this._cache.delete(`rf:${uri.fsPath}`);
               this._callbacks.postToWebview({ type: 'fileModified', filePath: uri.fsPath, op: 'replace', ts: Date.now() });
               const count = (original.match(new RegExp(brPattern, brFlags)) || []).length;
               brResults.push(`  ${path.relative(wsRoot, uri.fsPath).replace(/\\/g,'/')}  (${count} 處)`);
@@ -1144,8 +1100,8 @@ export class ToolExecutor {
       case 'list_dir': {
         const dirArg = (args.path as string) || '';
         const ldKey = `ld:${dirArg}`;
-        const ldCached = this._toolCache.get(ldKey);
-        if (ldCached && Date.now() - ldCached.ts < ToolExecutor.TOOL_CACHE_TTL) { return ldCached.value; }
+        const ldCached = this._cache.get(ldKey);
+        if (ldCached !== undefined) { return ldCached; }
         let ldResult: string;
         if (!dirArg && folders.length > 1) {
           // List all workspace folders
@@ -1161,7 +1117,7 @@ export class ToolExecutor {
           const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(dpath));
           ldResult = entries.map(([n, t]) => t === vscode.FileType.Directory ? n + '/' : n).sort().join('\n');
         }
-        this._toolCache.set(ldKey, { value: ldResult, ts: Date.now() });
+        this._cache.set(ldKey, ldResult);
         return ldResult;
       }
       case 'run_terminal': {
@@ -1220,8 +1176,8 @@ export class ToolExecutor {
         const allowed = await this.requestPermission('delete', `刪除: ${fpath}`, 'delete_file');
         if (!allowed) { return '使用者已拒絕刪除操作'; }
         await vscode.workspace.fs.delete(vscode.Uri.file(fpath), { recursive: (args.recursive as boolean) ?? false });
-        this._toolCache.delete(`rf:${fpath}`);
-        this._toolCache.delete(`ld:${path.dirname(fpath)}`);
+        this._cache.delete(`rf:${fpath}`);
+        this._cache.delete(`ld:${path.dirname(fpath)}`);
         return `已刪除 ${fpath}`;
       }
       case 'create_dir': {

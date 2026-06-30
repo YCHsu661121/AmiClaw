@@ -1,4 +1,4 @@
-// Copyright (c) 2026 YCHsu. All rights reserved.
+﻿// Copyright (c) 2026 YCHsu. All rights reserved.
 // Licensed under the MIT License.
 // WebviewRenderer — extracted from OllamaChatPanel.getHtmlForWebview
 // Sonnet refactor: Priority-1 split (pure HTML/CSS/JS, no side-effects)
@@ -317,6 +317,13 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .user-edit-overlay{display:flex;flex-direction:column;gap:4px;width:100%}
       .user-edit-textarea{min-height:48px;max-height:200px;resize:vertical;padding:6px 8px;font-size:13px;font-family:inherit;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-focusBorder,#007fd4);border-radius:6px;outline:none;width:100%;box-sizing:border-box}
       .user-edit-actions{display:flex;gap:5px}
+      /* ── Slash Command 快速選單 ─────────────────────────────────────────────── */
+      #inputRow{position:relative}
+      #slashPopup{position:absolute;bottom:100%;left:0;right:0;margin-bottom:4px;background:var(--vscode-input-background,#1e1e1e);border:1px solid var(--vscode-input-border,#454545);border-radius:6px;z-index:200;max-height:224px;overflow-y:auto;display:none;box-shadow:0 -4px 14px rgba(0,0,0,0.45)}
+      .slash-item{padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:10px;font-size:12px;border-left:3px solid transparent}
+      .slash-item:hover,.slash-item.slash-active{background:var(--vscode-list-activeSelectionBackground,#094771);color:var(--vscode-list-activeSelectionForeground,#fff);border-left-color:var(--vscode-focusBorder,#007fd4)}
+      .slash-cmd{font-weight:600;min-width:128px;font-family:var(--vscode-editor-font-family,monospace);color:var(--vscode-symbolIcon-stringForeground,#ce9178)}
+      .slash-desc{opacity:0.75;font-size:11px}
     </style>
   </head>
   <body data-provider="ollama">
@@ -341,16 +348,34 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         <div class="toolbar-group" aria-label="聊天模式">
           <button class="icon-btn" id="pickFile" title="附加檔案" aria-label="附加檔案">📎</button>
           <button class="icon-btn" id="toggleStream" title="切換串流模式" aria-label="切換串流模式">⚡</button>
-          <button class="icon-btn" id="agentMode" title="Agent 模式 (AI 可讀寫檔案、執行命令)" aria-label="Agent 模式">🤖</button>
-          <button class="icon-btn" id="teamMode" title="團隊討論模式 (多個 AI 並行思考)" aria-label="團隊討論模式">👥</button>
-          <button class="icon-btn" id="compareMode" title="模型比較：同一問題對多個 AI，並排回答" aria-label="模型比較模式">🆚</button>
-          <button class="icon-btn" id="debateMode" title="對話模式：2 個 AI 辯論/對弈，可加第 3 個裁判" aria-label="對話模式">⚔️</button>
+          <select id="modeSelect" aria-label="互動模式" title="互動模式" style="font-size:12px;padding:3px 6px;border-radius:4px">
+            <option value="ask">💬 Ask 模式</option>
+            <option value="agent" selected>🤖 Agent 模式</option>
+            <option value="team">👥 團隊討論</option>
+            <option value="compare">🆚 模型比較</option>
+            <option value="debate">⚔️ 對話/辯論</option>
+          </select>
+          <select id="thinkLevelSelect" aria-label="思考等級" title="思考等級：off 強制關閉、low/medium/high 啟用思考（thinking 模型生效，等級差異留待 Ollama API 支援）" style="font-size:12px;padding:3px 6px;border-radius:4px">
+            <option value="off">🚫 不思考</option>
+            <option value="low">💭 低</option>
+            <option value="medium" selected>🧠 中</option>
+            <option value="high">🌌 高</option>
+          </select>
+          <select id="contextDepthSelect" aria-label="深度解析" title="深度解析（注入到 system prompt）：file = 只附帶作用中檔案；outline = 加上工作區結構摘要（檔案樹 + 重要檔 outline）；full = 把整個工作區原始碼倒進 context（受 deepAnalysisMaxKb 容量上限保護）" style="font-size:12px;padding:3px 6px;border-radius:4px">
+            <option value="file" selected>📄 一般</option>
+            <option value="outline">🗂️ 摘要</option>
+            <option value="full">🔬 全讀</option>
+          </select>
           <button class="icon-btn" id="stopAgent" title="停止目前執行中的 Agent / Team / Debate" aria-label="停止執行">⏹</button>
         </div>
         <div class="toolbar-group" aria-label="工具與面板">
           <button class="icon-btn" id="memBtn" title="記憶管理" aria-label="記憶管理">🧠</button>
           <button class="icon-btn" id="statsBtn" title="使用統計 / 效能分析" aria-label="使用統計 / 效能分析">📊</button>
-          <button class="icon-btn" id="autoApproveBtn" title="全自動批准所有修改（無需確認）" aria-label="全自動批准">🚀</button>
+          <select id="permModeSelect" aria-label="權限模式" title="工具呼叫的批准模式：手動 / AutoPilot 自動判斷 / 全自動批准" style="font-size:12px;padding:3px 6px;border-radius:4px">
+            <option value="manual" selected>✋ 手動確認</option>
+            <option value="autopilot">🛡️ AutoPilot</option>
+            <option value="yolo">🚀 全自動</option>
+          </select>
           <button class="icon-btn" id="fileModBtn" title="顯示/隱藏修改記錄清單" aria-label="修改記錄">📋</button>
           <button class="icon-btn" id="clear" title="清除對話" aria-label="清除對話">🗑</button>
           <button class="icon-btn" id="debugBtn" title="Debug Console" aria-label="Debug Console" style="font-size:12px;">🐛</button>
@@ -430,6 +455,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         </div>
       </div>
       <div id="inputRow">
+        <div id="slashPopup"></div>
         <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
         <button id="sendBtn" title="送出">&#9658;</button>
       </div>
@@ -591,6 +617,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       })();
     </script>
     <script nonce="${nonce}">
+      // ── AmiClaw main script ──────────────────────────────────────────────────
       const vscode = acquireVsCodeApi();
       var cfgSendKey = ${JSON.stringify(sendKey)};
 
@@ -608,10 +635,10 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
 
       function getProviderAppearance(providerId) {
         return {
-          ollama: { icon: '🦙', label: 'Ollama' },
-          copilot: { icon: '🧠', label: 'Copilot' },
-          openai: { icon: '✨', label: 'OpenAI Compatible' }
-        }[providerId] || { icon: '🤖', label: providerId || 'Provider' };
+          ollama:  { icon: '\\uD83E\\uDD99', label: 'Ollama' },
+          copilot: { icon: '\\uD83E\\uDDE0', label: 'Copilot' },
+          openai:  { icon: '\\u2728',         label: 'OpenAI Compatible' }
+        }[providerId] || { icon: '\\uD83E\\uDD16', label: providerId || 'Provider' };
       }
 
       function inferProviderFromModelId(modelId) {
@@ -627,19 +654,21 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         function check(s) {
           if (!s) return false;
           var raw = String(s).toLowerCase();
-          // 去除 provider 前綴與 ollama 多伺服器編碼
+          // strip provider prefixes and ollama multi-server encoding
           raw = raw.replace(/^copilot::/, '');
-          raw = raw.replace(/^openai::[^|]*\\|\\|/, '').replace(/^openai::/, '');
-          // ollama: http://host:port||model
-          var sepIdx = raw.indexOf('||');
-          if (sepIdx !== -1) raw = raw.slice(sepIdx + 2);
-          // ollama label: [host:port] model
-          raw = raw.replace(/^\\[[^\\]]+\\]\\s*/, '');
-          // copilot / openai 的 reasoning 系列（o1/o3/o4 / gpt-5-thinking 等）
-          if (/(^|[\\/:_-])(o1|o3|o4)([\\/:_.-]|$)/.test(raw)) return true;
+          if (raw.indexOf('openai::') === 0) { var pp = raw.indexOf('||'); raw = pp !== -1 ? raw.slice(pp + 2) : raw.slice(8); }
+          var sp = raw.indexOf('||'); if (sp !== -1) raw = raw.slice(sp + 2);
+          if (raw.charAt(0) === '[') { var rb = raw.indexOf(']'); if (rb !== -1) raw = raw.slice(rb + 1).replace(/^\\s+/, ''); }
+          // check for reasoning models (o1/o3/o4 series and thinking/reasoning keywords)
           if (raw.indexOf('thinking') !== -1 || raw.indexOf('reasoning') !== -1) return true;
-          // ollama 模型：去 hf.co/<user>/ 與其他路徑前綴
-          var m = raw.replace(/^hf\\.co\\/[^/]+\\//i, '').replace(/^.*\\//, '');
+          var _rm = raw.replace(/^[a-z0-9]+[/:._-]/, ''); // strip prefix for shortname check
+          if (_rm.indexOf('o1') === 0 || _rm.indexOf('o3') === 0 || _rm.indexOf('o4') === 0) return true;
+          if (raw.indexOf('/o1') !== -1 || raw.indexOf('/o3') !== -1 || raw.indexOf('/o4') !== -1) return true;
+          if (raw.indexOf(':o1') !== -1 || raw.indexOf(':o3') !== -1 || raw.indexOf(':o4') !== -1) return true;
+          // strip hf.co/<user>/ prefix and any path prefix for shortname check
+          var m = raw;
+          if (raw.indexOf('hf.co/') !== -1) { var hfSlash = raw.lastIndexOf('/'); m = hfSlash !== -1 ? raw.slice(hfSlash + 1) : raw; }
+          else { var lastSlash = raw.lastIndexOf('/'); if (lastSlash !== -1) m = raw.slice(lastSlash + 1); }
           if (m.indexOf('coder') !== -1 || m.indexOf('-instruct') !== -1 || m.indexOf(':instruct') !== -1) return false;
           return m.indexOf('deepseek-r1') === 0 || m.indexOf('deepseek-r2') === 0 ||
             m.indexOf('qwq') === 0 ||
@@ -713,15 +742,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         teamMode = mode === 'team';
         compareMode = mode === 'compare';
         debateMode = mode === 'debate';
-        var modeButtons = {
-          agent: document.getElementById('agentMode'),
-          team: document.getElementById('teamMode'),
-          compare: document.getElementById('compareMode'),
-          debate: document.getElementById('debateMode')
-        };
-        Object.keys(modeButtons).forEach(function(key) {
-          if (modeButtons[key]) modeButtons[key].classList.toggle('active', key === mode);
-        });
+        var modeSelect = document.getElementById('modeSelect');
+        if (modeSelect && modeSelect.value !== mode) { modeSelect.value = mode; }
         var teamPicker = document.getElementById('teamPicker');
         var comparePicker = document.getElementById('comparePicker');
         var debatePicker = document.getElementById('debatePicker');
@@ -753,7 +775,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               : compareMode
                 ? '🆚 選擇比較模型後輸入問題'
                 : debateMode
-                  ? '⚔️ 對話模式：選 2 個 AI 辯論，可加第 3 個裁判'
+                  ? '⚔️ 對話模式：選 2 個 AI 辩論，可加第 3 個裁判'
                   : '💬 Ask 模式 — 直接對話，不使用工具';
         }
         if (shouldFetchModels && (teamMode || compareMode || debateMode)) {
@@ -815,7 +837,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             var _sb = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null;
             if (_sb) {
               var _det = _sb.querySelector('details.think');
-              if (_det) { var _lbl = _det.querySelector('.think-label'); var _secs = _det._thinkEnd ? Math.round((_det._thinkEnd - (_det._thinkStart||_det._thinkEnd)) / 1000) : 0; if (_lbl) _lbl.textContent = '\u{1F9E0} \u601d\u8003\u904e\u7a0b (' + msg.tokens + ' tokens, \u8017\u6642 ' + _secs + 's, ' + msg.tps.toFixed(1) + ' t/s)'; }
+              if (_det) { var _lbl = _det.querySelector('.think-label'); var _secs = _det._thinkEnd ? Math.round((_det._thinkEnd - (_det._thinkStart||_det._thinkEnd)) / 1000) : 0; if (_lbl) _lbl.textContent = '\\uD83E\\uDDE0 \u601d\u8003\u904e\u7a0b (' + msg.tokens + ' tokens, \u8017\u6642 ' + _secs + 's, ' + msg.tps.toFixed(1) + ' t/s)'; }
               var _tb2 = _sb.querySelector('.stream-token-badge'); if (!_tb2) { _tb2 = document.createElement('span'); _tb2.className = 'stream-token-badge'; _tb2.style.cssText = 'font-size:10px;opacity:0.5;margin-top:3px;display:block'; _sb.appendChild(_tb2); } _tb2.textContent = '~' + msg.tokens + ' tokens  ' + msg.tps.toFixed(1) + ' t/s';
             }
           }
@@ -861,6 +883,10 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           }
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
+          else if (msg.type === 'agentStepProgress') {
+            // \u8f15\u91cf\u7d1a\u9032\u5ea6\u8a0a\u606f\uff1a\u76f4\u63a5\u66f4\u65b0\u72c0\u614b\u5217\uff0c\u4e0d\u5efa\u7acb\u65b0\u6c23\u6ce1
+            if (statusBar && typeof msg.text === 'string') { statusBar.textContent = msg.text; }
+          }
           else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm, msg.diff); }
           else if (msg.type === 'fileModified') {
             _fileMods.unshift({ filePath: msg.filePath, op: msg.op, ts: msg.ts || Date.now() });
@@ -903,6 +929,18 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); streamMode = !!msg.enabled; if (t) t.classList.toggle('active', streamMode); }
+          else if (msg.type === 'autoPilotState'){ if (permModeSelect) { applyPermModeFromFlags(!!msg.enabled, permModeSelect.value === 'yolo'); } }
+          else if (msg.type === 'thinkLevelState'){ setThinkLevelUi(msg.level); }
+          else if (msg.type === 'contextDepthState'){ setContextDepthUi(msg.depth); }
+          // ── 外部觸發（extension → webview）：顯示使用者訊息泡泡並轉發給 extension 執行 ──
+          else if (msg.type === 'externalAgentSend') {
+            var _extPrompt = String(msg.prompt || '');
+            if (!_extPrompt) { return; }
+            appendMessage('user', _extPrompt);
+            setInteractionMode('agent', false);
+            var _extModel = modelSelect ? modelSelect.value : undefined;
+            vscode.postMessage({ type: 'agentSend', prompt: _extPrompt, model: _extModel, sessionId: _activeChatSessionId });
+          }
           else if (msg.type === 'modelList')     {
             var normalizedModels = normalizeModelItems(msg);
             dbg('modelList received: ' + normalizedModels.length + ' models');
@@ -910,7 +948,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             applyProviderInfo(msg.providerInfo || { modelId: msg.current, id: inferProviderFromModelId(msg.current) });
             if (normalizedModels.length) { populateTeamPicker(normalizedModels); populateDebatePicker(normalizedModels); populateComparePicker(normalizedModels); }
           }
-          else if (msg.type === 'initialState')  { if (msg.providerInfo) applyProviderInfo(msg.providerInfo); if (msg.streamMode) { streamMode = true; var ts = document.getElementById('toggleStream'); if (ts) ts.classList.add('active'); } }
+          else if (msg.type === 'initialState')  { if (msg.providerInfo) applyProviderInfo(msg.providerInfo); if (msg.streamMode) { streamMode = true; var ts = document.getElementById('toggleStream'); if (ts) ts.classList.add('active'); } applyPermModeFromFlags(!!msg.autoPilotEnabled, !!msg.autoApproveWrite); if (msg.thinkLevel) setThinkLevelUi(msg.thinkLevel); if (msg.contextDepth) setContextDepthUi(msg.contextDepth); }
           else if (msg.type === 'providerInfo')  { applyProviderInfo(msg.providerInfo); }
           else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
@@ -924,7 +962,15 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               var _fill = _cb.querySelector('.ctx-fill');
               var _pctEl = _cb.querySelector('.ctx-pct');
               if (_fill) { _fill.style.width = _pct + '%'; _fill.style.background = _fillColor; }
-              if (_pctEl) _pctEl.textContent = Math.round(_pct) + '% (~' + (msg.tokens || 0) + '/' + (msg.threshold || 8000) + ' tok)';
+              if (_pctEl) {
+                // 格式化 token 數為 K/M 可讀格式
+                function fmtTok(n) {
+                  if (n < 1000) return String(n);
+                  if (n < 1000000) return (n < 10000 ? (n/1000).toFixed(1) : Math.round(n/1000)) + 'K';
+                  return (n < 10000000 ? (n/1000000).toFixed(1) : Math.round(n/1000000)) + 'M';
+                }
+                _pctEl.textContent = Math.round(_pct) + '% (~' + fmtTok(msg.tokens || 0) + '/' + fmtTok(msg.threshold || 8000) + ' tok)';
+              }
             }
           }
           else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; } }
@@ -1033,11 +1079,11 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       let _orchestratorModel = '';
       let _teamAvailModels = []; // [{id, label, vendor}]
       var _teamRolesConfig = [
-        { key: 'planner',   label: '規劃者', emoji: '🗺️', color: '#f7a534', systemPrompt: '你的職責是【規劃者】：分析需求、制定解題架構、將任務拆分為有序步驟、確保整體方向正確。' },
-        { key: 'developer', label: '開發者', emoji: '💻', color: '#4fc1ff', systemPrompt: '你的職責是【開發者】：撰寫程式碼、實作功能、提供具體技術解決方案、確保程式邏輯正確。' },
-        { key: 'reviewer',  label: '評審員', emoji: '🔍', color: '#c586c0', systemPrompt: '你的職責是【評審員】：審查方案與程式碼品質、找出潛在問題與改進空間、以批判視角提高整體品質。' },
-        { key: 'tester',    label: '測試員', emoji: '🧪', color: '#4ec9b0', systemPrompt: '你的職責是【測試員】：思考邊界情況、撰寫測試案例、找出可能的錯誤與漏洞、確保功能穩定性。' },
-        { key: 'writer',    label: '撰寫者', emoji: '📝', color: '#89d185', systemPrompt: '你的職責是【撰寫者】：清晰解釋技術概念、撰寫說明文件、確保溝通明確易懂。' }
+        { key: 'planner',   label: '規劃者', emoji: '🗺', color: '#f7a534', systemPrompt: '你的職責是「規劃者」：分析需求、制定解題架構、將任務拆分為有序步驟、確保整體方向正確。' },
+        { key: 'developer', label: '開發者', emoji: '💻', color: '#4fc1ff', systemPrompt: '你的職責是「開發者」：撰寫程式碼、實作功能、提供具體技術解決方案、確保程式邏輯正確。' },
+        { key: 'reviewer',  label: '評審員', emoji: '🔍', color: '#c586c0', systemPrompt: '你的職責是「評審員」：審查方案與程式碼品質、找出潛在問題與改進空間、以批判視角提高整體品質。' },
+        { key: 'tester',    label: '測試員', emoji: '🧪', color: '#4ec9b0', systemPrompt: '你的職責是「測試員」：思考邊界情況、撰寫測試案例、找出可能的錯誤與漏洞、確保功能穩定性。' },
+        { key: 'writer',    label: '撰寫者', emoji: '📝', color: '#89d185', systemPrompt: '你的職責是「撰寫者」：清晰解釋技術概念、撰寫說明文件、確保溝通明確易懂。' }
       ];
       const _debateNodes = {}; // speaker -> { node, body, thinkNode, thinkChars, thinkStart, thinkTimer }
       let _debateLabelA = '', _debateLabelB = '', _debateLabelJ = '';
@@ -1215,6 +1261,11 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         prompt.style.height = Math.min(prompt.scrollHeight, 160) + 'px';
       }
       prompt.addEventListener('input', resizePrompt);
+      // Slash command 自動完成
+      prompt.addEventListener('input', function() {
+        var v = prompt.value;
+        if (v.startsWith('/') && v.indexOf('\\n') === -1) { showSlashPopup(v); } else { hideSlashPopup(); }
+      });
 
       // ── 貼上影像 ──────────────────────────────────────────────────────────
       prompt.addEventListener('paste', function(e) {
@@ -1280,6 +1331,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
 
       function doSend() {
         const text = prompt.value.trim(); if (!text) return;
+        // Slash command 攔截：以 / 開頭且完整符合指令時直接執行
+        if (tryHandleSlash(text)) return;
         const m = modelSelect ? modelSelect.value : undefined;
         const label = text.length > 60 ? text.slice(0, 60) + '\u2026' : text;
         autoTitleFromPrompt(text);
@@ -1307,7 +1360,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             var teamExecMode = teamModeEl ? teamModeEl.value : 'task';
             var maxParEl = document.getElementById('teamMaxParallelSelect');
             var maxParVal = maxParEl ? parseInt(maxParEl.value) : 3;
-            var tModeLabel = teamExecMode === 'manager' ? '\u{1F3E2} \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : '\u26A1 \u5e73\u884c\u5354\u4f5c\u4e2d\u2026';
+            var tModeLabel = teamExecMode === 'manager' ? '\\uD83C\\uDFE2 \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : '\u26A1 \u5e73\u884c\u5354\u4f5c\u4e2d\u2026';
             vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, roles: getTeamModelRoles(), rounds: roundsVal, teamExecMode: teamExecMode, maxParallel: maxParVal, sessionId: _activeChatSessionId });
             prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
             if (statusBar) statusBar.textContent = tModeLabel;
@@ -1346,10 +1399,107 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       prompt.addEventListener('input', function() { setSendEnabled(prompt.value.trim().length > 0); });
       setSendEnabled(true);
 
+      // ── Slash Command 系統 ─────────────────────────────────────────────────
+      // 注意：icon 使用 HTML entity 字串（不用 emoji literal），避免 Variation Selector
+      // 在 inline script 中造成 "unexpected token" 的 HTML 解析錯誤。
+      var _slashCmds = [
+        { cmd: '/doctor',         icon: '&#x1FA7A;', desc: '\u8a3a\u65b7 AmiClaw \u74b0\u5883\uff08\u9023\u7dda / \u6a21\u578b / \u5de5\u5177\uff09' },
+        { cmd: '/models',         icon: '&#x1F916;', desc: '\u5217\u51fa\u53ef\u7528\u6a21\u578b\u4e26\u91cd\u65b0\u6574\u7406' },
+        { cmd: '/memory',         icon: '&#x1F9E0;', desc: '\u958b\u555f\u9577\u671f\u8a18\u61b6\u9762\u677f' },
+        { cmd: '/history',        icon: '&#x1F4DC;', desc: '\u986f\u793a\u76ee\u524d Session \u5c0d\u8a71\u7d71\u8a08' },
+        { cmd: '/session export', icon: '&#x1F4BE;', desc: '\u5c07\u76ee\u524d\u5c0d\u8a71\u532f\u51fa\u70ba Markdown' },
+        { cmd: '/tools',          icon: '&#x1F527;', desc: '\u986f\u793a\u5de5\u5177\u7a3d\u6838\u65e5\u8a8c' },
+        { cmd: '/jira',           icon: '&#x1F3AB;', desc: '\u5217\u51fa Jira Issues\uff08\u547c\u53eb jira_list\uff09' },
+        { cmd: '/wa',             icon: '&#x1F4F1;', desc: '\u986f\u793a WhatsApp \u9023\u7dda\u72c0\u614b' },
+        { cmd: '/jenkins',        icon: '&#x1F6E0;', desc: '\u67e5\u8a62 Jenkins \u5efa\u7f6e\u72c0\u614b' },
+        { cmd: '/compact',        icon: '&#x1F5DC;', desc: '\u58d3\u7e2e\u5c0d\u8a71\u6b77\u53f2\uff08\u91cb\u653e context \u7a7a\u9593\uff09' },
+        { cmd: '/audit',          icon: '&#x1F4CB;', desc: '\u986f\u793a\u5de5\u5177\u7a3d\u6838\u65e5\u8a8c' },
+      ];
+      var _slashPopup   = document.getElementById('slashPopup');
+      var _slashActive  = -1;   // 目前選中的 item index
+
+      function _slashItems() { return _slashPopup ? _slashPopup.querySelectorAll('.slash-item') : []; }
+
+      function showSlashPopup(filter) {
+        if (!_slashPopup) return;
+        var f = filter.toLowerCase();
+        var matched = _slashCmds.filter(function(c) { return c.cmd.indexOf(f) === 0; });
+        if (!matched.length) { hideSlashPopup(); return; }
+        _slashPopup.innerHTML = matched.map(function(c) {
+          return '<div class="slash-item" data-cmd="' + c.cmd + '">'
+            + '<span>' + c.icon + '</span>'
+            + '<span class="slash-cmd">' + c.cmd + '</span>'
+            + '<span class="slash-desc">' + c.desc + '</span>'
+            + '</div>';
+        }).join('');
+        _slashPopup.querySelectorAll('.slash-item').forEach(function(el) {
+          el.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            execSlashCommand(el.getAttribute('data-cmd'));
+          });
+        });
+        _slashActive = -1;
+        _slashPopup.style.display = 'block';
+      }
+
+      function hideSlashPopup() {
+        if (_slashPopup) { _slashPopup.style.display = 'none'; _slashPopup.innerHTML = ''; }
+        _slashActive = -1;
+      }
+
+      function _slashMoveActive(dir) {
+        var items = _slashItems();
+        if (!items.length) return;
+        items[Math.max(0, _slashActive)]?.classList?.remove('slash-active');
+        _slashActive = Math.max(0, Math.min(items.length - 1, _slashActive + dir));
+        items[_slashActive].classList.add('slash-active');
+        items[_slashActive].scrollIntoView({ block: 'nearest' });
+      }
+
+      function execSlashCommand(cmd) {
+        hideSlashPopup();
+        prompt.value = ''; resizePrompt();
+        if (cmd === '/memory') { var mb = document.getElementById('memBtn'); if (mb) mb.click(); return; }
+        if (cmd === '/history') {
+          var hi = document.getElementById('historyInfo');
+          appendMessage('assistant', '\\uD83D\\uDCDC **\u5c0d\u8a71\u7d71\u8a08**\\n' + (hi ? hi.textContent : '\u7121\u8cc7\u6599'));
+          return;
+        }
+        if (cmd === '/models') { vscode.postMessage({ type: 'fetchModels' }); appendMessage('assistant', '\\uD83E\\uDD16 \u6b63\u5728\u91cd\u65b0\u6574\u7406\u6a21\u578b\u6e05\u55ae\u2026'); return; }
+        if (cmd === '/session export') {
+          vscode.postMessage({ type: 'exportChat', format: 'markdown', sessionId: _activeChatSessionId, title: '對話-' + new Date().toISOString().slice(0,10) });
+          return;
+        }
+        if (cmd === '/jira') { appendMessage('user', '/jira'); vscode.postMessage({ type: 'agentSend', prompt: '請立即呼叫 jira_list 顯示我目前指派的 Issues 清單，並以清晰格式輸出。', model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setSendEnabled(false); appendLoadingBubble(); return; }
+        if (cmd === '/jenkins') { appendMessage('user', '/jenkins'); vscode.postMessage({ type: 'agentSend', prompt: '請立即呼叫 jenkins_status 查詢 Jenkins 最近建置狀態並回報結果。', model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setSendEnabled(false); appendLoadingBubble(); return; }
+        if (cmd === '/wa') { appendMessage('user', '/wa'); vscode.postMessage({ type: 'slashCommand', cmd: 'wa' }); return; }
+        // 其餘由 extension host 處理
+        vscode.postMessage({ type: 'slashCommand', cmd: cmd.replace(/^\\//, ''), sessionId: _activeChatSessionId });
+      }
+
+      /** 在 doSend 最前面攔截 slash command */
+      function tryHandleSlash(text) {
+        if (!text.startsWith('/')) return false;
+        var matched = _slashCmds.find(function(c) { return c.cmd === text.trim() || text.trim().indexOf(c.cmd) === 0; });
+        if (matched) { execSlashCommand(matched.cmd); return true; }
+        return false;
+      }
+
       sendBtn.addEventListener('click', doSend);
 
       // Enter/Ctrl+Enter 送出設定由 cfgSendKey 控制
       prompt.addEventListener('keydown', function(e) {
+        // Slash popup 鍵盤導覽
+        if (_slashPopup && _slashPopup.style.display !== 'none') {
+          if (e.key === 'ArrowDown') { e.preventDefault(); _slashMoveActive(1); return; }
+          if (e.key === 'ArrowUp')   { e.preventDefault(); _slashMoveActive(-1); return; }
+          if (e.key === 'Escape')    { e.preventDefault(); hideSlashPopup(); return; }
+          if (e.key === 'Enter' || e.key === 'Tab') {
+            var items = _slashItems();
+            var idx = _slashActive >= 0 ? _slashActive : 0;
+            if (items.length) { e.preventDefault(); execSlashCommand(items[idx].getAttribute('data-cmd')); return; }
+          }
+        }
         if (cfgSendKey === 'Ctrl+Enter') {
           if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); doSend(); }
         } else {
@@ -1364,13 +1514,17 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         vscode.postMessage({ type: 'clearHistory', sessionId: _activeChatSessionId });
       });
 
-      document.getElementById('agentMode').addEventListener('click', function() {
-        setInteractionMode(agentMode ? 'ask' : 'agent');
-      });
+      // 模式切換：單一 dropdown，取代原本 4 個 toggle 按鈕
+      var modeSelectEl = document.getElementById('modeSelect');
+      if (modeSelectEl) {
+        modeSelectEl.addEventListener('change', function() {
+          var m = modeSelectEl.value;
+          // 切到 team / compare / debate 時順便拉一次模型列表，沿用既有行為
+          var fetchModels = (m === 'team' || m === 'compare' || m === 'debate');
+          setInteractionMode(m, fetchModels);
+        });
+      }
 
-      document.getElementById('teamMode').addEventListener('click', function() {
-        setInteractionMode(teamMode ? 'ask' : 'team', !teamMode);
-      });
       var tpr = document.getElementById('teamPickerRefresh');
       if (tpr) tpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
 
@@ -1437,17 +1591,9 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       var tmodeEl = document.getElementById('teamModeSelect');
       if (tmodeEl) tmodeEl.addEventListener('change', function() { updateTeamRoleLabels(); });
 
-      var compareModeBtn = document.getElementById('compareMode');
-      if (compareModeBtn) compareModeBtn.addEventListener('click', function() {
-        setInteractionMode(compareMode ? 'ask' : 'compare', !compareMode);
-      });
       var cpr = document.getElementById('comparePickerRefresh');
       if (cpr) cpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
 
-      var debateModeBtn = document.getElementById('debateMode');
-      if (debateModeBtn) debateModeBtn.addEventListener('click', function() {
-        setInteractionMode(debateMode ? 'ask' : 'debate', !debateMode);
-      });
       var dpr = document.getElementById('debatePickerRefresh');
       if (dpr) dpr.addEventListener('click', function() { vscode.postMessage({ type: 'fetchTeamModels' }); });
       var debateRoundsSelEl = document.getElementById('debateRoundsSelect');
@@ -1844,7 +1990,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         // 依當前選定模型判斷是「思考中」還是「等待回應」
         var _curOpt = modelSelect ? modelSelect.options[modelSelect.selectedIndex] : null;
         var _isThinking = !!(_curOpt && _curOpt.dataset && _curOpt.dataset.thinking);
-        var _waitText = _isThinking ? '\u{1F914} \u601d\u8003\u4e2d\u2026' : '\u23F3 \u7B49\u5F85\u56DE\u61C9\u2026';
+        var _waitText = _isThinking ? '\\uD83E\\uDD14 \u601d\u8003\u4e2d\u2026' : '\u23F3 \u7B49\u5F85\u56DE\u61C9\u2026';
         // 建立與 appendThinkChunk 相同樣式的 details.think 框，
         // 但標示為 placeholder（無實際內容），收到第一個 chunk 時清除。
         const d = document.createElement('details');
@@ -1883,7 +2029,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         clearPendingBubble();
         const bubble = getStreamBubble();
         let d = bubble.querySelector('details.think');
-        const _thinkLabel = modelName ? '\u{1F9E0} ' + modelName + ' \u601d\u8003\u4e2d\u2026' : '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+        const _thinkLabel = modelName ? '\\uD83E\\uDDE0 ' + modelName + ' \u601d\u8003\u4e2d\u2026' : '\\uD83E\\uDDE0 \u601d\u8003\u4e2d\u2026';
         if (!d) {
           d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
           const s = document.createElement('summary');
@@ -1902,7 +2048,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             const secs = Math.round((Date.now() - d._thinkStart) / 1000);
             const approxTok2 = Math.round((d._charCount || 0) / 4);
             const lbl2 = d.querySelector('.think-label');
-            const _lbl2 = d._thinkModelName ? '\u{1F9E0} ' + d._thinkModelName + ' \u601d\u8003\u4e2d\u2026' : '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+            const _lbl2 = d._thinkModelName ? '\\uD83E\\uDDE0 ' + d._thinkModelName + ' \u601d\u8003\u4e2d\u2026' : '\\uD83E\\uDDE0 \u601d\u8003\u4e2d\u2026';
             if (lbl2) lbl2.textContent = _lbl2 + ' (~' + approxTok2 + ' tokens, ' + secs + 's)';
           }, 1000);
         }
@@ -1928,7 +2074,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           const lbl = d.querySelector('.think-label');
           const approxTok = Math.round((d._charCount || 0) / 4);
           const totalSecs = Math.round((Date.now() - (d._thinkStart || Date.now())) / 1000);
-          const _doneLabel = d._thinkModelName ? '\u{1F9E0} ' + d._thinkModelName + ' \u601d\u8003\u904e\u7a0b' : '\u{1F9E0} \u601d\u8003\u904e\u7a0b';
+          const _doneLabel = d._thinkModelName ? '\\uD83E\\uDDE0 ' + d._thinkModelName + ' \u601d\u8003\u904e\u7a0b' : '\\uD83E\\uDDE0 \u601d\u8003\u904e\u7a0b';
           if (lbl) lbl.textContent = _doneLabel + ' (~' + approxTok + ' tokens, \u8017\u6642 ' + totalSecs + 's)';
         }
         let body = bubble.querySelector('.response-body');
@@ -1988,8 +2134,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
 
       function appendTeamThinkChunk(id, color, chunk) {
         var m = _teamNodes[id]; if (!m) return;
-        var _tmLabel = m.modelName ? '\u{1F9E0} ' + m.modelName + ' \u601d\u8003\u4e2d\u2026' : '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
-        var _tmDone  = m.modelName ? '\u{1F9E0} ' + m.modelName + ' \u601d\u8003\u904e\u7a0b' : '\u{1F9E0} \u601d\u8003\u904e\u7a0b';
+        var _tmLabel = m.modelName ? '\\uD83E\\uDDE0 ' + m.modelName + ' \u601d\u8003\u4e2d\u2026' : '\\uD83E\\uDDE0 \u601d\u8003\u4e2d\u2026';
+        var _tmDone  = m.modelName ? '\\uD83E\\uDDE0 ' + m.modelName + ' \u601d\u8003\u904e\u7a0b' : '\\uD83E\\uDDE0 \u601d\u8003\u904e\u7a0b';
         if (!m.thinkNode) {
           var d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
           var s = document.createElement('summary');
@@ -2023,7 +2169,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           var lbl2 = m.thinkNode.querySelector('.think-label');
           var tok2 = Math.round((m.charCount || 0) / 4);
           var secs2 = Math.round((Date.now() - (m.thinkStart || Date.now())) / 1000);
-          var _tmDone2 = m.modelName ? '\u{1F9E0} ' + m.modelName + ' \u601d\u8003\u904e\u7a0b' : '\u{1F9E0} \u601d\u8003\u904e\u7a0b';
+          var _tmDone2 = m.modelName ? '\\uD83E\\uDDE0 ' + m.modelName + ' \u601d\u8003\u904e\u7a0b' : '\\uD83E\\uDDE0 \u601d\u8003\u904e\u7a0b';
           if (lbl2) lbl2.textContent = _tmDone2 + ' (~' + tok2 + ' tokens, \u8017\u6642 ' + secs2 + 's)';
         }
         if (m.status) m.status.textContent = '\u56de\u7b54\u4e2d\u2026';
@@ -2101,7 +2247,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       function appendOrchestratorThinkChunk(chunk) {
         if (!_orchestratorNode) return;
         var _orcName = _orchestratorModel || '';
-        var _orcLabel = _orcName ? '\u{1F9E0} ' + _orcName + ' \u601d\u8003\u4e2d\u2026' : '\u{1F9E0} \u601d\u8003\u4e2d\u2026';
+        var _orcLabel = _orcName ? '\\uD83E\\uDDE0 ' + _orcName + ' \u601d\u8003\u4e2d\u2026' : '\\uD83E\\uDDE0 \u601d\u8003\u4e2d\u2026';
         if (!_orchestratorNode.thinkNode) {
           var d = document.createElement('details'); d.className = 'think'; d.setAttribute('open', '');
           var s = document.createElement('summary');
@@ -2134,7 +2280,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           var orcTok = Math.round((_orchestratorNode.thinkChars || 0) / 4);
           var orcSecs = Math.round((Date.now() - (_orchestratorNode.thinkStart || Date.now())) / 1000);
           var _orcName2 = _orchestratorModel || '';
-          var _orcDone = _orcName2 ? '\u{1F9E0} ' + _orcName2 + ' \u601d\u8003\u904e\u7a0b' : '\u{1F9E0} \u601d\u8003\u904e\u7a0b';
+          var _orcDone = _orcName2 ? '\\uD83E\\uDDE0 ' + _orcName2 + ' \u601d\u8003\u904e\u7a0b' : '\\uD83E\\uDDE0 \u601d\u8003\u904e\u7a0b';
           if (orcLbl) orcLbl.textContent = _orcDone + ' (~' + orcTok + ' tokens, \u8017\u6642 ' + orcSecs + 's)';
         }
         _orchestratorNode.body.textContent += chunk;
@@ -2148,7 +2294,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           _orchestratorNode.thinkNode.removeAttribute('open');
           var lbl = _orchestratorNode.thinkNode.querySelector('.think-label');
           var tok = Math.round((_orchestratorNode.thinkChars || 0) / 4);
-          if (lbl) lbl.textContent = '\u{1F9E0} \u601d\u8003\u5b8c\u6210 (~' + tok + ' tokens)';
+          if (lbl) lbl.textContent = '\\uD83E\\uDDE0 \u601d\u8003\u5b8c\u6210 (~' + tok + ' tokens)';
           var icon = _orchestratorNode.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
         }
         if (_orchestratorNode.hdr) _orchestratorNode.hdr.textContent = _orchestratorNode.hdr.textContent.replace('\u5206\u914D\u5DE5\u4F5C\u4E2D\u2026', '\u2713 \u5DE5\u4F5C\u5206\u914D\u5B8C\u6210');
@@ -2478,7 +2624,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           var s = document.createElement('summary');
           var color = _speakerColors[speaker] || (speaker === 'A' ? _debateColorA : speaker === 'B' ? _debateColorB : _debateColorJ);
           var icon = document.createElement('span'); icon.className = 'think-icon pulse'; icon.style.background = color;
-          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '🧠 思考中…';
+          var lbl = document.createElement('span'); lbl.className = 'think-label'; lbl.textContent = '\uD83E\uDDE0 \u601d\u8003\u4e2d\u2026';
           s.appendChild(icon); s.appendChild(lbl);
           var p = document.createElement('pre'); p.className = 'think-stream';
           det.appendChild(s); det.appendChild(p);
@@ -2488,7 +2634,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             if (!det.hasAttribute('open')) { clearInterval(d.thinkTimer); return; }
             var secs = Math.round((Date.now() - d.thinkStart) / 1000);
             var tok = Math.round((d.thinkChars || 0) / 4);
-            var ll = det.querySelector('.think-label'); if (ll) ll.textContent = '🧠 思考中… (~' + tok + ' tokens, ' + secs + 's)';
+            var ll = det.querySelector('.think-label'); if (ll) ll.textContent = '\uD83E\uDDE0 \u601d\u8003\u4e2d\u2026 (~' + tok + ' tokens, ' + secs + 's)';
           }, 1000);
         }
         d.thinkChars = (d.thinkChars || 0) + chunk.length;
@@ -2504,15 +2650,15 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           var icon = d.thinkNode.querySelector('.think-icon'); if (icon) icon.classList.remove('pulse');
           var lbl = d.thinkNode.querySelector('.think-label');
           var tok = Math.round((d.thinkChars || 0) / 4); var secs = Math.round((Date.now() - d.thinkStart) / 1000);
-          if (lbl) lbl.textContent = '🧠 思考過程 (~' + tok + ' tokens, 耗時 ' + secs + 's)';
+          if (lbl) lbl.textContent = '\uD83E\uDDE0 \u601d\u8003\u904e\u7a0b (~' + tok + ' tokens, \u8017\u6642 ' + secs + 's)';
         }
         d.rawBuf = (d.rawBuf || '') + chunk;
-        var boardMatch = d.rawBuf.match(/\[BOARD\]([\s\S]*?)\[\/BOARD\]/);
+        var boardMatch = d.rawBuf.match(/\\[BOARD\\]([\\s\\S]*?)\\[\\/BOARD\\]/);
         if (boardMatch && d.boardNode) {
           d.boardNode.textContent = boardMatch[1].replace(/^\\n/, '').replace(/\\n$/, '');
           d.boardNode.style.display = '';
         }
-        d.body.textContent = d.rawBuf.replace(/\[BOARD\][\s\S]*?\[\/BOARD\]/g, '').replace(/\[BOARD\][\s\S]*$/, '').trim();
+        d.body.textContent = d.rawBuf.replace(/\\[BOARD\\][\\s\\S]*?\\[\\/BOARD\\]/g, '').replace(/\\[BOARD\\][\\s\\S]*$/, '').trim();
         chat.scrollTop = chat.scrollHeight;
       }
       function finalizeDebateTurn(speaker, tokens, tps) {
@@ -2526,7 +2672,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         if (d.thinkNode && tokens !== undefined && tps !== undefined) {
           var lbl = d.thinkNode.querySelector('.think-label');
           var secs = d.thinkEnd ? Math.round((d.thinkEnd - d.thinkStart) / 1000) : 0;
-          if (lbl) lbl.textContent = '🧠 思考過程 (' + tokens + ' tokens, 耗時 ' + secs + 's, ' + tps.toFixed(1) + ' t/s)';
+          if (lbl) lbl.textContent = '\uD83E\uDDE0 \u601d\u8003\u904e\u7a0b (' + tokens + ' tokens, \u8017\u6642 ' + secs + 's, ' + tps.toFixed(1) + ' t/s)';
         }
       }
       function finalizeDebate(consensus) {
@@ -2554,7 +2700,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           providerGroups[groupKey].forEach(function(model) {
             var opt = document.createElement('option');
             opt.value = model.id;
-            var thinkMark = modelSupportsThinking(model.id, model.label) ? ' 💭' : '';
+            var thinkMark = modelSupportsThinking(model.id, model.label) ? ' \uD83D\uDCAD' : '';
             opt.textContent = model.label + thinkMark + (model.multiplier ? '  ' + model.multiplier : '');
             opt.dataset.provider = model.provider || inferProviderFromModelId(model.id);
             opt.dataset.providerLabel = model.providerLabel || getProviderAppearance(opt.dataset.provider).label;
@@ -3151,15 +3297,52 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         vscode.postMessage({ type: 'permissionResponse', allow: false, always: false, category: cat });
       });
 
-      // ── 全自動批准 ──────────────────────────────────────────────────────────────
-      var _autoApproveActive = false;
-      var autoApproveBtn = document.getElementById('autoApproveBtn');
-      if (autoApproveBtn) {
-        autoApproveBtn.addEventListener('click', function() {
-          _autoApproveActive = !_autoApproveActive;
-          autoApproveBtn.classList.toggle('active', _autoApproveActive);
-          autoApproveBtn.title = _autoApproveActive ? '🚀 全自動批准（已開啟，點擊關閉）' : '全自動批准所有修改（無需確認）';
-          vscode.postMessage({ type: 'autoApproveWrite', enabled: _autoApproveActive });
+      // ── 權限模式 dropdown：手動 / AutoPilot / 全自動（三檔互斥） ─────────────────
+      var permModeSelect = document.getElementById('permModeSelect');
+      function setPermModeUi(mode) {
+        if (!permModeSelect) return;
+        if (permModeSelect.value !== mode) { permModeSelect.value = mode; }
+      }
+      // host 推送：以 autoApprove 為優先（YOLO 蓋過 AutoPilot）
+      function applyPermModeFromFlags(autoPilotEnabled, autoApproveEnabled) {
+        if (autoApproveEnabled) { setPermModeUi('yolo'); }
+        else if (autoPilotEnabled) { setPermModeUi('autopilot'); }
+        else { setPermModeUi('manual'); }
+      }
+      if (permModeSelect) {
+        permModeSelect.addEventListener('change', function() {
+          var v = permModeSelect.value;
+          // 三檔互斥：切換時兩個 flag 都明確設定，避免殘留舊狀態
+          var wantAutoPilot = (v === 'autopilot');
+          var wantAutoApprove = (v === 'yolo');
+          vscode.postMessage({ type: 'autoPilot', enabled: wantAutoPilot });
+          vscode.postMessage({ type: 'autoApproveWrite', enabled: wantAutoApprove });
+        });
+      }
+
+      // ── 思考等級 dropdown：off / low / medium / high ────────────────────────────
+      var thinkLevelSelect = document.getElementById('thinkLevelSelect');
+      function setThinkLevelUi(level) {
+        if (!thinkLevelSelect) return;
+        var v = (level === 'off' || level === 'low' || level === 'medium' || level === 'high') ? level : 'medium';
+        if (thinkLevelSelect.value !== v) { thinkLevelSelect.value = v; }
+      }
+      if (thinkLevelSelect) {
+        thinkLevelSelect.addEventListener('change', function() {
+          vscode.postMessage({ type: 'thinkLevel', level: thinkLevelSelect.value });
+        });
+      }
+
+      // ── 深度解析 dropdown：file / outline / full ─────────────────────────────────
+      var contextDepthSelect = document.getElementById('contextDepthSelect');
+      function setContextDepthUi(depth) {
+        if (!contextDepthSelect) return;
+        var v = (depth === 'outline' || depth === 'full') ? depth : 'file';
+        if (contextDepthSelect.value !== v) { contextDepthSelect.value = v; }
+      }
+      if (contextDepthSelect) {
+        contextDepthSelect.addEventListener('change', function() {
+          vscode.postMessage({ type: 'contextDepth', depth: contextDepthSelect.value });
         });
       }
 

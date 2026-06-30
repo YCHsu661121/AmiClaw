@@ -33,18 +33,34 @@ class ChatSessionsProvider implements vscode.TreeDataProvider<ChatSessionInfo> {
 }
 
 function openAndSend(context: vscode.ExtensionContext, msg: object) {
-  OllamaChatPanel.createOrShow(context);
-  const send = () => OllamaChatPanel.currentPanel?.postMessageToWebview(msg);
-  if (OllamaChatPanel.currentPanel) { send(); } else { setTimeout(send, 700); }
+  // createOrShow 為 async（內部會 await sidebar.focus），需先等它完成再 post
+  void (async () => {
+    try {
+      await OllamaChatPanel.createOrShow(context);
+      const send = () => OllamaChatPanel.currentPanel?.postMessageToWebview(msg);
+      if (OllamaChatPanel.currentPanel) { send(); } else { setTimeout(send, 700); }
+    } catch (e) {
+      OllamaChatPanel.reportDiagnostic('openAndSend failed', e);
+      OllamaChatPanel.revealDiagnostics();
+      void vscode.window.showErrorMessage('AMI-AiClaw 無法開啟，請查看輸出視窗「AMI-AiClaw Diagnostics」。');
+    }
+  })();
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  OllamaChatPanel.reportDiagnostic('activate:start');
   const sessionsProvider = new ChatSessionsProvider(context);
 
   // ── 固定側邊欄 WebviewView Provider ──────────────────────────────────────
   const viewProvider: vscode.WebviewViewProvider = {
     resolveWebviewView(view: vscode.WebviewView) {
-      OllamaChatPanel.createFromView(view, context);
+      try {
+        OllamaChatPanel.createFromView(view, context);
+      } catch (e) {
+        OllamaChatPanel.reportDiagnostic('resolveWebviewView failed', e);
+        OllamaChatPanel.revealDiagnostics();
+        void vscode.window.showErrorMessage('AMI-AiClaw 側邊欄初始化失敗，請查看輸出視窗「AMI-AiClaw Diagnostics」。');
+      }
     }
   };
   context.subscriptions.push(
@@ -54,7 +70,112 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // VS Code 開啟時自動在背景初始化（不顯示 panel）以接受 WhatsApp 指令
-  OllamaChatPanel.createSilent(context);
+  try {
+    OllamaChatPanel.createSilent(context);
+  } catch (e) {
+    OllamaChatPanel.reportDiagnostic('createSilent failed', e);
+  }
+
+  // ── AmiClawToClaudeToDo.md 監聽器：存檔時自動將內容送入 Agent ──────────────
+  const todoLog = vscode.window.createOutputChannel('AmiClaw-TodoWatcher');
+  context.subscriptions.push(todoLog);
+
+  // ── 對話記錄回呼：Agent 完成後將提示 + 回應 append 到 AmiClawTodoLog.md ────
+  OllamaChatPanel.onTodoComplete = async (prompt: string, response: string) => {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    // 找到 AmiClawToClaudeToDo.md 所在的 folder，把 log 放在同目錄
+    let logFolder = folders[0]?.uri;
+    for (const folder of folders) {
+      try {
+        await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'AmiClawToClaudeToDo.md'));
+        logFolder = folder.uri;
+        break;
+      } catch { /* 不在這個 folder */ }
+    }
+    if (!logFolder) { return; }
+    const logUri = vscode.Uri.joinPath(logFolder, 'AmiClawTodoLog.md');
+    const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+    const entry = `\n---\n## 📋 ${ts} 任務\n${prompt}\n\n## 🤖 ${ts} Agent 回應\n${response}\n`;
+    try {
+      // 追加到已有的 log（如果存在），否則建立新檔
+      let existing = '';
+      try {
+        const b = await vscode.workspace.fs.readFile(logUri);
+        existing = Buffer.from(b).toString('utf8');
+      } catch { /* 第一次建立 */ }
+      const newContent = Buffer.from(existing + entry, 'utf8');
+      await vscode.workspace.fs.writeFile(logUri, newContent);
+      todoLog.appendLine(`[onTodoComplete] 已寫入 ${logUri.fsPath}（+${entry.length} 字）`);
+      vscode.window.setStatusBarMessage(`📝 AmiClaw：對話已記錄到 AmiClawTodoLog.md`, 5000);
+    } catch (e) {
+      todoLog.appendLine(`[onTodoComplete] 寫入失敗: ${(e as Error)?.message ?? e}`);
+    }
+  };
+
+  let _todoDebounce: ReturnType<typeof setTimeout> | undefined;
+
+  async function processTodoFile(uri: vscode.Uri) {
+    clearTimeout(_todoDebounce);
+    _todoDebounce = setTimeout(async () => {
+      try {
+        todoLog.appendLine(`[processTodoFile] 觸發: ${uri.fsPath}`);
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const prompt = Buffer.from(bytes).toString('utf8').trim();
+        if (!prompt) {
+          todoLog.appendLine('[processTodoFile] 檔案為空，跳過');
+          return;
+        }
+        todoLog.appendLine(`[processTodoFile] 內容長度=${prompt.length}，送入 agentSend`);
+        // 確保 panel 已建立，再進入 todo 模式
+        await OllamaChatPanel.createOrShow(context);
+        OllamaChatPanel.currentPanel?.enterTodoMode(prompt);
+        const send = () => OllamaChatPanel.currentPanel?.postMessageToWebview({ type: 'externalAgentSend', prompt });
+        if (OllamaChatPanel.currentPanel) { send(); } else { setTimeout(send, 700); }
+        vscode.window.setStatusBarMessage(`🤖 AmiClaw：已讀取 AmiClawToClaudeToDo.md (${prompt.length} 字)`, 5000);
+      } catch (e) {
+        const msg = (e as Error)?.message ?? String(e);
+        todoLog.appendLine(`[processTodoFile] 錯誤: ${msg}`);
+        vscode.window.showErrorMessage(`AmiClaw 讀取 AmiClawToClaudeToDo.md 失敗：${msg}`);
+      }
+    }, 500);
+  }
+
+  // 對每個 workspace folder 分別建立 RelativePattern watcher（multi-root 最可靠作法）
+  function registerTodoWatchers(folders: readonly vscode.WorkspaceFolder[]) {
+    for (const folder of folders) {
+      const pattern = new vscode.RelativePattern(folder, 'AmiClawToClaudeToDo.md');
+      const w = vscode.workspace.createFileSystemWatcher(pattern, false, false, true);
+      w.onDidCreate(processTodoFile);
+      w.onDidChange(processTodoFile);
+      context.subscriptions.push(w);
+      todoLog.appendLine(`[init] 監聽 ${folder.uri.fsPath}/AmiClawToClaudeToDo.md`);
+    }
+  }
+
+  registerTodoWatchers(vscode.workspace.workspaceFolders ?? []);
+
+  // 若之後動態加入 workspace folder，也自動加 watcher
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders((e) => {
+      registerTodoWatchers(e.added);
+    })
+  );
+
+  // 手動命令備用：Command Palette → "AmiClaw: 執行 AmiClawToClaudeToDo.md"
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.runTodoFile', async () => {
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      for (const folder of folders) {
+        const uri = vscode.Uri.joinPath(folder.uri, 'AmiClawToClaudeToDo.md');
+        try {
+          await vscode.workspace.fs.stat(uri);   // 確認檔案存在
+          await processTodoFile(uri);
+          return;
+        } catch { /* 此 folder 沒有該檔案，繼續找下一個 */ }
+      }
+      vscode.window.showWarningMessage('找不到 AmiClawToClaudeToDo.md（請放在任一 workspace 根目錄）');
+    })
+  );
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('amiAiClaw.openChat', sessionsProvider)
@@ -111,7 +232,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Right-click on file/folder in Explorer or Editor → send to chat
   context.subscriptions.push(
     vscode.commands.registerCommand('amiAiClaw.sendToChat', async (uri: vscode.Uri, allUris?: vscode.Uri[]) => {
-      OllamaChatPanel.createOrShow(context);
+      await OllamaChatPanel.createOrShow(context);
       const uris = allUris && allUris.length > 0 ? allUris : (uri ? [uri] : []);
       if (uris.length > 0) {
         await OllamaChatPanel.sendUrisToChat(uris);
@@ -121,8 +242,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 聚焦輸入框 (快捷鍵 Ctrl+L)
   context.subscriptions.push(
-    vscode.commands.registerCommand('amiAiClaw.focusInput', () => {
-      OllamaChatPanel.createOrShow(context);
+    vscode.commands.registerCommand('amiAiClaw.focusInput', async () => {
+      await OllamaChatPanel.createOrShow(context);
       OllamaChatPanel.currentPanel?.postMessageToWebview({ type: 'focusInput' });
     })
   );

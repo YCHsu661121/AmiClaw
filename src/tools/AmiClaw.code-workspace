@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../cc-haha"
+		}
+	],
+	"settings": {
+		"amiAiClaw.models": [
+			"llama3"
+		]
+	}
+}
