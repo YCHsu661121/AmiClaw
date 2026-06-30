@@ -4,7 +4,7 @@
   "description": "AMI-AiClaw - Local Ollama AI assistant for code generation, Agent automation, and multi-model collaboration.",
   "author": "Y.C. Hsu",
   "license": "MIT",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "publisher": "localdev",
   "icon": "AMI-AiClaw.png",
   "engines": { "vscode": "^1.90.0" },
@@ -193,6 +193,11 @@
             "items": { "type": "string" },
             "default": ["llama3", "llama2", "vicuna", "mistral"],
             "description": "Available model options shown in the chat UI"
+          },
+          "amiAiClaw.visionModel": {
+            "type": "string",
+            "default": "",
+            "description": "organize_photos 照片整理工具使用的 Ollama 視覺模型名稱（例如 llava、llama3.2-vision、qwen2.5vl）。需先以 ollama pull 下載。留空時必須在呼叫工具時以 vision_model 參數指定。"
           },
           "amiAiClaw.systemPrompt": {
             "type": "string",

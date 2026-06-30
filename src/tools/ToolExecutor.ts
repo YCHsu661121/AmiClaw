@@ -147,6 +147,105 @@ export class ToolExecutor {
     });
   }
 
+  // ── organize_photos：照片整理（Ollama 視覺辨識）helpers ─────────────────────
+
+  /** 讀取設定的 Ollama 伺服器 URL 清單（amiAiClaw.urls），去除重複（停用）項。 */
+  private static getOrganizeOllamaUrls(): string[] {
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const arr = (cfg.get<string[]>('urls') ?? []).filter((u) => u.trim());
+    if (arr.length > 0) {
+      const count = new Map<string, number>();
+      for (const u of arr) { count.set(u, (count.get(u) ?? 0) + 1); }
+      const enabled = arr.filter((u) => count.get(u) === 1);
+      if (enabled.length > 0) { return enabled; }
+    }
+    return [cfg.get<string>('url') ?? 'http://localhost:11434'];
+  }
+
+  /** 遞迴收集目錄下的影像檔（jpg/jpeg/png/webp/bmp/gif），回傳絕對路徑陣列（達 limit 即停止）。 */
+  private static collectImageFiles(rootDir: string, limit: number): string[] {
+    const exts = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif']);
+    const out: string[] = [];
+    const walk = (dir: string) => {
+      if (out.length >= limit) { return; }
+      let entries: import('fs').Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (out.length >= limit) { return; }
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (e.name.startsWith('.') || e.name === 'node_modules') { continue; }
+          walk(full);
+        } else if (exts.has(path.extname(e.name).toLowerCase())) {
+          out.push(full);
+        }
+      }
+    };
+    walk(rootDir);
+    return out;
+  }
+
+  /** 清理檔名/資料夾名中的非法字元，空字串時回傳 fallback。 */
+  private static sanitizePathSegment(name: string, fallback: string): string {
+    const cleaned = (name || '')
+      .replace(/[\\/:*?"<>|\r\n\t]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 40);
+    return cleaned || fallback;
+  }
+
+  /** 呼叫 Ollama 視覺模型 /api/chat（非串流），傳入多張 base64 影像，回傳 message.content 文字。 */
+  private static ollamaVisionChat(
+    baseUrl: string, model: string, prompt: string, imagesB64: string[], timeoutMs: number,
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let url: URL;
+      try { url = new URL('/api/chat', baseUrl); } catch { reject(new Error(`Ollama URL 無效: ${baseUrl}`)); return; }
+      const protocol = url.protocol === 'https:' ? https : http;
+      const buf = Buffer.from(JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt, images: imagesB64 }],
+        stream: false,
+        options: { temperature: 0 },
+      }), 'utf8');
+      const options: http.RequestOptions = {
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+        path: url.pathname,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': buf.length },
+      };
+      const req = protocol.request(options, (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (d: string) => { data += d; });
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(data) as { message?: { content?: string }; error?: string };
+            if (j.error) { reject(new Error(j.error)); return; }
+            resolve((j.message?.content ?? '').trim());
+          } catch { reject(new Error(`回應解析失敗: ${data.slice(0, 200)}`)); }
+        });
+      });
+      req.on('error', (e: Error) => reject(e));
+      req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error(`Ollama 視覺推論逾時 (${timeoutMs}ms)`)); });
+      req.write(buf);
+      req.end();
+    });
+  }
+
+  /** 從模型回應中擷取第一個 JSON 物件並解析（容忍 markdown code fence 與前後雜訊）。 */
+  private static extractFirstJson(text: string): Record<string, unknown> | null {
+    if (!text) { return null; }
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fenced ? fenced[1] : text;
+    const start = candidate.indexOf('{');
+    const end = candidate.lastIndexOf('}');
+    if (start < 0 || end <= start) { return null; }
+    try { return JSON.parse(candidate.slice(start, end + 1)) as Record<string, unknown>; } catch { return null; }
+  }
+
   /** 從 atlassian.atlascode 擷取 Jira auth (bearer token + baseApiUrl)。
    *  只支援 Windows，使用 Python (內建模組) + Node.js crypto 解密。
    *  cache：到期前 5 分鐘更新。
@@ -1750,6 +1849,164 @@ export class ToolExecutor {
         } finally {
           try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
         }
+      }
+      case 'organize_photos': {
+        const srcDirRaw = (args.source_dir as string || '').trim();
+        if (!srcDirRaw) { return '請提供 source_dir（要掃描的照片目錄）'; }
+        const srcDir = resolvePath(srcDirRaw);
+        try {
+          if (!fs.statSync(srcDir).isDirectory()) { return `錯誤：source_dir 不是目錄：${srcDir}`; }
+        } catch { return `錯誤：找不到照片目錄 ${srcDir}`; }
+
+        // 參考人臉（可選）：有提供 → 人物 + 行為兩層；未提供 → 只依行為分類
+        const refRaw = (args.reference_image as string || '').trim();
+        let refB64 = '';
+        let personName = '';
+        if (refRaw) {
+          const refPath = await resolvePathWithPriority(refRaw);
+          if (!fs.existsSync(refPath)) { return `錯誤：找不到參考照片 ${refPath}`; }
+          try { refB64 = fs.readFileSync(refPath).toString('base64'); }
+          catch (e) { return `錯誤：無法讀取參考照片：${e instanceof Error ? e.message : String(e)}`; }
+          personName = ToolExecutor.sanitizePathSegment(
+            (args.person_name as string) || path.basename(refPath, path.extname(refPath)), '指定人物');
+        }
+
+        // 視覺模型（args 優先，其次設定）
+        const opCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const visionModel = ((args.vision_model as string) || opCfg.get<string>('visionModel') || '').trim();
+        if (!visionModel) {
+          return '請提供 vision_model 參數，或在設定 amiAiClaw.visionModel 指定 Ollama 視覺模型（例如 llava、llama3.2-vision、qwen2.5vl，需先 ollama pull）。';
+        }
+        const ollamaUrl = ToolExecutor.getOrganizeOllamaUrls()[0];
+
+        // 輸出目錄、行為清單、模式、信心、上限
+        const outRaw = (args.output_dir as string || '').trim();
+        const outDir = outRaw ? resolvePath(outRaw) : path.join(srcDir, '_organized');
+        const behaviorList = Array.isArray(args.behaviors)
+          ? (args.behaviors as unknown[]).map(String).map((s) => s.trim()).filter(Boolean) : [];
+        const moveMode = (args.mode as string) === 'move';
+        const minConf = typeof args.min_confidence === 'number' ? args.min_confidence as number : 60;
+        const maxImages = Math.min(typeof args.max_images === 'number' ? args.max_images as number : 200, 1000);
+
+        // 收集影像（排除輸出目錄底下的檔案，避免重複處理 / 重跑時把已整理的再吃進來）
+        const outNorm = path.resolve(outDir).toLowerCase();
+        let images = ToolExecutor.collectImageFiles(srcDir, maxImages + 100)
+          .filter((p) => !path.resolve(p).toLowerCase().startsWith(outNorm))
+          .slice(0, maxImages);
+        if (images.length === 0) { return `在 ${srcDir} 找不到任何影像檔（.jpg/.jpeg/.png/.webp/.bmp/.gif）`; }
+
+        // 權限：會建立資料夾並複製/移動檔案
+        const permDesc = `整理照片：${images.length} 張 ${moveMode ? '移動' : '複製'} 至 ${outDir}`
+          + (refRaw ? `（比對人物：${personName}）` : '（依行為分類）');
+        const allowed = await this.requestPermission('write', permDesc, 'organize_photos');
+        if (!allowed) { return '使用者已拒絕整理照片'; }
+        fs.mkdirSync(outDir, { recursive: true });
+
+        const behaviorInstruction = behaviorList.length > 0
+          ? `行為標籤請務必從以下選項擇一（皆不符合時用「其他」）：${behaviorList.join('、')}。`
+          : '行為標籤用 2~6 個字的簡短中文描述（例如：用餐、戶外、運動、工作、合照、自拍、室內）。';
+
+        let scanned = 0, matched = 0, errors = 0;
+        const perBehavior = new Map<string, number>();
+        const failSamples: string[] = [];
+
+        for (const imgPath of images) {
+          scanned++;
+          let candB64: string;
+          try { candB64 = fs.readFileSync(imgPath).toString('base64'); }
+          catch { errors++; continue; }
+
+          let prompt: string;
+          let imagesArg: string[];
+          if (refB64) {
+            prompt = [
+              '你是照片辨識助手。第一張圖是「參考人物」的臉部照片，第二張圖是一張待辨識的照片。',
+              '請完成兩件事，並「只」回傳 JSON（不要任何多餘文字或 markdown）：',
+              '1. 判斷第二張照片中是否出現與第一張相同的人物（同一個人）。',
+              `2. 若有出現，判斷該人物在照片中的行為或場景。${behaviorInstruction}`,
+              '回傳格式：{"match": true 或 false, "confidence": 0到100的整數, "behavior": "標籤", "reason": "一句話原因"}',
+            ].join('\n');
+            imagesArg = [refB64, candB64];
+          } else {
+            prompt = [
+              '你是照片辨識助手。請判斷這張照片的主要行為或場景，並「只」回傳 JSON（不要任何多餘文字或 markdown）。',
+              behaviorInstruction,
+              '回傳格式：{"match": true, "confidence": 100, "behavior": "標籤", "reason": "一句話原因"}',
+            ].join('\n');
+            imagesArg = [candB64];
+          }
+
+          let resp: string;
+          try {
+            resp = await ToolExecutor.ollamaVisionChat(ollamaUrl, visionModel, prompt, imagesArg, 90000);
+          } catch (e) {
+            errors++;
+            const em = e instanceof Error ? e.message : String(e);
+            if (failSamples.length < 3) { failSamples.push(`${path.basename(imgPath)}: ${em}`); }
+            this._callbacks.log(`organize_photos: ${path.basename(imgPath)} 推論失敗 — ${em}`);
+            // 第一張就連線層級失敗 → 提早中止，避免空轉整個目錄
+            if (scanned === 1 && /ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|逾時|URL 無效/.test(em)) {
+              return `無法連線 Ollama 視覺模型（${ollamaUrl}，模型 ${visionModel}）：${em}\n`
+                + '請確認 Ollama 正在執行，且已 ollama pull 該視覺模型。';
+            }
+            continue;
+          }
+
+          const parsed = ToolExecutor.extractFirstJson(resp);
+          if (!parsed) {
+            errors++;
+            this._callbacks.log(`organize_photos: ${path.basename(imgPath)} 回應非 JSON：${resp.slice(0, 120)}`);
+            continue;
+          }
+          const isMatch = parsed.match === true
+            || /^(true|yes|y|是|有|same)$/i.test(String(parsed.match ?? '').trim());
+          let conf = typeof parsed.confidence === 'number'
+            ? parsed.confidence : parseInt(String(parsed.confidence ?? ''), 10);
+          if (!Number.isFinite(conf)) { conf = isMatch ? 80 : 0; }
+          if (refB64 && (!isMatch || conf < minConf)) {
+            this._callbacks.log(`organize_photos: ${path.basename(imgPath)} 不符合（match=${isMatch} conf=${conf}）`);
+            continue;
+          }
+          const behavior = ToolExecutor.sanitizePathSegment(String(parsed.behavior ?? '未分類'), '未分類');
+
+          // 目標：<out>/<person>/<behavior>/  或  <out>/<behavior>/
+          const destDir = refB64 ? path.join(outDir, personName, behavior) : path.join(outDir, behavior);
+          fs.mkdirSync(destDir, { recursive: true });
+          let destPath = path.join(destDir, path.basename(imgPath));
+          if (fs.existsSync(destPath)) {
+            const ext = path.extname(imgPath);
+            destPath = path.join(destDir, `${path.basename(imgPath, ext)}_${Date.now().toString(36)}${ext}`);
+          }
+          try {
+            if (moveMode) {
+              try { fs.renameSync(imgPath, destPath); }
+              catch { fs.copyFileSync(imgPath, destPath); fs.unlinkSync(imgPath); } // 跨磁碟 fallback
+            } else {
+              fs.copyFileSync(imgPath, destPath);
+            }
+            matched++;
+            perBehavior.set(behavior, (perBehavior.get(behavior) ?? 0) + 1);
+            this._callbacks.log(`organize_photos: ✓ ${path.basename(imgPath)} → ${path.relative(outDir, destPath)} (conf=${conf})`);
+          } catch (e) {
+            errors++;
+            const em = e instanceof Error ? e.message : String(e);
+            if (failSamples.length < 3) { failSamples.push(`${path.basename(imgPath)}: ${em}`); }
+          }
+        }
+
+        const behaviorSummary = [...perBehavior.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([b, n]) => `  • ${b}: ${n} 張`).join('\n');
+        return [
+          '📷 照片整理完成',
+          `來源：${srcDir}`,
+          `輸出：${outDir}`,
+          `模型：${visionModel}（${ollamaUrl}）`,
+          refRaw ? `比對人物：${personName}（最低信心 ${minConf}）` : '模式：依行為/場景分類',
+          `掃描 ${scanned} 張，${moveMode ? '移動' : '複製'} ${matched} 張${refRaw ? '（符合人物）' : ''}，失敗/略過 ${errors} 張`,
+          behaviorSummary ? `行為分佈：\n${behaviorSummary}` : '',
+          failSamples.length ? `部分錯誤：\n${failSamples.map((s) => '  - ' + s).join('\n')}` : '',
+        ].filter(Boolean).join('\n');
       }
       case 'git_status': {
         const gitRoot = (args.path as string) ? resolvePath(args.path as string) : (wsRoot || process.cwd());

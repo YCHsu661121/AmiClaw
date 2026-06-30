@@ -464,6 +464,9 @@ export class OllamaChatPanel {
           case 'pickFile':
             await this.handlePickFile();
             break;
+          case 'organizePhotosPick':
+            await this.handleOrganizePhotosPick();
+            break;
           case 'webviewReady':
             OllamaChatPanel.log('webviewReady received — calling fetchModelsFromServer');
             {
@@ -1295,6 +1298,52 @@ ${historyText}
         this._panel.webview.postMessage({ type: 'error', text: '無法讀取檔案：' + msg });
       }
     }
+  }
+
+  /** 「整理照片」按鈕：選參考人臉（可選）+ 來源資料夾，組 prompt 交給 Agent 呼叫 organize_photos。 */
+  private async handleOrganizePhotosPick(): Promise<void> {
+    // 步驟 1：選參考人臉照片（可取消＝只依行為分類）
+    const refUris = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      canSelectFiles: true,
+      canSelectFolders: false,
+      openLabel: '選為參考人臉（可取消）',
+      title: '整理照片 1/2：選擇要比對的人臉照片（可按取消＝只依行為分類）',
+      filters: { '圖片': ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] },
+    });
+    const referenceImage = refUris && refUris.length > 0 ? refUris[0].fsPath : '';
+
+    // 步驟 2：選來源資料夾（必選）
+    const srcUris = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      canSelectFiles: false,
+      canSelectFolders: true,
+      openLabel: '選為照片來源資料夾',
+      title: '整理照片 2/2：選擇要掃描整理的照片資料夾',
+    });
+    if (!srcUris || srcUris.length === 0) {
+      this._panel.webview.postMessage({ type: 'assistant', text: '🖼️ 已取消照片整理（未選擇來源資料夾）。' });
+      return;
+    }
+    const sourceDir = srcUris[0].fsPath;
+
+    const promptLines = [
+      '請呼叫 organize_photos 工具整理照片。請使用以下「絕對路徑」參數，不要更改：',
+      `- source_dir: ${sourceDir}`,
+    ];
+    if (referenceImage) {
+      promptLines.push(`- reference_image: ${referenceImage}`);
+      promptLines.push('依「人物 / 行為」兩層資料夾整理（複製、保留原檔）。');
+    } else {
+      promptLines.push('未提供參考人臉，請只依「行為 / 場景」分類（複製、保留原檔）。');
+    }
+    promptLines.push('整理完成後，請回報掃描張數、整理張數與行為分佈。');
+
+    const label = referenceImage
+      ? `🖼️ 整理照片：比對人臉「${path.basename(referenceImage)}」，來源資料夾「${sourceDir}」` 
+      : `🖼️ 整理照片（依行為分類）：來源資料夾「${sourceDir}」`;
+
+    this._panel.webview.postMessage({ type: 'organizePhotosPicked', prompt: promptLines.join('\n'), label });
   }
 
   /** 要求使用者確認敏感操作，回傳是否允許。

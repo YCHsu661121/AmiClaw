@@ -3,5 +3,7 @@
         "http://ai:11434",
         "http://intelnode2:8000"
     ],
-    "amiAiClaw.model": "openai::http://intelnode2:8000||Qwen/Qwen3-0.6B"
+    "amiAiClaw.model": "openai::http://intelnode2:8000||Qwen/Qwen3-0.6B",
+    "amiAiClaw.thinkingLevel": "high",
+    "amiAiClaw.contextDepth": "full"
 }

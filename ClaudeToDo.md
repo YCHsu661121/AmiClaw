@@ -2444,3 +2444,204 @@ src/webview/WebviewRenderer.ts          [3327 行] ← 最大檔案
 
 > **建議下次動工的起點是 D1**：規模最小、純內部接線、無 UI 風險，做完還能順便驗證 context/ 4 模組是否真的能無痛取代手刻邏輯。如果 D1 中發現 type/介面對不上，反而要回頭修 context/ 模組—現在就驗證比 D2/D3 之後驗證便宜得多。
 
+---
+
+---
+
+## 19. TeamManager.ts 深度解剖（2026-06-30 末段 / 對照 §17.4 ToolExecutor 格式）
+
+> §15.1 標注 TeamManager「未審視（行數已比 panel 主檔大半，可能本身也是 God class）」。本節依實機逐方法解剖，證實此推測：**它是全專案第二大 God class，且結構問題比 ToolExecutor 更深**。
+
+### 19.1 ⚠️ 重大修正：行數實測 1672（非 §14/§16 記錄的 1672/1538）
+
+| 來源 | 記錄行數 | 真實行數 | 誤差原因 |
+|---|---|---|---|
+| §14.1 | 1672 | **1672** | ✅ 正確 |
+| §16.1 | 1538 | **1672** | ❌ `Get-Content \| Measure-Object -Line` 在含 CJK/CRLF 時少算，實測 `(Get-Content).Count` = **1672** |
+
+**結論：TeamManager.ts 從未縮減到 1538，§16.1「縮減中 −8%」是量測假象。它一直是 1672 行，且還在長。**
+
+### 19.2 方法清單（method inventory）
+
+| 方法 | 行範圍 | 行數 | 職責 | 純度 |
+|---|---|---|---|---|
+| `constructor` + 9 個 state getter/setter | 80–124 | ~45 | 把 chatHistory / agentMessages / session 代理回 callbacks | ✅ 乾淨（純 proxy） |
+| `cancel()` | 90–92 | 3 | 設 `_teamCancel` 旗標 | ✅ |
+| **`handleTeamSend()`** | 126–479 | **354** | 🔴 dispatcher **＋** 第 7 種模式（default/orchestrator）的完整內嵌實作 | 🔴 很低（路由器兼實作者） |
+| `pickThinkingModel()` `static` | 481–491 | 11 | 依 regex rank 選推理模型 | ✅ |
+| `buildRoleSystemNote()` `static` | 493–505 | 13 | 5 種角色 persona 文字 | 🟡 中（硬編碼字串） |
+| `_handleTeamDiscussion()` | 507–693 | **187** | 掃描工作區 → N 輪 round-robin 討論 → 綜合 → 存 ctx | 🟠 低（掃描+討論+持久化三合一） |
+| `_handleTeamAgent()` | 695–867 | **173** | 2 輪討論 → 生 ToDo → 逐成員執行 → 綜合 | 🟠 低（含 monkey-patch） |
+| `_handleTeamCompare()` | 869–934 | 66 | 平行對所有模型送同一 prompt 比較 | 🟡 中 |
+| `_handleTeamClone()` | 936–1023 | 88 | 單模型走 5 角色串接管線（planner→dev→review→tester→writer） | 🟠 低（含 monkey-patch） |
+| **`_handleTeamManager()`** | 1025–1565 | **541** | 🔴 主管/工程師完整 SDLC：掃描→理解→架構→討論→核准 loop→執行→測試→Review→存檔 | 🔴 極低（一個方法 = 一個子系統） |
+| `runWorkerDiscussion()` | 1567–1641 | 75 | 單 worker 自我複審迴圈（最多 100 輪 + [APPROVED] 判定） | 🟡 中 |
+| `copilotStream()` | 1643–1671 | 29 | Copilot LM API 包裝（cancel + stream） | ✅ |
+
+**統計：**
+- 3 個方法（`handleTeamSend` 354 + `_handleTeamManager` 541 + `_handleTeamDiscussion` 187）就佔 **1082 行 = 全檔 65%**。
+- 6 種團隊模式 + 2 個 static + 2 個 provider helper + 1 個 worker loop = **11 個實作單位全擠在一個 class**。
+
+### 19.3 六種團隊模式對照表
+
+| `teamExecMode` | 方法 | 行數 | 流程骨架 | 寫檔？ | Agent 收尾？ |
+|---|---|---|---|---|---|
+| `''`（default） | `handleTeamSend` 本體 | 354 | orchestrator 規劃 → 平行 worker → 綜合 → agent | 經 agent | ✅ |
+| `discussion` | `_handleTeamDiscussion` | 187 | 掃描 ws → N 輪 round-robin → 綜合 → 存 ctx | teamscontext.md | ❌ |
+| `task`/`parallel` | `_handleTeamAgent` | 173 | 2 輪討論 → ToDo → 逐成員 execute → 綜合 | agent + ctx | 內嵌 |
+| `agent`/`manager` | `_handleTeamManager` | 541 | 掃描→理解→架構→討論→核准 loop→執行→測試→Review→存檔 | agent + ctx | ✅ |
+| `compare` | `_handleTeamCompare` | 66 | 平行同 prompt 比較 | ❌ | ❌ |
+| `clone` | `_handleTeamClone` | 88 | 單模型 5 角色串接管線 | 經 agent | ❌ |
+
+**🐛 dead code（路由 bug）**：`handleTeamSend` 第 148 行已 `if (teamExecMode === 'discussion') return _handleTeamDiscussion(...)`，但第 151 行又寫 `if (teamExecMode === 'task' || teamExecMode === 'discussion' || teamExecMode === 'parallel')` — 第二個 `|| 'discussion'` **永遠不可達**（已被前面 return 攔截）。應刪。
+
+### 19.4 內部結構圖（對照 §18.4 ToolExecutor）
+
+```mermaid
+flowchart TB
+    subgraph TM["TeamManager class [1672行]"]
+        direction TB
+
+        subgraph PROXY["✅ State 代理層 [~45行]"]
+            PX["constructor + 9 getter/setter\n→ chatHistory / agentMessages / session\n全部 delegate 回 callbacks"]
+        end
+
+        subgraph DISPATCH["🔴 handleTeamSend [354行] — 路由器兼實作者"]
+            RT["dispatch ifs [126-167]\n→ discussion/task/parallel/agent/manager/compare/clone"]
+            DEF["default 模式內嵌實作 [168-479 ~312行]\norchestrator 分支 + 非-orchestrator 分支\n★ 應抽成 _handleTeamDefault()"]
+            RT --> DEF
+        end
+
+        subgraph MODES["🟠 6 種模式方法"]
+            M1["_handleTeamManager 🔴\n541行 · 9階段 SDLC"]
+            M2["_handleTeamDiscussion\n187行 · 掃描+討論+存檔"]
+            M3["_handleTeamAgent\n173行 · monkey-patch"]
+            M4["_handleTeamClone\n88行 · monkey-patch"]
+            M5["_handleTeamCompare\n66行"]
+        end
+
+        subgraph DUP["⚠️ 跨模式重複邏輯（未抽出）"]
+            D1["workspace 掃描+80KB批次\n_handleTeamDiscussion 與\n_handleTeamManager 各一份\n~60行 verbatim 重複"]
+            D2["COLORS / getDisplay / isOllamaModel\n6 個模式各自重定義"]
+            D3["teamscontext.md 讀→append→寫\n重複 3×"]
+            D4["callModel local closure\n_handleTeamManager 內 ~90行\nprovider abstraction 內嵌"]
+        end
+
+        subgraph HELP["Provider / Worker helper"]
+            H1["copilotStream ✅ 29行"]
+            H2["runWorkerDiscussion 🟡 75行\n自我複審 loop"]
+            H3["pickThinkingModel ✅ / buildRoleSystemNote 🟡"]
+        end
+    end
+
+    DISPATCH --> MODES
+    MODES -.->|"複製貼上"| DUP
+    MODES --> HELP
+
+    style DISPATCH fill:#fee2e2,stroke:#ef4444
+    style M1 fill:#fee2e2,stroke:#ef4444
+    style DUP fill:#fef9c3,stroke:#eab308
+    style PROXY fill:#f0fdf4,stroke:#22c55e
+```
+
+### 19.5 熱點異味清單（對照 §15.3）
+
+| # | 異味 | 嚴重度 | 說明 |
+|---|---|---|---|
+| 1 | `handleTeamSend` 同時是路由器 + 第 7 種模式實作 | 🔴 很高 | 354 行中 ~312 是 default mode，應抽 `_handleTeamDefault()`，handleTeamSend 退化成 < 50 行純 dispatch |
+| 2 | `_handleTeamManager` 541 行單方法 | 🔴 很高 | 一個方法包了 9 個階段（理解→架構→討論→核准→執行→測試→Review→存檔），無法單元測試 |
+| 3 | 工作區掃描 + 80KB 批次邏輯重複 | 🟠 高 | `_handleTeamDiscussion`(553–610) 與 `_handleTeamManager`(1048–1110) **逐字重複 ~60 行**，僅變數前綴 `_disc`/`_mgr` 不同；**且與 `context/WorkspaceDigest.ts` 概念重疊** |
+| 4 | `COLORS`/`getDisplay`/`isOllamaModel` 6 份 | 🟠 高 | 每個 `_handleTeamXxx` 各自重定義同樣的 helper closure，應抽 `TeamShared.ts` |
+| 5 | monkey-patch `webview.postMessage` | 🟠 高 | `_handleTeamAgent`(824–849) 與 `_handleTeamClone`(999–1016) 暫時**替換共享物件的方法**來攔截 agent 輸出；若 executeAgent 拋例外或 panel 中途 dispose，原 postMessage 可能還原失敗 → 應改用 executeAgent 的 output-capture callback 契約 |
+| 6 | `teamscontext.md` 持久化重複 3× | 🟡 中 | discussion/agent/manager 各寫一份「讀→append timestamped→writeFile」，應抽 `TeamContextStore.appendEntry()` |
+| 7 | `callModel` 90 行內嵌 provider 抽象 | 🟠 高 | `_handleTeamManager` 內的 local `callModel`(1196–1290) 處理 copilot / ollama / ollama-with-tools 三路；與 `copilotStream` + 未來 `ProviderRegistry` 完全重疊 |
+| 8 | 無 provider abstraction，分支散落 6× | 🟠 高 | 每個模式都 `if (model.startsWith('copilot::')) {...} else {ollama...}`；與 §15.3 異味 3（QueryEngine）同源但更嚴重（重複 6 倍） |
+| 9 | persona/prompt 全硬編碼 | 🟡 中 | `managerPersona`/`memberPersona`/工程師專長/各輪 prompt 全是內嵌長字串；與 E1 修掉的 AgentExecutor 問題同型，應抽 `team/TeamPrompts.ts` |
+| 10 | dispatch 第二個 `\|\| 'discussion'` 不可達 | 🟢 低 | dead code，刪一行即可 |
+
+### 19.6 拆分策略（對照 §17.4 tools/impl/）
+
+```text
+team/
+  TeamManager.ts          ← 只留 dispatcher（handleTeamSend 純路由）        目標 < 150 行
+  TeamShared.ts           ← COLORS / getDisplay() / isOllamaModel() / normalizeForAgent()
+  TeamWorkspaceScanner.ts ← 掃描 + 80KB 批次 + init history（解異味 3，並考慮復用 context/WorkspaceDigest）
+  TeamContextStore.ts     ← teamscontext.md 讀/append/寫（解異味 6）
+  TeamPrompts.ts          ← managerPersona / memberPersona / roleNote / 各輪 prompt（解異味 9）
+  TeamCallModel.ts        ← provider-agnostic callModel（解異味 7/8；中期直接委派 ProviderRegistry）
+  modes/
+    TeamDefaultMode.ts    ← 從 handleTeamSend 本體抽出（解異味 1）        ~312 行
+    TeamDiscussionMode.ts ← ~130 行（掃描抽走後）
+    TeamAgentMode.ts      ← ~150 行
+    TeamCompareMode.ts    ← ~60 行
+    TeamCloneMode.ts      ← ~80 行
+    TeamManagerMode.ts    ← 541 → ~350 行（掃描/persona/callModel 抽走後）
+  runWorkerDiscussion.ts  ← worker 自我複審 loop（可獨立測試）
+```
+
+預期效果：`TeamManager.ts` 1672 → < 150 行；最大單檔變成 `TeamManagerMode.ts` ~350 行（仍大但可測）。
+
+### 19.7 行動項（事實驅動）
+
+> **進度（2026-06-30）：T1→T6 ✅ 已完成並通過編譯（0 errors）。** `TeamManager.ts` 1672 → **1471** 行；handleTeamSend 從 354 行 → ~33 行純 dispatcher。
+> team 模組現為 5 檔：Manager 1471 / Scanner 153 / CallModel 127 / Shared 57 / ContextStore 43。
+
+```text
+[T1] ✅ 刪 dead code（異味 10）— 已移除 handleTeamSend 的 `|| teamExecMode === 'discussion'`
+
+[T2] ✅ 抽 TeamShared.ts（異味 4）— 已完成
+     已抽出：TEAM_COLORS / TEAM_COLORS_MANAGER / isOllamaModel / getWorkerDisplay
+     ⚠️ 實作發現變體差異（已保留語意）：
+       - COLORS：4 模式標準序 vs 主管模式金色置頂（TEAM_COLORS_MANAGER）
+       - getDisplay：default 模式 Variant A（處理 copilot/ 與 ||）保留內嵌；
+         其餘 5 模式 Variant B → getWorkerDisplay 委派
+       - normalizeForAgent 僅 default 模式使用，未抽（無重複）
+
+[T3] ✅ 抽 TeamWorkspaceScanner.ts（異味 3）— 已完成，解 ~108 行 verbatim 重複
+     scanWorkspaceForTeam() + buildBatchedInitHistory() + buildCopilotBatchCtx()
+     ⚠️ 決策：**不復用 context/WorkspaceDigest.ts**。WorkspaceDigest 產出單一 markdown digest
+        供 system prompt 注入（且 full 模式只回「請呼叫 read_workspace」指令、不倒碼）；
+        Team 掃描器則需把整個 codebase 分批塞進多輪對話歷史（TeamHistoryEntry[]），
+        輸出形狀與 glob/skip 集合都不同，強行共用會改變既有行為。
+     ✅ 變體差異已參數化保留：discussion「請提出問題。」+ 空批 fallback；manager「請提出任務。」無 fallback；
+        UI 訊息（teamSynthChunk vs teamOrchestrator*）留各 mode 發送。
+
+[T4] ✅ 抽 TeamContextStore.ts（異味 6）— 已完成，解 3× 持久化重複
+     teamContextTimestamp() + appendTeamContext(ctxPath, entry, existingContent?)
+     ✅ 忠實保留變體：discussion/manager 傳入記憶體快取（空字串=不加分隔線）；
+        agent 省略 existingContent → 寫入當下重讀檔（讀到即加分隔線，含空檔邊界案例）。
+        entry 格式與 UI 訊息留各 mode。
+
+[T5] ✅ 抽 _handleTeamDefault()（異味 1）— 已完成
+     handleTeamSend 354 行 → ~33 行純 dispatcher（6 分支 + setup）；
+     default 本體（orchestrator + 非-orchestrator）移到 _handleTeamDefault(prompt, allModels,
+     primaryOllamaModel, roundsNum, maxParallel?, roles?)，輔助 helper 於新方法內重算。
+     ⚠️ 本階段為「抽成同檔私有方法」；進一步搬到 modes/TeamDefaultMode.ts 是後續重構。
+
+[T6] ✅ 抽 TeamCallModel.ts（異味 7）— 已完成
+     teamCallModel(deps, ...) + TeamCallModelDeps（DI）；_handleTeamManager 的 ~90 行 callModel closure
+     退化為 deps 物件 + thin wrapper（9 個呼叫點不變）。同時把 TeamManagerChatMessage 移到 TeamShared。
+     ✅ 異味 7（callModel 內嵌 provider 抽象）完全解決，行為一致（200ms cancel / 80ms think buffer / 12 輪 tool loop）。
+     ⚠️ 異味 8（6× 散落分支）**僅部分解決**：manager 路徑已集中，但 discussion/agent/compare/clone/default
+        各自的 inline copilot/ollama 分支仍在（串流 callback / UI 形狀不同，強行統一會改行為或膨脹 teamCallModel）。
+     ⚠️ 未強行耀接 ProviderRegistry：保留 `startsWith('copilot::')` 以免改變 openai:: 等前綴路由。
+
+[T7]（最後）拆 _handleTeamManager 541 行 → 9 個階段方法
+     必須在 T2~T6 完成後做，否則階段方法仍會帶著重複 helper
+```
+
+**進行中路線 T1→T6 ✅ 完成；剩 T7（拆 _handleTeamManager 541 行）**。**T7 是終局**，需在地基完成後才做（現已備齊：Shared / Scanner / ContextStore / CallModel）。
+
+### 19.8 與 ToolExecutor（§17.4）的對照
+
+| 維度 | ToolExecutor.ts | TeamManager.ts |
+|---|---|---|
+| 行數 | 2605 | **1672** |
+| 最大單方法 | executeTool dispatch（~1800 行 switch） | `_handleTeamManager`（541 行 linear） |
+| 主要病灶 | 60 工具 impl 內嵌 | 6 模式 + 重複 helper + monkey-patch |
+| 子模組接入 | ✅ Cache/Audit/Policies 已委派 | 🔴 零抽出（全內嵌） |
+| Provider 分支 | 無（不呼叫模型） | 🔴 6× copilot/ollama 散落 |
+| 拆分難度 | 中（工具彼此獨立） | **高**（模式間共用 state + monkey-patch 副作用） |
+
+**結論：TeamManager 雖比 ToolExecutor 短，但拆分難度更高** — ToolExecutor 的 60 工具彼此獨立、易切割；TeamManager 的 6 模式共用 `_chatHistory`/`_agentMessages`/`_teamCancel` 且有 monkey-patch 副作用，必須先抽 shared/scanner/context/callModel 四個地基，才能安全切模式。
+

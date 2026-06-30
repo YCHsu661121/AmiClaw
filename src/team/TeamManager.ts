@@ -1,17 +1,10 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { URL } from 'url';
-
-interface TeamManagerChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
-  thinking?: string;
-  tool_calls?: Array<{ id?: string; function: { name: string; arguments: Record<string, unknown> | string } }>;
-  tool_call_id?: string;
-  images?: string[];
-}
-
-type TeamHistoryEntry = { role: 'user' | 'assistant'; content: string };
+import { TEAM_COLORS, TEAM_COLORS_MANAGER, isOllamaModel, getWorkerDisplay, type TeamHistoryEntry, type TeamManagerChatMessage } from './TeamShared';
+import { scanWorkspaceForTeam, buildBatchedInitHistory, buildCopilotBatchCtx } from './TeamWorkspaceScanner';
+import { teamContextTimestamp, appendTeamContext } from './TeamContextStore';
+import { teamCallModel, type TeamCallModelDeps } from './TeamCallModel';
 
 interface TeamToolDefinition {
   function: { name: string };
@@ -125,20 +118,12 @@ export class TeamManager {
 
   public async handleTeamSend(prompt: string, selectedModels?: string[], rounds?: string | number, teamExecMode?: string, maxParallel?: number, roles?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
-    const urls = this._services.getOllamaUrls(cfg);
-    const defaultBaseUrl = urls[0];
-    const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
-    const getWorkerUrl = (m: string) => isOllamaModel(m) ? this._services.decodeOllamaModel(m, urls).url : defaultBaseUrl;
-    const getWorkerModel = (m: string) => isOllamaModel(m) ? this._services.decodeOllamaModel(m, urls).model : m;
     const configuredModel = cfg.get<string>('model') ?? '';
     const primaryOllamaModel = (selectedModels && selectedModels.length > 0)
       ? selectedModels.find(m => isOllamaModel(m)) ?? selectedModels[0]
       : configuredModel;
     const allModels = (selectedModels && selectedModels.length > 0) ? selectedModels.slice(0, 5) : (primaryOllamaModel ? [primaryOllamaModel] : []);
-    const _tsRolesCfg = cfg.get<Array<{key:string;label:string;emoji:string}>>('teamRoles', []);
-    const _tsRolePrefix = (idx: number) => { const k = roles?.[idx]; const r = k ? _tsRolesCfg.find(c => c.key === k) : undefined; return r ? `${r.emoji} ${r.label} ` : ''; };
 
-    const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
     this._teamCancel = false;
     const roundsSelected = rounds ?? '20';
     const roundsNum = String(roundsSelected) === 'infinite' ? Infinity : Number(roundsSelected) || 20;
@@ -149,8 +134,7 @@ export class TeamManager {
     if (teamExecMode === 'discussion') {
       return this._handleTeamDiscussion(prompt, allModels, roundsNum, roles);
     }
-
-    if (teamExecMode === 'task' || teamExecMode === 'discussion' || teamExecMode === 'parallel') {
+    if (teamExecMode === 'task' || teamExecMode === 'parallel') {
       return this._handleTeamAgent(prompt, allModels, roles);
     }
     if (teamExecMode === 'agent' || teamExecMode === 'manager') {
@@ -162,6 +146,22 @@ export class TeamManager {
     if (teamExecMode === 'clone') {
       return this._handleTeamClone(prompt, allModels[0] ?? '');
     }
+    return this._handleTeamDefault(prompt, allModels, primaryOllamaModel, roundsNum, maxParallel, roles);
+  }
+
+  /**
+   * Default 模式（無 teamExecMode）：orchestrator 規劃 → 平行 worker → 綜合 → agent 收尾。
+   * 從 handleTeamSend 本體抽出（ClaudeToDo.md §19.5 異味 1）。
+   */
+  private async _handleTeamDefault(prompt: string, allModels: string[], primaryOllamaModel: string, roundsNum: number, maxParallel?: number, roles?: string[]): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const urls = this._services.getOllamaUrls(cfg);
+    const defaultBaseUrl = urls[0];
+    const getWorkerUrl = (m: string) => isOllamaModel(m) ? this._services.decodeOllamaModel(m, urls).url : defaultBaseUrl;
+    const getWorkerModel = (m: string) => isOllamaModel(m) ? this._services.decodeOllamaModel(m, urls).model : m;
+    const _tsRolesCfg = cfg.get<Array<{key:string;label:string;emoji:string}>>('teamRoles', []);
+    const _tsRolePrefix = (idx: number) => { const k = roles?.[idx]; const r = k ? _tsRolesCfg.find(c => c.key === k) : undefined; return r ? `${r.emoji} ${r.label} ` : ''; };
+    const COLORS = TEAM_COLORS;
 
     const systemContent = this._callbacks.getSystemContent();
     const wsFolders = vscode.workspace.workspaceFolders ?? [];
@@ -507,16 +507,9 @@ export class TeamManager {
   private async _handleTeamDiscussion(prompt: string, allModels: string[], maxRounds: number, roles?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = this._services.getOllamaUrls(cfg);
-    const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
-    const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
-    const getDisplay = (m: string) => {
-      if (m.startsWith('copilot::')) return '🐙 ' + m.slice('copilot::'.length);
-      const { url, model } = this._services.decodeOllamaModel(m, urls);
-      try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; }
-    };
+    const COLORS = TEAM_COLORS;
+    const getDisplay = (m: string) => getWorkerDisplay(m, urls, (id, u) => this._services.decodeOllamaModel(id, u));
 
-    const _wsFolders = vscode.workspace.workspaceFolders ?? [];
-    const _wsRoot = _wsFolders.length > 0 ? _wsFolders[0].uri.fsPath : process.cwd();
     this._panel.webview.postMessage({ type: 'debateStart',
       labelA: getDisplay(allModels[0]), labelB: getDisplay(allModels[1] ?? allModels[0]),
       labelJ: allModels[2] ? getDisplay(allModels[2]) : null,
@@ -525,68 +518,14 @@ export class TeamManager {
       speakerLabels: Object.fromEntries(allModels.map((m,i) => [String(i), getDisplay(m)])),
       speakerColors: Object.fromEntries(allModels.map((m,i) => [String(i), COLORS[i % COLORS.length]])) });
     this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: '🔍 正在掃描工作區原始碼與 teamscontext.md…\n' });
-    const _teamsCtxPath = path.join(_wsRoot, 'teamscontext.md');
-    let _teamsCtxContent = '';
-    try {
-      const _tcBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(_teamsCtxPath));
-      _teamsCtxContent = Buffer.from(_tcBytes).toString('utf-8').trim();
-    } catch { /* 不存在則略過 */ }
-    const _SKIP_EXT = new Set(['.png','.jpg','.jpeg','.gif','.ico','.svg','.woff','.woff2','.ttf','.eot','.vsix','.zip','.tar','.gz','.exe','.dll','.pdf','.db','.sqlite','.lock']);
-    const _SKIP_DIRS = '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/build/**,**/.vscode-test/**,**/coverage/**}';
-    const _allUris = await vscode.workspace.findFiles('**/*', _SKIP_DIRS, 2000);
-    _allUris.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
-    const _filteredUris = _allUris.filter(uri => !_SKIP_EXT.has(path.extname(uri.fsPath).toLowerCase()));
-    const _allRelPaths = _filteredUris.map(uri => path.relative(_wsRoot, uri.fsPath).replace(/\\/g, '/'));
-    const _fileListBlock = `【工作區檔案清單（${_allRelPaths.length} 個）】\n${_allRelPaths.map(p => `  - ${p}`).join('\n')}`;
-    const _BATCH_SIZE = 80000;
-    const _MAX_FILE = 15000;
-    const _discBatches: string[][] = [];
-    let _discCurBatch: string[] = [];
-    let _discCurBatchBytes = 0;
-    let _totalBytes = 0;
-    for (const uri of _filteredUris) {
-      const rel = path.relative(_wsRoot, uri.fsPath).replace(/\\/g, '/');
-      try {
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        let text = Buffer.from(bytes).toString('utf-8');
-        if (text.length > _MAX_FILE) { text = text.slice(0, _MAX_FILE) + `\n...（${rel} 已截斷，僅顯示前段）`; }
-        const entry = `### ${rel}\n\`\`\`\n${text}\n\`\`\``;
-        if (_discCurBatchBytes + entry.length > _BATCH_SIZE && _discCurBatch.length > 0) {
-          _discBatches.push(_discCurBatch);
-          _discCurBatch = []; _discCurBatchBytes = 0;
-        }
-        _discCurBatch.push(entry);
-        _discCurBatchBytes += entry.length;
-        _totalBytes += text.length;
-      } catch { /* 略過無法讀取的二進位檔 */ }
-    }
-    if (_discCurBatch.length > 0) _discBatches.push(_discCurBatch);
-    const _discReadCount = _discBatches.reduce((s, b) => s + b.length, 0);
-    this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `✅ 掃描完成：找到 ${_allRelPaths.length} 個檔案，分 ${_discBatches.length} 批讀取 ${_discReadCount} 個內容（${Math.round(_totalBytes/1024)}KB）\n` });
+    const _scan = await scanWorkspaceForTeam();
+    const _teamsCtxPath = _scan.teamsCtxPath;
+    const _teamsCtxContent = _scan.teamsCtxContent;
+    this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `✅ 掃描完成：找到 ${_scan.allRelPaths.length} 個檔案，分 ${_scan.batches.length} 批讀取 ${_scan.readCount} 個內容（${Math.round(_scan.totalBytes/1024)}KB）\n` });
 
-    const _discBaseCtx = [
-      `【工作區路徑】${_wsRoot}`,
-      _teamsCtxContent ? `【teamscontext.md — 先前討論紀錄】\n${_teamsCtxContent}` : '',
-      _fileListBlock,
-    ].filter(Boolean).join('\n\n');
-    const _batchedInitHist: TeamHistoryEntry[] = [];
-    if (_discBatches.length > 0) {
-      _batchedInitHist.push({ role: 'user', content:
-        `${_discBaseCtx}\n\n【第 1/${_discBatches.length} 批原始碼（${_discBatches[0].length} 個檔案）】\n\n${_discBatches[0].join('\n\n')}`
-      });
-      for (let _bi = 1; _bi < _discBatches.length; _bi++) {
-        _batchedInitHist.push({ role: 'assistant', content: `已閱讀第 ${_bi}/${_discBatches.length} 批（${_discBatches[_bi-1].length} 個檔案），繼續接收下一批。` });
-        _batchedInitHist.push({ role: 'user', content:
-          `【第 ${_bi+1}/${_discBatches.length} 批原始碼（${_discBatches[_bi].length} 個檔案）】\n\n${_discBatches[_bi].join('\n\n')}`
-        });
-      }
-      _batchedInitHist.push({ role: 'assistant', content: `已完整閱讀全部 ${_discBatches.length} 批共 ${_allRelPaths.length} 個檔案（${Math.round(_totalBytes/1024)}KB）。請提出問題。` });
-    } else {
-      _batchedInitHist.push({ role: 'user', content: _discBaseCtx });
-      _batchedInitHist.push({ role: 'assistant', content: '已閱讀工作區資訊。請提出問題。' });
-    }
+    const _batchedInitHist: TeamHistoryEntry[] = buildBatchedInitHistory(_scan, '請提出問題。', '已閱讀工作區資訊。請提出問題。');
     _batchedInitHist.push({ role: 'user', content: prompt });
-    const _copilotBatchCtx = [_discBaseCtx, ..._discBatches.map((b,i) => `【第 ${i+1}/${_discBatches.length} 批原始碼】\n\n${b.join('\n\n')}`)].join('\n\n');
+    const _copilotBatchCtx = buildCopilotBatchCtx(_scan);
     const _promptWithCtx = _copilotBatchCtx ? `${_copilotBatchCtx}\n\n---\n\n${prompt}` : prompt;
 
     const roundsLimit = isFinite(maxRounds) ? maxRounds : 4;
@@ -675,13 +614,8 @@ export class TeamManager {
       const _discFinal = synthResult || summaryLines.join('\n\n---\n\n');
       if (_discFinal.trim()) {
         try {
-          const _now = new Date().toISOString().replace('T', ' ').slice(0, 19);
-          const _existing = _teamsCtxContent ? `${_teamsCtxContent}\n\n---\n\n` : '';
-          const _newEntry = `## 討論紀錄 ${_now}\n\n**議題：** ${prompt.slice(0, 200)}${prompt.length > 200 ? '…' : ''}\n\n${_discFinal}`;
-          await vscode.workspace.fs.writeFile(
-            vscode.Uri.file(_teamsCtxPath),
-            Buffer.from(_existing + _newEntry, 'utf-8')
-          );
+          const _newEntry = `## 討論紀錄 ${teamContextTimestamp()}\n\n**議題：** ${prompt.slice(0, 200)}${prompt.length > 200 ? '…' : ''}\n\n${_discFinal}`;
+          await appendTeamContext(_teamsCtxPath, _newEntry, _teamsCtxContent);
           this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `\n\n---\n📝 討論結果已儲存至 teamscontext.md` });
         } catch (e) {
           this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `\n\n⚠️ 無法儲存 teamscontext.md: ${e instanceof Error ? e.message : String(e)}` });
@@ -695,12 +629,8 @@ export class TeamManager {
   private async _handleTeamAgent(prompt: string, allModels: string[], roles?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = this._services.getOllamaUrls(cfg);
-    const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
-    const getDisplay = (m: string) => {
-      if (m.startsWith('copilot::')) return '🐙 ' + m.slice('copilot::'.length);
-      const { url, model } = this._services.decodeOllamaModel(m, urls);
-      try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; }
-    };
+    const COLORS = TEAM_COLORS;
+    const getDisplay = (m: string) => getWorkerDisplay(m, urls, (id, u) => this._services.decodeOllamaModel(id, u));
     const _agentRolesCfg = cfg.get<Array<{key:string;label:string;emoji:string;systemPrompt:string}>>('teamRoles', []);
     const _roleCfg  = (idx: number) => { const k = roles?.[idx]; return k ? _agentRolesCfg.find(c => c.key === k) : undefined; };
     const _rolePrefix = (idx: number) => { const r = _roleCfg(idx); return r ? `${r.emoji} ${r.label} ` : '💬 '; };
@@ -850,11 +780,8 @@ export class TeamManager {
         const _wsRoot = (vscode.workspace.workspaceFolders ?? [])[0]?.uri.fsPath ?? process.cwd();
         const _ctxPath = path.join(_wsRoot, 'teamscontext.md');
         try {
-          const _now = new Date().toISOString().replace('T', ' ').slice(0, 19);
-          let _existing = '';
-          try { _existing = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(_ctxPath))).toString('utf-8').trim() + '\n\n---\n\n'; } catch { /* new file */ }
-          await vscode.workspace.fs.writeFile(vscode.Uri.file(_ctxPath),
-            Buffer.from(`${_existing}## 討論紀錄 ${_now}\n\n**主題：** ${prompt.slice(0, 200)}${prompt.length > 200 ? '…' : ''}\n\n${_final}`, 'utf-8'));
+          const _entry = `## 討論紀錄 ${teamContextTimestamp()}\n\n**主題：** ${prompt.slice(0, 200)}${prompt.length > 200 ? '…' : ''}\n\n${_final}`;
+          await appendTeamContext(_ctxPath, _entry);
           this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `\n\n---\n📝 討論結果已儲存至 teamscontext.md` });
         } catch (e) {
           this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `\n\n⚠️ 無法儲存 teamscontext.md: ${e instanceof Error ? e.message : String(e)}` });
@@ -873,12 +800,8 @@ export class TeamManager {
     }
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = this._services.getOllamaUrls(cfg);
-    const COLORS = ['#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa', '#f7cc65'];
-    const getDisplay = (m: string) => {
-      if (m.startsWith('copilot::')) return '🐙 ' + m.slice('copilot::'.length);
-      const { url, model } = this._services.decodeOllamaModel(m, urls);
-      try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${model}`; } catch { return model; }
-    };
+    const COLORS = TEAM_COLORS;
+    const getDisplay = (m: string) => getWorkerDisplay(m, urls, (id, u) => this._services.decodeOllamaModel(id, u));
 
     this._teamCancel = false;
     this._panel.webview.postMessage({ type: 'teamTodoList', tasks: allModels.map(m => getDisplay(m)) });
@@ -940,12 +863,7 @@ export class TeamManager {
     }
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = this._services.getOllamaUrls(cfg);
-    const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
-    const getDisplay = (m: string) => {
-      if (m.startsWith('copilot::')) return '🐙 ' + m.slice('copilot::'.length);
-      const { url, model: mn } = this._services.decodeOllamaModel(m, urls);
-      try { const u = new URL(url); return `[${u.hostname}:${u.port||'11434'}] ${mn}`; } catch { return mn; }
-    };
+    const getDisplay = (m: string) => getWorkerDisplay(m, urls, (id, u) => this._services.decodeOllamaModel(id, u));
     const CLONE_ROLES: { role: string; emoji: string; label: string; color: string }[] = [
       { role: 'planner',   emoji: '🗺️', label: '規劃者', color: '#f7a534' },
       { role: 'developer', emoji: '💻', label: '開發者', color: '#4fc1ff' },
@@ -1025,79 +943,23 @@ export class TeamManager {
   private async _handleTeamManager(prompt: string, allModels: string[], maxRounds: number, roles?: string[]): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = this._services.getOllamaUrls(cfg);
-    const COLORS = ['#f7cc65', '#4fc1ff', '#89d185', '#ce9178', '#c586c0', '#dcdcaa'];
-    const isOllamaModel = (m: string) => !m.startsWith('copilot/') && !m.startsWith('copilot::');
-    const getDisplay = (m: string) => {
-      if (m.startsWith('copilot::')) return '🐙 ' + m.slice('copilot::'.length);
-      const { url, model } = this._services.decodeOllamaModel(m, urls);
-      try { const u = new URL(url); return `[${u.hostname}:${u.port || '11434'}] ${model}`; } catch { return model; }
-    };
+    const COLORS = TEAM_COLORS_MANAGER;
+    const getDisplay = (m: string) => getWorkerDisplay(m, urls, (id, u) => this._services.decodeOllamaModel(id, u));
     if (allModels.length < 1) {
       this._panel.webview.postMessage({ type: 'error', text: '主管模式至少需要 1 個 AI 模型（第一個為主管）' });
       return;
     }
 
-    const _mgrWsFolders = vscode.workspace.workspaceFolders ?? [];
-    const _mgrWsRoot = _mgrWsFolders.length > 0 ? _mgrWsFolders[0].uri.fsPath : process.cwd();
     this._panel.webview.postMessage({ type: 'teamOrchestratorStart', model: '🔍 掃描工作區' });
     this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: '🔍 正在掃描工作區原始碼與 teamscontext.md…\n' });
-    const _mgrTeamsCtxPath = path.join(_mgrWsRoot, 'teamscontext.md');
-    let _mgrTeamsCtxContent = '';
-    try {
-      const _mgrTcBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(_mgrTeamsCtxPath));
-      _mgrTeamsCtxContent = Buffer.from(_mgrTcBytes).toString('utf-8').trim();
-    } catch { /* 不存在則略過 */ }
-    const _mgrSKIP_EXT = new Set(['.png','.jpg','.jpeg','.gif','.ico','.svg','.woff','.woff2','.ttf','.eot','.vsix','.zip','.tar','.gz','.exe','.dll','.pdf','.db','.sqlite','.lock']);
-    const _mgrSKIP_DIRS = '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/build/**,**/.vscode-test/**,**/coverage/**}';
-    const _mgrAllUris = await vscode.workspace.findFiles('**/*', _mgrSKIP_DIRS, 2000);
-    _mgrAllUris.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
-    const _mgrFilteredUris = _mgrAllUris.filter(uri => !_mgrSKIP_EXT.has(path.extname(uri.fsPath).toLowerCase()));
-    const _mgrAllRelPaths = _mgrFilteredUris.map(uri => path.relative(_mgrWsRoot, uri.fsPath).replace(/\\/g, '/'));
-    const _mgrFileListBlock = `【工作區檔案清單（${_mgrAllRelPaths.length} 個）】\n${_mgrAllRelPaths.map(p => `  - ${p}`).join('\n')}`;
-    const _mgrBATCH_SIZE = 80000;
-    const _mgrMAX_FILE = 15000;
-    const _mgrBatches: string[][] = [];
-    let _mgrCurBatch: string[] = [];
-    let _mgrCurBatchBytes = 0;
-    let _mgrTotalBytes = 0;
-    for (const uri of _mgrFilteredUris) {
-      const rel = path.relative(_mgrWsRoot, uri.fsPath).replace(/\\/g, '/');
-      try {
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        let text = Buffer.from(bytes).toString('utf-8');
-        if (text.length > _mgrMAX_FILE) { text = text.slice(0, _mgrMAX_FILE) + `\n...（${rel} 已截斷，僅顯示前段）`; }
-        const entry = `### ${rel}\n\`\`\`\n${text}\n\`\`\``;
-        if (_mgrCurBatchBytes + entry.length > _mgrBATCH_SIZE && _mgrCurBatch.length > 0) {
-          _mgrBatches.push(_mgrCurBatch);
-          _mgrCurBatch = []; _mgrCurBatchBytes = 0;
-        }
-        _mgrCurBatch.push(entry);
-        _mgrCurBatchBytes += entry.length;
-        _mgrTotalBytes += text.length;
-      } catch { /* 略過二進位檔 */ }
-    }
-    if (_mgrCurBatch.length > 0) _mgrBatches.push(_mgrCurBatch);
-    const _mgrReadCount = _mgrBatches.reduce((s, b) => s + b.length, 0);
-    this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `✅ 掃描完成：找到 ${_mgrAllRelPaths.length} 個檔案，分 ${_mgrBatches.length} 批讀取 ${_mgrReadCount} 個內容（${Math.round(_mgrTotalBytes/1024)}KB）\n` });
+    const _scan = await scanWorkspaceForTeam();
+    const _mgrTeamsCtxPath = _scan.teamsCtxPath;
+    const _mgrTeamsCtxContent = _scan.teamsCtxContent;
+    const _mgrAllRelPaths = _scan.allRelPaths;
+    const _mgrBaseCtx = _scan.baseCtx;
+    this._panel.webview.postMessage({ type: 'teamOrchestratorChunk', chunk: `✅ 掃描完成：找到 ${_scan.allRelPaths.length} 個檔案，分 ${_scan.batches.length} 批讀取 ${_scan.readCount} 個內容（${Math.round(_scan.totalBytes/1024)}KB）\n` });
     this._panel.webview.postMessage({ type: 'teamOrchestratorEnd' });
-    const _mgrBaseCtx = [
-      `【工作區路徑】${_mgrWsRoot}`,
-      _mgrTeamsCtxContent ? `【teamscontext.md — 先前討論紀錄】\n${_mgrTeamsCtxContent}` : '',
-      _mgrFileListBlock,
-    ].filter(Boolean).join('\n\n');
-    const _mgrBatchedInitHist: TeamHistoryEntry[] = [];
-    if (_mgrBatches.length > 0) {
-      _mgrBatchedInitHist.push({ role: 'user', content:
-        `${_mgrBaseCtx}\n\n【第 1/${_mgrBatches.length} 批原始碼（${_mgrBatches[0].length} 個檔案）】\n\n${_mgrBatches[0].join('\n\n')}`
-      });
-      for (let _bi = 1; _bi < _mgrBatches.length; _bi++) {
-        _mgrBatchedInitHist.push({ role: 'assistant', content: `已閱讀第 ${_bi}/${_mgrBatches.length} 批（${_mgrBatches[_bi-1].length} 個檔案），繼續接收下一批。` });
-        _mgrBatchedInitHist.push({ role: 'user', content:
-          `【第 ${_bi+1}/${_mgrBatches.length} 批原始碼（${_mgrBatches[_bi].length} 個檔案）】\n\n${_mgrBatches[_bi].join('\n\n')}`
-        });
-      }
-      _mgrBatchedInitHist.push({ role: 'assistant', content: `已完整閱讀全部 ${_mgrBatches.length} 批共 ${_mgrAllRelPaths.length} 個檔案（${Math.round(_mgrTotalBytes/1024)}KB）。請提出任務。` });
-    }
+    const _mgrBatchedInitHist: TeamHistoryEntry[] = buildBatchedInitHistory(_scan, '請提出任務。');
     const _mgrWsContext = _mgrBaseCtx;
 
     const _mgrLightHist: TeamHistoryEntry[] = [
@@ -1171,7 +1033,16 @@ export class TeamManager {
     const _MGR_WRITE_DENY = new Set(['write_file','replace_in_file','delete_file','create_dir','run_terminal','run_command','run_python','git_commit','lint_fix','jenkins_build','whatsapp_connect','whatsapp_disconnect','whatsapp_save_credentials','whatsapp_send','whatsapp_send_template','browser_script','jira_create','jira_transition','bb_create_pr']);
     const MGR_MANAGER_TOOLS = AGENT_TOOLS.filter(t => !_MGR_WRITE_DENY.has(t.function.name));
 
-    const callModel = async (
+    const callModelDeps: TeamCallModelDeps = {
+      urls,
+      isCancelled: () => this._teamCancel,
+      decodeOllamaModel: (id, u) => this._services.decodeOllamaModel(id, u),
+      ollamaChatStream: (b, m, msgs, onR, onT, onS) => this._services.ollamaChatStream(b, m, msgs, onR, onT, onS),
+      ollamaChatCallStream: (b, m, msgs, t, onT, onTx, onS) => this._services.ollamaChatCallStream(b, m, msgs, t, onT, onTx, onS),
+      trackUsage: (m, t) => this._callbacks.trackUsage(m, t),
+      executeTool: (n, a) => this._callbacks.executeTool(n, a),
+    };
+    const callModel = (
       model: string,
       persona: string,
       hist: TeamHistoryEntry[],
@@ -1179,74 +1050,7 @@ export class TeamManager {
       onChunk: (c: string) => void,
       onThink?: (c: string) => void,
       tools: unknown[] = []
-    ): Promise<string> => {
-      if (model.startsWith('copilot::')) {
-        const family = model.slice('copilot::'.length);
-        const messages: vscode.LanguageModelChatMessage[] = [
-          vscode.LanguageModelChatMessage.User(persona),
-          ...hist.map(h => h.role === 'user'
-            ? vscode.LanguageModelChatMessage.User(h.content)
-            : vscode.LanguageModelChatMessage.Assistant(h.content)),
-          vscode.LanguageModelChatMessage.User(userMsg)
-        ];
-        const cts = new vscode.CancellationTokenSource();
-        const cancelTimer = setInterval(() => { if (this._teamCancel) { cts.cancel(); } }, 200);
-        try {
-          const [lm] = await vscode.lm.selectChatModels({ vendor: 'copilot', family });
-          if (!lm) { throw new Error(`Copilot 模型 "${family}" 不可用`); }
-          const resp = await lm.sendRequest(messages, {}, cts.token);
-          let full = '';
-          for await (const part of resp.stream) {
-            if (this._teamCancel) { break; }
-            if (part instanceof vscode.LanguageModelTextPart) { full += part.value; onChunk(part.value); }
-          }
-          return full;
-        } finally { clearInterval(cancelTimer); cts.dispose(); }
-      } else {
-        const { url, model: mName } = this._services.decodeOllamaModel(model, urls);
-        if (tools.length === 0) {
-          let thinkBuf = '';
-          let thinkTimer: ReturnType<typeof setTimeout> | null = null;
-          const flushThink = () => { if (thinkBuf && onThink) { onThink(thinkBuf); thinkBuf = ''; } thinkTimer = null; };
-          const messages: TeamManagerChatMessage[] = [
-            { role: 'system', content: persona },
-            ...hist.map(h => ({ role: h.role as 'user' | 'assistant', content: h.content })),
-            { role: 'user', content: userMsg }
-          ];
-          const text = await this._services.ollamaChatStream(url, mName, messages, onChunk,
-            (tc) => { thinkBuf += tc; if (!thinkTimer) { thinkTimer = setTimeout(flushThink, 80); } },
-            (tokens) => { this._callbacks.trackUsage(mName, tokens); });
-          if (thinkTimer) { clearTimeout(thinkTimer); } flushThink();
-          return text;
-        } else {
-          const messages: TeamManagerChatMessage[] = [
-            { role: 'system', content: persona },
-            ...hist.map(h => ({ role: h.role as 'user' | 'assistant', content: h.content })),
-            { role: 'user', content: userMsg }
-          ];
-          let finalText = '';
-          for (let _tLoop = 0; _tLoop < 12 && !this._teamCancel; _tLoop++) {
-            const assistantMsg = await this._services.ollamaChatCallStream(url, mName, messages, tools,
-              (tc) => { if (onThink && !this._teamCancel) onThink(tc); },
-              (tc) => { if (!this._teamCancel) { onChunk(tc); finalText += tc; } },
-              (tokens) => { this._callbacks.trackUsage(mName, tokens); });
-            messages.push(assistantMsg as TeamManagerChatMessage);
-            if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) { break; }
-            for (const tc of assistantMsg.tool_calls) {
-              const fn = tc.function;
-              const args = typeof fn.arguments === 'string' ? (() => { try { return JSON.parse(fn.arguments as string); } catch { return {}; } })() : fn.arguments as Record<string, unknown>;
-              onChunk(`\n🔧 ${fn.name}(${JSON.stringify(args).slice(0, 80)})\n`);
-              let toolResult: string;
-              try { toolResult = await this._callbacks.executeTool(fn.name, args); }
-              catch (e) { toolResult = `工具錯誤: ${e instanceof Error ? e.message : String(e)}`; }
-              onChunk(`→ ${toolResult.slice(0, 200)}${toolResult.length > 200 ? '…' : ''}\n`);
-              messages.push({ role: 'tool', content: toolResult, tool_call_id: tc.id ?? fn.name });
-            }
-          }
-          return finalText;
-        }
-      }
-    };
+    ): Promise<string> => teamCallModel(callModelDeps, model, persona, hist, userMsg, onChunk, onThink, tools);
 
     this._teamCancel = false;
 
@@ -1536,17 +1340,12 @@ export class TeamManager {
       this._chatHistories[this._activeSessionId] = this._chatHistory;
       this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessionId });
       try {
-        const _mgrNow = new Date().toISOString().replace('T', ' ').slice(0, 19);
-        const _mgrExisting = _mgrTeamsCtxContent ? `${_mgrTeamsCtxContent}\n\n---\n\n` : '';
         const _mgrEntry =
-          `## 主管模式紀錄 ${_mgrNow}\n\n` +
+          `## 主管模式紀錄 ${teamContextTimestamp()}\n\n` +
           `**議題：** ${prompt.slice(0, 200)}${prompt.length > 200 ? '…' : ''}\n\n` +
           `**執行狀態：** ${execResult}\n\n` +
           `**全員 Review：**\n${finalSummary}`;
-        await vscode.workspace.fs.writeFile(
-          vscode.Uri.file(_mgrTeamsCtxPath),
-          Buffer.from(_mgrExisting + _mgrEntry, 'utf-8')
-        );
+        await appendTeamContext(_mgrTeamsCtxPath, _mgrEntry, _mgrTeamsCtxContent);
         const _saveId = 'mgr_save_ctx';
         this._panel.webview.postMessage({ type: 'teamMemberStart', id: _saveId, model: '📝 teamscontext.md', color: '#aaaaaa', task: '儲存討論紀錄' });
         this._panel.webview.postMessage({ type: 'teamResponseChunk', id: _saveId, chunk: `✅ 主管模式結果已儲存至 teamscontext.md` });

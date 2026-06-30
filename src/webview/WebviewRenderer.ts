@@ -377,6 +377,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             <option value="yolo">🚀 全自動</option>
           </select>
           <button class="icon-btn" id="fileModBtn" title="顯示/隱藏修改記錄清單" aria-label="修改記錄">📋</button>
+          <button class="icon-btn" id="organizePhotosBtn" title="整理照片（辨識人物 / 行為並分類）" aria-label="整理照片">🖼️</button>
           <button class="icon-btn" id="clear" title="清除對話" aria-label="清除對話">🗑</button>
           <button class="icon-btn" id="debugBtn" title="Debug Console" aria-label="Debug Console" style="font-size:12px;">🐛</button>
         </div>
@@ -842,6 +843,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             }
           }
           else if (msg.type === 'error')         { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', '\u932f\u8aa4\uff1a' + msg.text); }
+          else if (msg.type === 'organizePhotosPicked') { appendMessage('user', msg.label); vscode.postMessage({ type: 'agentSend', prompt: msg.prompt, model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setSendEnabled(false); appendLoadingBubble(); }
           else if (msg.type === 'teamMemberStart') { createTeamMember(msg.id, msg.model, msg.color, msg.task); }
           else if (msg.type === 'teamThinkChunk')  { appendTeamThinkChunk(msg.id, msg.color, msg.chunk); }
           else if (msg.type === 'teamResponseChunk'){ appendTeamResponseChunk(msg.id, msg.chunk); }
@@ -1414,6 +1416,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         { cmd: '/jenkins',        icon: '&#x1F6E0;', desc: '\u67e5\u8a62 Jenkins \u5efa\u7f6e\u72c0\u614b' },
         { cmd: '/compact',        icon: '&#x1F5DC;', desc: '\u58d3\u7e2e\u5c0d\u8a71\u6b77\u53f2\uff08\u91cb\u653e context \u7a7a\u9593\uff09' },
         { cmd: '/audit',          icon: '&#x1F4CB;', desc: '\u986f\u793a\u5de5\u5177\u7a3d\u6838\u65e5\u8a8c' },
+        { cmd: '/photos',         icon: '&#x1F5BC;&#xFE0F;', desc: '整理照片：辨識人物 / 行為並分類到資料夾' },
       ];
       var _slashPopup   = document.getElementById('slashPopup');
       var _slashActive  = -1;   // 目前選中的 item index
@@ -1472,6 +1475,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         }
         if (cmd === '/jira') { appendMessage('user', '/jira'); vscode.postMessage({ type: 'agentSend', prompt: '請立即呼叫 jira_list 顯示我目前指派的 Issues 清單，並以清晰格式輸出。', model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setSendEnabled(false); appendLoadingBubble(); return; }
         if (cmd === '/jenkins') { appendMessage('user', '/jenkins'); vscode.postMessage({ type: 'agentSend', prompt: '請立即呼叫 jenkins_status 查詢 Jenkins 最近建置狀態並回報結果。', model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setSendEnabled(false); appendLoadingBubble(); return; }
+        if (cmd === '/photos') { var _pb = document.getElementById('organizePhotosBtn'); if (_pb) _pb.click(); return; }
         if (cmd === '/wa') { appendMessage('user', '/wa'); vscode.postMessage({ type: 'slashCommand', cmd: 'wa' }); return; }
         // 其餘由 extension host 處理
         vscode.postMessage({ type: 'slashCommand', cmd: cmd.replace(/^\\//, ''), sessionId: _activeChatSessionId });
@@ -1619,6 +1623,10 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
 
       document.getElementById('pickFile').addEventListener('click', function() {
         vscode.postMessage({ type: 'pickFile' });
+      });
+
+      document.getElementById('organizePhotosBtn').addEventListener('click', function() {
+        vscode.postMessage({ type: 'organizePhotosPick', sessionId: _activeChatSessionId });
       });
 
       if (modelSelect) {
