@@ -49,6 +49,24 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .icon-btn{background:none;border:none;cursor:pointer;padding:3px 6px;border-radius:4px;font-size:15px;color:var(--vscode-editor-foreground);opacity:0.7;line-height:1}
       .icon-btn:hover{opacity:1;background:rgba(128,128,128,0.15)}
       .icon-btn.active{color:var(--vscode-button-background,#0e639c);opacity:1}
+      #fileModPanel{display:none;flex-direction:column;border:1px solid rgba(128,128,128,0.2);border-radius:6px;background:var(--vscode-editorWidget-background,rgba(0,0,0,0.1));margin:4px 0;overflow:hidden}
+      #fileModPanel.visible{display:flex}
+      .filemod-header{display:flex;align-items:center;gap:6px;padding:3px 8px;font-size:11px;font-weight:700;border-bottom:1px solid rgba(128,128,128,0.15);background:rgba(128,128,128,0.06)}
+      .filemod-list{overflow-y:auto;max-height:160px;padding:2px 0}
+      .filemod-item{display:flex;align-items:center;gap:6px;padding:3px 8px;cursor:pointer;font-size:11px;border-radius:3px;margin:1px 4px}
+      .filemod-item:hover{background:rgba(128,128,128,0.15)}
+      .filemod-item.selected{background:rgba(var(--vscode-button-background-rgb,14,99,156),0.18)!important;outline:1px solid rgba(var(--vscode-button-background-rgb,14,99,156),0.4)}
+      .filemod-cb{width:12px;height:12px;flex-shrink:0;cursor:pointer;accent-color:var(--vscode-button-background,#0e639c)}
+      .filemod-batch-bar{display:none;align-items:center;gap:6px;padding:3px 8px;background:rgba(14,99,156,0.12);border-top:1px solid rgba(128,128,128,0.15);font-size:11px}
+      .filemod-batch-bar.visible{display:flex}
+      .filemod-op{font-size:10px;padding:1px 5px;border-radius:3px;flex-shrink:0;font-weight:600}
+      .filemod-op.write{background:rgba(137,209,133,0.2);color:#89d185}
+      .filemod-op.replace{background:rgba(247,204,101,0.2);color:#f7cc65}
+      .filemod-op.insert{background:rgba(206,145,120,0.2);color:#ce9178}
+      .filemod-op.delete{background:rgba(241,76,76,0.2);color:#f14c4c}
+      .filemod-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.9}
+      .filemod-time{font-size:10px;opacity:0.5;flex-shrink:0}
+      .filemod-empty{padding:8px;font-size:11px;opacity:0.5;text-align:center}
       .provider-badge{display:inline-flex;align-items:center;gap:4px;min-height:22px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid rgba(128,128,128,0.25);background:rgba(128,128,128,0.1);white-space:nowrap}
       [data-provider="ollama"] .provider-badge,[data-provider="ollama"].provider-badge,.provider-label[data-provider="ollama"]{color:#4fc1ff}
       [data-provider="copilot"] .provider-badge,[data-provider="copilot"].provider-badge,.provider-label[data-provider="copilot"]{color:#f7cc65}
@@ -59,6 +77,11 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       #sendBtn{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;border-radius:8px;padding:7px 13px;cursor:pointer;font-size:16px;line-height:1;align-self:flex-end;flex-shrink:0}
       #sendBtn:disabled{opacity:0.4;cursor:default}
       #statusBar{font-size:11px;opacity:0.75;padding:1px 4px;text-align:center;min-height:14px}
+      #contextBar{display:flex;align-items:center;gap:5px;padding:1px 4px;font-size:10px;opacity:0.6;height:12px}
+      #contextBar .ctx-label{white-space:nowrap;letter-spacing:0.03em}
+      #contextBar .ctx-track{flex:1;height:3px;background:rgba(128,128,128,0.2);border-radius:2px;overflow:hidden}
+      #contextBar .ctx-fill{height:100%;border-radius:2px;transition:width 0.4s,background 0.4s}
+      #contextBar .ctx-pct{white-space:nowrap;font-variant-numeric:tabular-nums}
       #attachedFiles{padding:2px 8px;display:flex;flex-wrap:wrap;gap:4px;min-height:0}
       .file-chip{display:inline-flex;align-items:center;gap:3px;background:rgba(0,120,215,0.14);border:1px solid rgba(0,120,215,0.3);border-radius:999px;padding:1px 8px;font-size:11px}
       .file-chip .rm{padding:0 2px;font-size:11px;background:none;border:none;cursor:pointer;opacity:0.6;color:inherit;line-height:1}
@@ -183,6 +206,29 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       #statsBox h3{margin:0;font-size:14px;font-weight:700;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(128,128,128,0.2);padding-bottom:10px}
       .stats-section{border:1px solid rgba(128,128,128,0.2);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
       .stats-section-title{font-size:12px;font-weight:700;opacity:0.9;margin:0 0 4px}
+      /* 模型管理 Modal */
+      #modelMgmtModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:flex-start;justify-content:center;padding-top:40px}
+      #modelMgmtModal.open{display:flex}
+      #modelMgmtBox{background:var(--vscode-editor-background);border:1px solid rgba(128,128,128,0.35);border-radius:10px;padding:18px;width:min(520px,95vw);max-height:82vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
+      #modelMgmtBox h3{margin:0;font-size:14px;font-weight:700;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(128,128,128,0.2);padding-bottom:10px}
+      #modelMgmtBox h3 .mem-close-btn{background:none;border:none;cursor:pointer;font-size:18px;opacity:0.6;color:inherit;padding:0 4px;line-height:1}
+      #modelMgmtBox h3 .mem-close-btn:hover{opacity:1}
+      .mgmt-section{border:1px solid rgba(128,128,128,0.2);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+      .mgmt-section-title{font-size:12px;font-weight:700;opacity:0.9;margin:0}
+      .mgmt-model-list{display:flex;flex-direction:column;gap:3px;max-height:220px;overflow-y:auto}
+      .mgmt-model-row{display:flex;align-items:center;justify-content:space-between;padding:4px 6px;border-radius:4px;font-size:12px;background:rgba(128,128,128,0.06)}
+      .mgmt-model-row:hover{background:rgba(128,128,128,0.12)}
+      .mgmt-model-name{flex:1;word-break:break-all;opacity:0.9}
+      .mgmt-delete-btn{font-size:11px;padding:2px 8px;cursor:pointer;border-radius:3px;background:rgba(220,80,80,0.15);border:1px solid rgba(220,80,80,0.4);color:var(--vscode-errorForeground,#f48771);flex-shrink:0;margin-left:6px}
+      .mgmt-delete-btn:hover{background:rgba(220,80,80,0.3)}
+      .mgmt-pull-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+      #mgmtPullInput{flex:1;min-width:140px;font-size:12px;padding:4px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));border-radius:4px;outline:none}
+      #mgmtPullInput:focus{border-color:var(--vscode-focusBorder,#007fd4)}
+      #mgmtServerSelect{font-size:11px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
+      #mgmtPullBtn{font-size:11px;padding:4px 12px;cursor:pointer;border-radius:4px;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;flex-shrink:0}
+      #mgmtPullBtn:hover{opacity:0.88}
+      #mgmtPullBtn:disabled{opacity:0.4;cursor:default}
+      #mgmtPullProgress{font-size:11px;opacity:0.75;margin:0;word-break:break-all;min-height:16px}
       .latency-bar-row{display:flex;align-items:center;gap:6px;font-size:11px;margin:1px 0}
       .latency-bar-label{width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.8;text-align:right;flex-shrink:0}
       .latency-bar-track{flex:1;background:rgba(128,128,128,0.15);border-radius:3px;height:12px;overflow:hidden}
@@ -290,6 +336,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           <select id="modelSelect" aria-label="選擇模型">${optionsHtml}</select>
           <span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
           <button class="icon-btn" id="refreshModels" title="重整模型 / 測試連線" aria-label="重整模型 / 測試連線">🔄</button>
+          <button class="icon-btn" id="manageModels" title="管理 Ollama 模型（新增 / 刪除）" aria-label="管理 Ollama 模型">⚙️</button>
         </div>
         <div class="toolbar-group" aria-label="聊天模式">
           <button class="icon-btn" id="pickFile" title="附加檔案" aria-label="附加檔案">📎</button>
@@ -303,6 +350,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         <div class="toolbar-group" aria-label="工具與面板">
           <button class="icon-btn" id="memBtn" title="記憶管理" aria-label="記憶管理">🧠</button>
           <button class="icon-btn" id="statsBtn" title="使用統計 / 效能分析" aria-label="使用統計 / 效能分析">📊</button>
+          <button class="icon-btn" id="autoApproveBtn" title="全自動批准所有修改（無需確認）" aria-label="全自動批准">🚀</button>
+          <button class="icon-btn" id="fileModBtn" title="顯示/隱藏修改記錄清單" aria-label="修改記錄">📋</button>
           <button class="icon-btn" id="clear" title="清除對話" aria-label="清除對話">🗑</button>
           <button class="icon-btn" id="debugBtn" title="Debug Console" aria-label="Debug Console" style="font-size:12px;">🐛</button>
         </div>
@@ -407,6 +456,24 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         <span>💚 WhatsApp Web 已連線 <span id="waPhoneNum" style="font-weight:600;margin-left:4px"></span></span>
         <button id="waDiscBtn">斷線</button>
       </div>
+      <div id="fileModPanel">
+        <div class="filemod-header">
+          <input type="checkbox" id="fileModSelectAll" class="filemod-cb" title="全選/取消全選">
+          <span>📋 修改記錄（本次 Session）</span>
+          <span id="fileModCount" style="opacity:0.6">0 項</span>
+          <span style="flex:1"></span>
+          <button class="icon-btn" id="fileModClear" style="font-size:11px;padding:1px 6px" title="清除記錄">清除</button>
+        </div>
+        <div class="filemod-list" id="fileModList"><div class="filemod-empty">尚無修改記錄</div></div>
+        <div class="filemod-batch-bar" id="fileModBatchBar">
+          <span id="fileModSelCount" style="opacity:0.7">已選 0</span>
+          <span style="flex:1"></span>
+          <button class="icon-btn" id="fileModBatchOpen" style="font-size:11px;padding:1px 6px" title="批次在編輯器開啟">📂 開啟全部</button>
+          <button class="icon-btn" id="fileModBatchDiff" style="font-size:11px;padding:1px 6px" title="依序在 diff 分頁開啟">🔀 Diff</button>
+          <button class="icon-btn" id="fileModBatchClear" style="font-size:11px;padding:1px 6px;color:#e05252" title="從記錄中移除已選項目">🗑 移除</button>
+        </div>
+      </div>
+      <div id="contextBar"><span class="ctx-label">Context</span><div class="ctx-track"><div class="ctx-fill" style="width:0%;background:#4ec9b0"></div></div><span class="ctx-pct">—</span></div>
       <div id="statusBar"></div>
     </div>
     <div id="waQrModal">
@@ -476,6 +543,24 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         </div>
       </div>
     </div>
+    <div id="modelMgmtModal">
+      <div id="modelMgmtBox">
+        <h3>&#x2699;&#xFE0F; Ollama 模型管理 <button class="mem-close-btn" id="modelMgmtClose">&#x2715;</button></h3>
+        <div class="mgmt-section">
+          <p class="mgmt-section-title">&#x1F4E5; 拉取新模型</p>
+          <div class="mgmt-pull-row">
+            <select id="mgmtServerSelect" aria-label="選擇 Ollama 伺服器"></select>
+            <input id="mgmtPullInput" type="text" placeholder="模型名稱，例如 llama3.2:latest" autocomplete="off" spellcheck="false">
+            <button id="mgmtPullBtn">&#x25B6; 拉取</button>
+          </div>
+          <p id="mgmtPullProgress"></p>
+        </div>
+        <div class="mgmt-section">
+          <p class="mgmt-section-title">&#x1F5D1;&#xFE0F; 已安裝的模型</p>
+          <div id="mgmtModelList" class="mgmt-model-list"><span style="font-size:11px;opacity:0.5">載入中…</span></div>
+        </div>
+      </div>
+    </div>
     <div id="statsModal">
       <div id="statsBox">
         <h3>&#x1F4CA; 使用統計 &amp; 效能分析 <button class="mem-close-btn" id="statsClose">&#x2715;</button></h3>
@@ -534,6 +619,36 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         if (modelId.indexOf('copilot::') === 0 || modelId.indexOf('copilot/') === 0) return 'copilot';
         if (modelId.indexOf('openai::') === 0) return 'openai';
         return 'ollama';
+      }
+
+      // 判斷模型是否支援 thinking（與 ollama-chat.ts 的 supportsThinking 邏輯保持同步）
+      // 注意：本檔位於 TS template literal 內，regex 中的反斜線需用 \\ 雙跳脫
+      function modelSupportsThinking(modelId, label) {
+        function check(s) {
+          if (!s) return false;
+          var raw = String(s).toLowerCase();
+          // 去除 provider 前綴與 ollama 多伺服器編碼
+          raw = raw.replace(/^copilot::/, '');
+          raw = raw.replace(/^openai::[^|]*\\|\\|/, '').replace(/^openai::/, '');
+          // ollama: http://host:port||model
+          var sepIdx = raw.indexOf('||');
+          if (sepIdx !== -1) raw = raw.slice(sepIdx + 2);
+          // ollama label: [host:port] model
+          raw = raw.replace(/^\\[[^\\]]+\\]\\s*/, '');
+          // copilot / openai 的 reasoning 系列（o1/o3/o4 / gpt-5-thinking 等）
+          if (/(^|[\\/:_-])(o1|o3|o4)([\\/:_.-]|$)/.test(raw)) return true;
+          if (raw.indexOf('thinking') !== -1 || raw.indexOf('reasoning') !== -1) return true;
+          // ollama 模型：去 hf.co/<user>/ 與其他路徑前綴
+          var m = raw.replace(/^hf\\.co\\/[^/]+\\//i, '').replace(/^.*\\//, '');
+          if (m.indexOf('coder') !== -1 || m.indexOf('-instruct') !== -1 || m.indexOf(':instruct') !== -1) return false;
+          return m.indexOf('deepseek-r1') === 0 || m.indexOf('deepseek-r2') === 0 ||
+            m.indexOf('qwq') === 0 ||
+            (m.indexOf('qwen3') === 0 && m.indexOf('coder') === -1) ||
+            m.indexOf(':thinking') !== -1 || m.indexOf('-thinking') !== -1 ||
+            m.indexOf('think') !== -1 || m.indexOf('-r1') !== -1 || m.indexOf(':r1') !== -1 ||
+            m.indexOf('r1-') !== -1 || /^r1[:.-]/.test(m);
+        }
+        return check(modelId) || check(label);
       }
 
       function applyProviderInfo(providerInfo) {
@@ -653,11 +768,11 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
           if (debugPanel && debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
           if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); if (statusBar && msg.tokens) { var _aML = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F'); statusBar.textContent = _aML + '\u2003\u2014\u2003~' + msg.tokens + ' tokens'; } }
-          else if (msg.type === 'streamStart')   { _streamNode = null; /* dots stay until first thinkChunk/assistantChunk */ }
-          else if (msg.type === 'thinkChunk')    { appendThinkChunk(msg.chunk, msg.model); }
-          else if (msg.type === 'assistantChunk'){ appendChunk(msg.chunk); }
-          else if (msg.type === 'streamAbort')   { if (_streamNode && chat.contains(_streamNode)) { _streamNode.remove(); } _streamNode = null; }
-          else if (msg.type === 'streamEnd')     { _agentStepNode = null; setSendEnabled(true);
+          else if (msg.type === 'streamStart')   { startStreamThinkingPlaceholder(); }
+          else if (msg.type === 'thinkChunk')    { clearStreamThinkingPlaceholder(); appendThinkChunk(msg.chunk, msg.model); }
+          else if (msg.type === 'assistantChunk'){ clearStreamThinkingPlaceholder(); appendChunk(msg.chunk); }
+          else if (msg.type === 'streamAbort')   { clearStreamThinkingPlaceholder(); if (_streamNode && chat.contains(_streamNode)) { _streamNode.remove(); } _streamNode = null; }
+          else if (msg.type === 'streamEnd')     { clearStreamThinkingPlaceholder(); _agentStepNode = null; setSendEnabled(true);
             var _sbE = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null;
             if (_sbE) {
               var _tb = _sbE.querySelector('.stream-token-badge');
@@ -747,6 +862,15 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
           else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm, msg.diff); }
+          else if (msg.type === 'fileModified') {
+            _fileMods.unshift({ filePath: msg.filePath, op: msg.op, ts: msg.ts || Date.now() });
+            if (_fileMods.length > 100) { _fileMods.pop(); }
+            renderFileMods();
+            // 若 panel 尚未顯示，在 fileModBtn 上顯示小標記
+            if (fileModBtn && !fileModPanel.classList.contains('visible')) {
+              fileModBtn.classList.add('active');
+            }
+          }
           else if (msg.type === 'waQrCode') {
             var _wqm = document.getElementById('waQrModal');
             var _wqi = document.getElementById('waQrImg');
@@ -792,6 +916,17 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
           else if (msg.type === 'memoryLoaded')  { onMemoryLoaded(msg); }
           else if (msg.type === 'memorySaved')   { var slb = document.getElementById('saveLtmBtn'); if (slb) { slb.textContent = '\u2713 \u5df2\u5132\u5b58'; setTimeout(function() { slb.textContent = '\uD83D\uDCBE \u5132\u5b58\u9577\u671f\u8a18\u61b6'; }, 1500); } }
+          else if (msg.type === 'contextPercent') {
+            var _cb = document.getElementById('contextBar');
+            if (_cb) {
+              var _pct = Math.min(msg.pct || 0, 100);
+              var _fillColor = _pct < 50 ? '#4ec9b0' : _pct < 75 ? '#dcdcaa' : _pct < 90 ? '#ce9178' : '#f44747';
+              var _fill = _cb.querySelector('.ctx-fill');
+              var _pctEl = _cb.querySelector('.ctx-pct');
+              if (_fill) { _fill.style.width = _pct + '%'; _fill.style.background = _fillColor; }
+              if (_pctEl) _pctEl.textContent = Math.round(_pct) + '% (~' + (msg.tokens || 0) + '/' + (msg.threshold || 8000) + ' tok)';
+            }
+          }
           else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; } }
           else if (msg.type === 'consolidateStart') { var cs = document.getElementById('consolidateStatus'); if (cs) { cs.style.display = ''; cs.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026'; } var clb = document.getElementById('consolidateLtmBtn'); if (clb) clb.disabled = true; }
           else if (msg.type === 'consolidateChunk') { var cs2 = document.getElementById('consolidateStatus'); if (cs2) cs2.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026 ' + (msg.chunk || '').slice(0, 40); }
@@ -864,6 +999,13 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           }
           // \u5c1a\u7126\u8f38\u5165\u6846\uff08\u5feb\u6377\u9375 Ctrl+L\uff09
           else if (msg.type === 'focusInput') { var pEl = document.getElementById('prompt'); if (pEl) pEl.focus(); }
+          // 模型管理
+          else if (msg.type === 'ollamaModelsForManage') { if (window._onOllamaModelsForManage) window._onOllamaModelsForManage(msg.servers); }
+          else if (msg.type === 'ollamaModelDeleted')    { if (window._onOllamaModelDeleted) window._onOllamaModelDeleted(msg.model); }
+          else if (msg.type === 'ollamaModelDeleteError'){ if (window._onOllamaModelDeleteError) window._onOllamaModelDeleteError(msg.model, msg.error); }
+          else if (msg.type === 'ollamaModelPullProgress'){ if (window._onOllamaModelPullProgress) window._onOllamaModelPullProgress(msg.model, msg.status, msg.pct); }
+          else if (msg.type === 'ollamaModelPulled')     { if (window._onOllamaModelPulled) window._onOllamaModelPulled(msg.model); }
+          else if (msg.type === 'ollamaModelPullError')  { if (window._onOllamaModelPullError) window._onOllamaModelPullError(msg.model, msg.error); }
         } catch(e) { dbg('CATCH: ' + (e && e.message ? e.message : String(e))); }
       });
 
@@ -1685,6 +1827,58 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         return b;
       }
 
+      // 串流啟動時的「思考中」佔位指示器（含 elapsed timer）
+      function startStreamThinkingPlaceholder() {
+        clearPendingBubble();
+        // 若已有 stream node（前一輪 tool call 後的延續），先清除舊 placeholder
+        clearStreamThinkingPlaceholder();
+        const bubble = getStreamBubble();
+        // 若 bubble 內已有實際回應內容（response-body），就不再顯示 placeholder
+        if (bubble.querySelector('.response-body')) {
+          return;
+        }
+        // 若已有 think 區塊（thinking 模型），不重複建立
+        if (bubble.querySelector('details.think')) {
+          return;
+        }
+        // 依當前選定模型判斷是「思考中」還是「等待回應」
+        var _curOpt = modelSelect ? modelSelect.options[modelSelect.selectedIndex] : null;
+        var _isThinking = !!(_curOpt && _curOpt.dataset && _curOpt.dataset.thinking);
+        var _waitText = _isThinking ? '\u{1F914} \u601d\u8003\u4e2d\u2026' : '\u23F3 \u7B49\u5F85\u56DE\u61C9\u2026';
+        // 建立與 appendThinkChunk 相同樣式的 details.think 框，
+        // 但標示為 placeholder（無實際內容），收到第一個 chunk 時清除。
+        const d = document.createElement('details');
+        d.className = 'think stream-thinking-placeholder';
+        d.setAttribute('open', '');
+        const s = document.createElement('summary');
+        const icon = document.createElement('span'); icon.className = 'think-icon pulse';
+        const label = document.createElement('span'); label.className = 'think-label';
+        label.textContent = _waitText + ' (0s)';
+        s.appendChild(icon); s.appendChild(label);
+        const p = document.createElement('pre'); p.className = 'think-stream';
+        p.textContent = '';
+        p.style.opacity = '0.55';
+        p.style.fontStyle = 'italic';
+        d.appendChild(s); d.appendChild(p);
+        if (bubble.firstChild) { bubble.insertBefore(d, bubble.firstChild); } else { bubble.appendChild(d); }
+        d._startTs = Date.now();
+        d._timer = setInterval(function() {
+          if (!document.body.contains(d)) { clearInterval(d._timer); return; }
+          const secs = Math.round((Date.now() - d._startTs) / 1000);
+          label.textContent = _waitText + ' (' + secs + 's)';
+        }, 500);
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      function clearStreamThinkingPlaceholder() {
+        if (!_streamNode || !chat.contains(_streamNode)) return;
+        const ph = _streamNode.querySelector('details.think.stream-thinking-placeholder');
+        if (ph) {
+          if (ph._timer) { clearInterval(ph._timer); ph._timer = null; }
+          ph.remove();
+        }
+      }
+
       function appendThinkChunk(chunk, modelName) {
         clearPendingBubble();
         const bubble = getStreamBubble();
@@ -2360,10 +2554,12 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           providerGroups[groupKey].forEach(function(model) {
             var opt = document.createElement('option');
             opt.value = model.id;
-            opt.textContent = model.label + (model.multiplier ? '  ' + model.multiplier : '');
+            var thinkMark = modelSupportsThinking(model.id, model.label) ? ' 💭' : '';
+            opt.textContent = model.label + thinkMark + (model.multiplier ? '  ' + model.multiplier : '');
             opt.dataset.provider = model.provider || inferProviderFromModelId(model.id);
             opt.dataset.providerLabel = model.providerLabel || getProviderAppearance(opt.dataset.provider).label;
             if (model.multiplier) opt.dataset.multiplier = model.multiplier;
+            if (thinkMark) opt.dataset.thinking = '1';
             if (model.id === current || model.label === current) opt.selected = true;
             grp.appendChild(opt);
             hasAny = true;
@@ -2509,6 +2705,144 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       if (statsModal) statsModal.addEventListener('click', function(e) { if (e.target === statsModal) statsModal.classList.remove('open'); });
       var statsResetBtn = document.getElementById('statsResetBtn');
       if (statsResetBtn) statsResetBtn.addEventListener('click', function() { vscode.postMessage({ type: 'resetUsage' }); });
+
+      // ── 模型管理 Modal ──────────────────────────────────────────────────────
+      var modelMgmtModal = document.getElementById('modelMgmtModal');
+      var manageModelsBtn = document.getElementById('manageModels');
+      var modelMgmtClose = document.getElementById('modelMgmtClose');
+      var mgmtServerSelect = document.getElementById('mgmtServerSelect');
+      var mgmtPullInput = document.getElementById('mgmtPullInput');
+      var mgmtPullBtn = document.getElementById('mgmtPullBtn');
+      var mgmtPullProgress = document.getElementById('mgmtPullProgress');
+      var mgmtModelList = document.getElementById('mgmtModelList');
+      var _mgmtPulling = false;
+      var _mgmtServers = []; // [{url, models:[]}]
+
+      function renderMgmtModelList() {
+        if (!mgmtModelList) return;
+        var html = '';
+        _mgmtServers.forEach(function(srv) {
+          if (_mgmtServers.length > 1) {
+            html += '<div style="font-size:10px;opacity:0.55;padding:2px 4px;margin-top:4px">' + srv.url + '</div>';
+          }
+          if (!srv.models || srv.models.length === 0) {
+            html += '<div style="font-size:11px;opacity:0.45;padding:3px 6px">（無模型）</div>';
+          } else {
+            srv.models.forEach(function(m) {
+              html += '<div class="mgmt-model-row">' +
+                '<span class="mgmt-model-name">' + m.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>' +
+                '<button class="mgmt-delete-btn" data-url="' + srv.url.replace(/"/g,'&quot;') + '" data-model="' + m.replace(/"/g,'&quot;') + '">&#x1F5D1; 刪除</button>' +
+                '</div>';
+            });
+          }
+        });
+        mgmtModelList.innerHTML = html || '<span style="font-size:11px;opacity:0.5">尚無資料</span>';
+        mgmtModelList.querySelectorAll('.mgmt-delete-btn').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            var url = btn.getAttribute('data-url');
+            var model = btn.getAttribute('data-model');
+            if (!url || !model) return;
+            // VS Code webview 不支援 confirm()，改用 row 內嵌確認
+            var row = btn.closest('.mgmt-model-row');
+            if (!row) return;
+            // 若已有確認列，移除（取消）
+            var existing = row.querySelector('.mgmt-confirm-row');
+            if (existing) { existing.remove(); return; }
+            var confirmDiv = document.createElement('div');
+            confirmDiv.className = 'mgmt-confirm-row';
+            confirmDiv.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:4px;font-size:11px;color:var(--vscode-errorForeground,#f48771)';
+            confirmDiv.innerHTML = '<span>確定刪除？</span>' +
+              '<button class="mgmt-delete-btn" style="background:rgba(220,80,80,0.35)">✔ 確認</button>' +
+              '<button class="mem-btn" style="font-size:11px;padding:2px 8px">✕ 取消</button>';
+            row.appendChild(confirmDiv);
+            confirmDiv.querySelector('.mgmt-delete-btn').addEventListener('click', function() {
+              confirmDiv.remove();
+              btn.disabled = true;
+              btn.textContent = '刪除中…';
+              vscode.postMessage({ type: 'deleteOllamaModel', url: url, model: model });
+            });
+            confirmDiv.querySelector('.mem-btn').addEventListener('click', function() {
+              confirmDiv.remove();
+            });
+          });
+        });
+      }
+
+      function populateMgmtServerSelect() {
+        if (!mgmtServerSelect) return;
+        mgmtServerSelect.innerHTML = '';
+        _mgmtServers.forEach(function(srv) {
+          var opt = document.createElement('option');
+          opt.value = srv.url;
+          opt.textContent = srv.url;
+          mgmtServerSelect.appendChild(opt);
+        });
+      }
+
+      if (manageModelsBtn) {
+        manageModelsBtn.addEventListener('click', function() {
+          if (modelMgmtModal) modelMgmtModal.classList.add('open');
+          if (mgmtModelList) mgmtModelList.innerHTML = '<span style="font-size:11px;opacity:0.5">載入中…</span>';
+          if (mgmtPullProgress) mgmtPullProgress.textContent = '';
+          vscode.postMessage({ type: 'listOllamaModelsForManage' });
+        });
+      }
+      if (modelMgmtClose) modelMgmtClose.addEventListener('click', function() { if (modelMgmtModal) modelMgmtModal.classList.remove('open'); });
+      if (modelMgmtModal) modelMgmtModal.addEventListener('click', function(e) { if (e.target === modelMgmtModal) modelMgmtModal.classList.remove('open'); });
+
+      if (mgmtPullBtn) {
+        mgmtPullBtn.addEventListener('click', function() {
+          if (_mgmtPulling) return;
+          var modelName = mgmtPullInput ? mgmtPullInput.value.trim() : '';
+          var serverUrl = mgmtServerSelect ? mgmtServerSelect.value : '';
+          if (!modelName) { if (mgmtPullProgress) mgmtPullProgress.textContent = '⚠️ 請輸入模型名稱'; return; }
+          if (!serverUrl) { if (mgmtPullProgress) mgmtPullProgress.textContent = '⚠️ 無可用伺服器'; return; }
+          _mgmtPulling = true;
+          mgmtPullBtn.disabled = true;
+          if (mgmtPullProgress) mgmtPullProgress.textContent = '⏳ 拉取中…';
+          vscode.postMessage({ type: 'pullOllamaModel', url: serverUrl, model: modelName });
+        });
+      }
+      if (mgmtPullInput) {
+        mgmtPullInput.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') { if (mgmtPullBtn) mgmtPullBtn.click(); }
+        });
+      }
+
+      // 訊息處理：模型管理相關
+      // 在 window.addEventListener('message') 的 catch block 之外無法直接插入，
+      // 改由訊息分發處已在上方 msg handler 中以 else if 補充，
+      // 這裡提供一個 helper 以便被那段 code 呼叫。
+      window._onOllamaModelsForManage = function(servers) {
+        _mgmtServers = servers || [];
+        populateMgmtServerSelect();
+        renderMgmtModelList();
+      };
+      window._onOllamaModelDeleted = function(model) {
+        if (mgmtPullProgress) mgmtPullProgress.textContent = '✅ 已刪除：' + model;
+        vscode.postMessage({ type: 'listOllamaModelsForManage' });
+      };
+      window._onOllamaModelDeleteError = function(model, err) {
+        if (mgmtPullProgress) mgmtPullProgress.textContent = '❌ 刪除失敗：' + err;
+        vscode.postMessage({ type: 'listOllamaModelsForManage' });
+      };
+      window._onOllamaModelPullProgress = function(model, status, pct) {
+        if (mgmtPullProgress) {
+          mgmtPullProgress.textContent = '⏳ ' + status + (pct !== null && pct !== undefined ? '  ' + pct + '%' : '');
+        }
+      };
+      window._onOllamaModelPulled = function(model) {
+        _mgmtPulling = false;
+        if (mgmtPullBtn) mgmtPullBtn.disabled = false;
+        if (mgmtPullProgress) mgmtPullProgress.textContent = '✅ 已完成：' + model;
+        if (mgmtPullInput) mgmtPullInput.value = '';
+        vscode.postMessage({ type: 'listOllamaModelsForManage' });
+      };
+      window._onOllamaModelPullError = function(model, err) {
+        _mgmtPulling = false;
+        if (mgmtPullBtn) mgmtPullBtn.disabled = false;
+        if (mgmtPullProgress) mgmtPullProgress.textContent = '❌ 拉取失敗：' + err;
+      };
 
       var memModal = document.getElementById('memModal');
       var memBtn = document.getElementById('memBtn');
@@ -2815,6 +3149,141 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         var cat = _currentPermCategory;
         hidePermissionBar();
         vscode.postMessage({ type: 'permissionResponse', allow: false, always: false, category: cat });
+      });
+
+      // ── 全自動批准 ──────────────────────────────────────────────────────────────
+      var _autoApproveActive = false;
+      var autoApproveBtn = document.getElementById('autoApproveBtn');
+      if (autoApproveBtn) {
+        autoApproveBtn.addEventListener('click', function() {
+          _autoApproveActive = !_autoApproveActive;
+          autoApproveBtn.classList.toggle('active', _autoApproveActive);
+          autoApproveBtn.title = _autoApproveActive ? '🚀 全自動批准（已開啟，點擊關閉）' : '全自動批准所有修改（無需確認）';
+          vscode.postMessage({ type: 'autoApproveWrite', enabled: _autoApproveActive });
+        });
+      }
+
+      // ── 修改記錄 Listbox ─────────────────────────────────────────────────────────
+      var _fileMods = [];
+      var fileModPanel = document.getElementById('fileModPanel');
+      var fileModBtn = document.getElementById('fileModBtn');
+      if (fileModBtn) {
+        fileModBtn.addEventListener('click', function() {
+          if (!fileModPanel) return;
+          var vis = fileModPanel.classList.toggle('visible');
+          fileModBtn.classList.toggle('active', vis);
+        });
+      }
+      var fileModClear = document.getElementById('fileModClear');
+      if (fileModClear) {
+        fileModClear.addEventListener('click', function() {
+          _fileMods = [];
+          renderFileMods();
+        });
+      }
+      var _fileModSelected = new Set();
+      function updateBatchBar() {
+        var bar = document.getElementById('fileModBatchBar');
+        var selCountEl = document.getElementById('fileModSelCount');
+        var saEl = document.getElementById('fileModSelectAll');
+        if (bar) bar.classList.toggle('visible', _fileModSelected.size > 0);
+        if (selCountEl) selCountEl.textContent = '已選 ' + _fileModSelected.size;
+        if (saEl) saEl.indeterminate = _fileModSelected.size > 0 && _fileModSelected.size < _fileMods.length;
+        if (saEl) saEl.checked = _fileMods.length > 0 && _fileModSelected.size === _fileMods.length;
+        // 同步 DOM 選中狀態
+        var list = document.getElementById('fileModList');
+        if (list) list.querySelectorAll('.filemod-item').forEach(function(el) {
+          var idx = parseInt(el.getAttribute('data-idx') || '0');
+          el.classList.toggle('selected', _fileModSelected.has(idx));
+          var cb = el.querySelector('.filemod-cb');
+          if (cb) cb.checked = _fileModSelected.has(idx);
+        });
+      }
+      function renderFileMods() {
+        var list = document.getElementById('fileModList');
+        var countEl = document.getElementById('fileModCount');
+        if (!list) return;
+        if (countEl) countEl.textContent = _fileMods.length + ' \u9805';
+        if (_fileMods.length === 0) {
+          list.innerHTML = '<div class="filemod-empty">\u5c1a\u7121\u4fee\u6539\u8a18\u9304</div>';
+          _fileModSelected.clear();
+          updateBatchBar();
+          return;
+        }
+        // 移除已不存在的 selected index
+        for (var _si of Array.from(_fileModSelected)) { if (_si >= _fileMods.length) _fileModSelected.delete(_si); }
+        list.innerHTML = _fileMods.map(function(m, i) {
+          var fname = (m.filePath || '?').replace(/\\\\/g, '/').split('/').pop();
+          var t = new Date(m.ts || Date.now()).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          var opLabel = { write: '\u5beb\u5165', replace: '\u66ff\u63db', insert: '\u63d2\u5165', delete: '\u522a\u9664', rename: '\u6539\u540d' }[m.op] || (m.op || '?');
+          var isSel = _fileModSelected.has(i);
+          return '<div class="filemod-item' + (isSel ? ' selected' : '') + '" data-idx="' + i + '" title="' + (m.filePath || '') + '">' +
+            '<input type="checkbox" class="filemod-cb" data-idx="' + i + '"' + (isSel ? ' checked' : '') + ' title="\u9078\u53d6" onclick="event.stopPropagation()">' +
+            '<span class="filemod-op ' + (m.op || '') + '">' + opLabel + '</span>' +
+            '<span class="filemod-name">' + fname + '</span>' +
+            '<span class="filemod-time">' + t + '</span></div>';
+        }).join('');
+        list.querySelectorAll('.filemod-item').forEach(function(el) {
+          var cb = el.querySelector('.filemod-cb');
+          if (cb) cb.addEventListener('change', function(e) {
+            e.stopPropagation();
+            var idx = parseInt(cb.getAttribute('data-idx') || '0');
+            if (cb.checked) { _fileModSelected.add(idx); } else { _fileModSelected.delete(idx); }
+            updateBatchBar();
+          });
+          el.addEventListener('click', function(e) {
+            if (e.target === cb) return;
+            var idx = parseInt(el.getAttribute('data-idx') || '0');
+            // Shift 點擊：範圍選取
+            if (e.shiftKey && _fileModSelected.size > 0) {
+              var last = Math.max(...Array.from(_fileModSelected));
+              var lo = Math.min(idx, last), hi = Math.max(idx, last);
+              for (var _ri = lo; _ri <= hi; _ri++) _fileModSelected.add(_ri);
+              updateBatchBar(); return;
+            }
+            // 普通點擊：開啟檔案
+            var mod = _fileMods[idx];
+            if (mod && mod.filePath) vscode.postMessage({ type: 'openFile', filePath: mod.filePath });
+          });
+        });
+        updateBatchBar();
+      }
+      // 全選 checkbox
+      var fileModSelectAll = document.getElementById('fileModSelectAll');
+      if (fileModSelectAll) {
+        fileModSelectAll.addEventListener('change', function() {
+          if (fileModSelectAll.checked) { _fileMods.forEach(function(_, i) { _fileModSelected.add(i); }); }
+          else { _fileModSelected.clear(); }
+          renderFileMods();
+        });
+      }
+      // 批次操作按鈕
+      var fileModBatchOpen = document.getElementById('fileModBatchOpen');
+      if (fileModBatchOpen) fileModBatchOpen.addEventListener('click', function() {
+        Array.from(_fileModSelected).forEach(function(i) {
+          var m = _fileMods[i]; if (m && m.filePath) vscode.postMessage({ type: 'openFile', filePath: m.filePath });
+        });
+      });
+      var fileModBatchDiff = document.getElementById('fileModBatchDiff');
+      if (fileModBatchDiff) fileModBatchDiff.addEventListener('click', function() {
+        var sel = Array.from(_fileModSelected).sort(function(a,b){return a-b;});
+        if (sel.length < 2) {
+          var m = _fileMods[sel[0]]; if (m && m.filePath) vscode.postMessage({ type: 'openFile', filePath: m.filePath });
+          return;
+        }
+        for (var _di2 = 0; _di2 < sel.length - 1; _di2++) {
+          var ma = _fileMods[sel[_di2]], mb = _fileMods[sel[_di2+1]];
+          if (ma && mb && ma.filePath && mb.filePath) {
+            vscode.postMessage({ type: 'diffFiles', pathA: ma.filePath, pathB: mb.filePath });
+          }
+        }
+      });
+      var fileModBatchClear = document.getElementById('fileModBatchClear');
+      if (fileModBatchClear) fileModBatchClear.addEventListener('click', function() {
+        var indices = Array.from(_fileModSelected).sort(function(a,b){return b-a;});
+        indices.forEach(function(i) { _fileMods.splice(i, 1); });
+        _fileModSelected.clear();
+        renderFileMods();
       });
 
       var waQrCancelBtn = document.getElementById('waQrCancelBtn');

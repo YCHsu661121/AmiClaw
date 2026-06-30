@@ -4,7 +4,7 @@
   "description": "AMI-AiClaw - Local Ollama AI assistant for code generation, Agent automation, and multi-model collaboration.",
   "author": "Y.C. Hsu",
   "license": "MIT",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "localdev",
   "icon": "AMI-AiClaw.png",
   "engines": { "vscode": "^1.90.0" },
@@ -31,7 +31,7 @@
     "@whiskeysockets/baileys": "^6.7.18",
     "qrcode": "^1.5.4"
   },
-  "activationEvents": ["*", "onCommand:amiAiClaw.chat", "onCommand:amiAiClaw.sendToChat", "onView:amiAiClaw.openChat"],
+  "activationEvents": ["*"],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -44,6 +44,11 @@
     },
     "views": {
       "amiAiClaw": [
+        {
+          "id": "amiAiClaw.chatView",
+          "name": "AMI-AiClaw",
+          "type": "webview"
+        },
         {
           "id": "amiAiClaw.openChat",
           "name": "聊天記錄",
@@ -89,6 +94,26 @@
         "command": "amiAiClaw.jira",
         "title": "AMI-AiClaw: Jira 快速指令",
         "icon": "$(tasklist)"
+      }
+      ,
+      {
+        "command": "amiAiClaw.debugWriteMemory",
+        "title": "AMI-AiClaw: Debug Write MEMORY.md"
+      }
+      ,
+      {
+        "command": "amiAiClaw.migrateMemory",
+        "title": "AMI-AiClaw: Migrate global MEMORY to workspace"
+      }
+      ,
+      {
+        "command": "amiAiClaw.showFileCount",
+        "title": "AMI-AiClaw: Show workspace file count"
+      }
+      ,
+      {
+        "command": "amiAiClaw.execFileCountShell",
+        "title": "AMI-AiClaw: Exec shell file-count (ls/dir)"
       }
     ],
     "keybindings": [
@@ -203,6 +228,38 @@
             "default": false,
             "description": "Agent 模式中自動允許鍪案寫入與變更（write_file、replace_in_file），不彈出確認提示。刪除與機密操作仍然需要確認。"
           },
+          "amiAiClaw.autoIncludeActiveFile": {
+            "type": "boolean",
+            "default": true,
+            "description": "自動把目前作用中編輯器的檔案內容附帶到 system prompt（類似 GitHub Copilot 的隱含上下文），Ask 與 Agent 模式皆生效。關閉可節省 token。"
+          },
+          "amiAiClaw.autoIncludeActiveMaxKb": {
+            "type": "number",
+            "default": 16,
+            "minimum": 1,
+            "maximum": 64,
+            "description": "自動附帶作用中檔案內容的最大 KB（超過會截斷，模型可呼叫 read_file 取完整內容）。"
+          },
+          "amiAiClaw.expandFileMentions": {
+            "type": "boolean",
+            "default": true,
+            "description": "自動展開使用者訊息中的檔案/目錄提及（#file:path、#path:path、@path、`path.ext`），讀取內容附加到 prompt（類似 GitHub Copilot 的 #file 機制）。"
+          },
+          "amiAiClaw.autoMemoryEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "啟用檔案型自動記憶（將長期記憶儲存於 workspace 對應的 memory 目錄，如 .amiclaw/projects/{proj}/memory）。關閉時僅使用 globalState 快取。"
+          },
+          "amiAiClaw.memoryDir": {
+            "type": "string",
+            "default": "",
+            "description": "可選：指定記憶資料夾完整路徑以覆寫預設（支援絕對路徑）。若留空則使用預設計算的 workspace-scoped memory 目錄。"
+          },
+          "amiAiClaw.askModeTools": {
+            "type": "boolean",
+            "default": true,
+            "description": "💬 Ask 模式下允許模型使用唯讀工具（read_file、read_files、list_dir、search_workspace、search_regex、git_status/diff/log），自動讀取需要的檔案上下文。寫入/執行類工具會被拒絕。需要支援 tools API 的模型（如 qwen2.5、llama3.1）；不支援時自動退回純對話。"
+          },
           "amiAiClaw.waAgentAllowedSenders": {
             "type": "array",
             "items": { "type": "string" },
@@ -275,6 +332,26 @@
             "type": "string",
             "default": "SeamlessBuild",
             "description": "jenkins_build / jenkins_status 工具未指定 job 時使用的預設 Job 名稱（預設 SeamlessBuild）。"
+          },
+          "amiAiClaw.jenkinsUseVscodeCommand": {
+            "type": "boolean",
+            "default": true,
+            "description": "啟用後，jenkins_build / jenkins_status 改為呼叫 VS Code 外掛指令（VisualeBios），不走 Jenkins HTTP API。可避免內網域名解析（如 localdev.visualebios）失敗。關閉則走 jenkinsUrl 進行 HTTP 觸發。"
+          },
+          "amiAiClaw.jenkinsBuildCommand": {
+            "type": "string",
+            "default": "visualebios.jenkins.build",
+            "description": "啟用 jenkinsUseVscodeCommand 時，jenkins_build (mode=build) 對應的 VS Code 指令 ID。預設使用 VisualeBios 外掛。"
+          },
+          "amiAiClaw.jenkinsRebuildCommand": {
+            "type": "string",
+            "default": "visualebios.jenkins.rebuild",
+            "description": "啟用 jenkinsUseVscodeCommand 時，jenkins_build (mode=rebuild) 對應的 VS Code 指令 ID。"
+          },
+          "amiAiClaw.jenkinsHistoryCommand": {
+            "type": "string",
+            "default": "visualebios.jenkins.showBuildHistory",
+            "description": "啟用 jenkinsUseVscodeCommand 時，jenkins_status 對應的 VS Code 指令 ID（顯示建置歷史）。"
           },
           "amiAiClaw.enableDebugLog": {
             "type": "boolean",

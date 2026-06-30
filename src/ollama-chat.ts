@@ -14,9 +14,32 @@ import { WhatsAppManager } from './integrations/WhatsAppManager';
 import { ToolExecutor, type ToolPermissionDiff } from './tools/ToolExecutor';
 import { TeamManager } from './team/TeamManager';
 import { DebateEngine } from './debate/DebateEngine';
-import { QueryEngine } from './chat/QueryEngine';
+import { QueryEngine, QueryEngineServices } from './chat/QueryEngine';
+import * as memdir from './memdir/memdir';
 import { AgentExecutor } from './chat/AgentExecutor';
 import type { AgentExecutorServices } from './chat/AgentExecutor';
+
+// ── PanelLike：WebviewPanel 與 WebviewView 共用介面 ──────────────────────────
+interface PanelLike {
+  readonly webview: vscode.Webview;
+  readonly onDidDispose: vscode.Event<void>;
+  dispose(): void;
+  reveal?(col?: vscode.ViewColumn, preserveFocus?: boolean): void;
+}
+
+/** WebviewView（固定側邊欄）→ PanelLike 轉接器 */
+class WebviewViewAdapter implements PanelLike {
+  readonly webview: vscode.Webview;
+  readonly onDidDispose: vscode.Event<void>;
+  constructor(private readonly _view: vscode.WebviewView) {
+    this.webview = _view.webview;
+    this.onDidDispose = _view.onDidDispose;
+  }
+  dispose() { /* WebviewView 不可被程式碼 dispose */ }
+  reveal(_col?: vscode.ViewColumn, preserveFocus?: boolean) {
+    this._view.show(!preserveFocus);
+  }
+}
 
 // (Copied implementation from top-level file)
 export class OllamaChatPanel {
@@ -26,7 +49,7 @@ export class OllamaChatPanel {
   /** Called by extension.ts to keep sidebar in sync */
   public static onSessionsChanged?: (sessions: { id: string; title: string }[], activeId: string) => void;
 
-  private readonly _panel: vscode.WebviewPanel;
+  private readonly _panel: PanelLike;
   private readonly _disposables: vscode.Disposable[] = [];
   private _disposed = false;
   private _streamMode = false;
@@ -48,6 +71,11 @@ export class OllamaChatPanel {
   private _usageStats: Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }> = {};
   /** 延遲記錄：每次請求完成時寫入 { model, ms, ts } */
   private _latencyLog: Array<{ model: string; ms: number; ts: number }> = [];
+  // 短期對話自動持久化相關
+  private _chatDirty = false;
+  private _persistTimer: NodeJS.Timeout | null = null;
+  private _persistDebounceMs = 500;
+  private _maxMessagesPerSession = 500;
 
   private static log(msg: string): void {
     if (!vscode.workspace.getConfiguration('amiAiClaw').get<boolean>('enableDebugLog', false)) { return; }
@@ -55,6 +83,76 @@ export class OllamaChatPanel {
       OllamaChatPanel._log = vscode.window.createOutputChannel('AMI-AiClaw');
     }
     OllamaChatPanel._log.appendLine(`[${new Date().toISOString()}] ${msg}`);
+  }
+
+  // 建立一個 Proxy 用以攔截陣列變更並標記為需要儲存
+  private createHistoryProxy(arr: ChatMessage[], sessionId: string): ChatMessage[] {
+    const that = this;
+    const target = Array.isArray(arr) ? arr : [];
+    const handler: ProxyHandler<ChatMessage[]> = {
+      set(t, prop, value) {
+        const res = Reflect.set(t, prop, value);
+        // 設定長度或數字索引時視為修改
+        if (typeof prop === 'string' && (prop === 'length' || /^\d+$/.test(prop))) {
+          that._chatDirty = true;
+          that.schedulePersistChatHistories();
+        }
+        return res;
+      },
+      get(t, prop, receiver) {
+        const v = Reflect.get(t, prop, receiver);
+        if (typeof v === 'function') {
+          const name = String(prop);
+          if (['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'fill', 'copyWithin'].includes(name)) {
+            return function (...args: any[]) {
+              const r = (Array.prototype as any)[name].apply(t, args);
+              that._chatDirty = true;
+              that.schedulePersistChatHistories();
+              return r;
+            };
+          }
+        }
+        return v;
+      }
+    };
+    const proxy = new Proxy(target, handler) as ChatMessage[];
+    (proxy as any).__isProxy = true;
+    return proxy;
+  }
+
+  // 包裝所有已存在的 histories 為 proxy
+  private wrapAllHistories(): void {
+    for (const [id, arr] of Object.entries(this._chatHistories)) {
+      if (!arr || !(arr as any).__isProxy) {
+        this._chatHistories[id] = this.createHistoryProxy(arr || [], id);
+      }
+    }
+    // 確保目前 active session 指向 proxy
+    if (!this._chatHistories[this._activeSessionId]) {
+      this._chatHistories[this._activeSessionId] = this.createHistoryProxy([], this._activeSessionId);
+    }
+    this._chatHistory = this._chatHistories[this._activeSessionId];
+  }
+
+  private schedulePersistChatHistories(): void {
+    if (this._persistTimer) { clearTimeout(this._persistTimer); }
+    this._persistTimer = setTimeout(() => { void this.persistChatHistories(); }, this._persistDebounceMs);
+  }
+
+  private async persistChatHistories(): Promise<void> {
+    if (!this._chatDirty) return;
+    try {
+      const copy: Record<string, ChatMessage[]> = {};
+      for (const [sid, arr] of Object.entries(this._chatHistories)) {
+        const msgs = Array.isArray(arr) ? arr.slice(-this._maxMessagesPerSession) : [];
+        // 將每則訊息裁切以避免巨量儲存
+        copy[sid] = msgs.map(m => ({ role: m.role, content: (m.content ?? '').slice(0, 10000) }));
+      }
+      await this._context.globalState.update('amiAiClaw.chatHistories', copy);
+      this._chatDirty = false;
+    } catch (e) {
+      OllamaChatPanel.log('persistChatHistories error: ' + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   /** 記錄一次 API 呼叫的 token 使用量，並推送更新到前端。 */
@@ -148,7 +246,7 @@ export class OllamaChatPanel {
     };
   }
 
-  private constructor(panel: vscode.WebviewPanel, context: vscode.ExtensionContext) {
+  private constructor(panel: PanelLike, context: vscode.ExtensionContext) {
     this._panel = panel;
     this._context = context;
     this._tools = new ToolExecutor({
@@ -177,6 +275,7 @@ export class OllamaChatPanel {
         encodeOllamaModelId,
         ollamaDisplayLabel,
         ollamaListModels,
+        ollamaGetContextLength,
         ollamaWarmupModel,
         ollamaUnloadModel,
         ollamaListRunningModels,
@@ -187,6 +286,12 @@ export class OllamaChatPanel {
         getCopilotMultiplierById,
         copilotStreamText,
         estimateTokens,
+        ollamaChatCallStream: ollamaChatCallStream as QueryEngineServices['ollamaChatCallStream'],
+        executeTool: (name, args) => this.executeTool(name, args),
+        getToolIcon,
+        formatToolTitle,
+        filterSensitiveInfo,
+        agentTools: AGENT_TOOLS,
       }
     );
     // ── AgentExecutor ──────────────────────────────────────────────────────────
@@ -205,6 +310,7 @@ export class OllamaChatPanel {
         setWaAgentMode: (v) => this._wa.setAgentMode(v),
         clearAgentTodos: () => this._tools.clearAgentTodos(),
         recordAuditEntry: (tool, args, error) => this._tools.recordAuditEntry(tool, args, error),
+        expandFileMentions: (p) => this._queryEngine.expandFileMentions(p),
       },
       {
         getOllamaUrls,
@@ -213,6 +319,7 @@ export class OllamaChatPanel {
         openaiCompatChatCallStream: openaiCompatChatCallStream as AgentExecutorServices['openaiCompatChatCallStream'],
         copilotChatCallWithCts: copilotChatCallWithCts as AgentExecutorServices['copilotChatCallWithCts'],
         ollamaGenerate,
+        ollamaGetContextLength,
         estimateTokens,
         getCopilotMultiplierById,
         filterSensitiveInfo,
@@ -233,7 +340,7 @@ export class OllamaChatPanel {
     this._team = new TeamManager({
       getWebview: () => this._panel.webview,
       getChatHistory: () => this._chatHistory,
-      setChatHistory: (history) => { this._chatHistory = history; this._chatHistories[this._activeSessionId] = this._chatHistory; },
+      setChatHistory: (history) => { this._chatHistory = (history as any)?.__isProxy ? history : this.createHistoryProxy(history ?? [], this._activeSessionId); this._chatHistories[this._activeSessionId] = this._chatHistory; this.schedulePersistChatHistories(); },
       getChatHistories: () => this._chatHistories,
       getActiveSessionId: () => this._activeSessionId,
       getAgentMessages: () => this._agentExecutor.getAgentMessages(),
@@ -259,7 +366,7 @@ export class OllamaChatPanel {
     this._debate = new DebateEngine({
       getWebview: () => this._panel.webview,
       getChatHistory: () => this._chatHistory,
-      setChatHistory: (history) => { this._chatHistory = history; this._chatHistories[this._activeSessionId] = this._chatHistory; },
+      setChatHistory: (history) => { this._chatHistory = (history as any)?.__isProxy ? history : this.createHistoryProxy(history ?? [], this._activeSessionId); this._chatHistories[this._activeSessionId] = this._chatHistory; this.schedulePersistChatHistories(); },
       getChatHistories: () => this._chatHistories,
       getActiveSessionId: () => this._activeSessionId,
       ensureModelReady: (baseUrl, model) => this._queryEngine.ensureModelReady(baseUrl, model),
@@ -270,6 +377,11 @@ export class OllamaChatPanel {
     });
     // 載入持久化的使用量統計
     this._usageStats = context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }>>('amiAiClaw.usageStats') ?? {};
+    // 載入先前序列化的短期對話（如有）並在稍後包成 proxy
+    const persistedChats = context.globalState.get<Record<string, ChatMessage[]>>('amiAiClaw.chatHistories') ?? undefined;
+    if (persistedChats) {
+      this._chatHistories = persistedChats as Record<string, ChatMessage[]>;
+    }
     OllamaChatPanel.log('Constructor: start');
     vscode.window.showInformationMessage('AMI-AiClaw: Extension activated');
 
@@ -341,6 +453,26 @@ export class OllamaChatPanel {
           case 'agentStop':
             this._agentExecutor.cancelAgent();
             break;
+          case 'autoApproveWrite': {
+            await vscode.workspace.getConfiguration('amiAiClaw').update('agentAutoApproveWrite', !!message.enabled, vscode.ConfigurationTarget.Workspace);
+            break;
+          }
+          case 'openFile': {
+            const fp = message.filePath as string;
+            if (fp) { await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(fp)); }
+            break;
+          }
+          case 'diffFiles': {
+            const fpA = message.pathA as string;
+            const fpB = message.pathB as string;
+            if (fpA && fpB) {
+              await vscode.commands.executeCommand('vscode.diff',
+                vscode.Uri.file(fpA), vscode.Uri.file(fpB),
+                `${fpA.split(/[\\/]/).pop()} ↔ ${fpB.split(/[\\/]/).pop()}`
+              );
+            }
+            break;
+          }
           case 'permissionResponse': {
             if (this._tools.hasPendingPermission()) {
               if (message.always) { this._tools.addAlwaysAllow(message.category as string); }
@@ -382,7 +514,8 @@ export class OllamaChatPanel {
           case 'clearHistory':
             this._agentExecutor.clearSessionMessages(this.resolveSessionId(message.sessionId));
             this.switchChatSession(message.sessionId);
-            this._chatHistory = [];
+            const empty = this.createHistoryProxy([], this._activeSessionId);
+            this._chatHistory = empty;
             this._chatHistories[this._activeSessionId] = this._chatHistory;
             this._panel.webview.postMessage({ type: 'historyCount', count: 0, sessionId: this._activeSessionId });
             break;
@@ -441,7 +574,7 @@ export class OllamaChatPanel {
               if (!Array.isArray(parsed.messages)) { throw new Error('無效的 JSON 格式：缺少 messages 陣列'); }
               const importId = 'chat-import-' + Date.now();
               const importTitle = (parsed.title ?? '匯入的對話').slice(0, 30);
-              this._chatHistories[importId] = parsed.messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content ?? '' }));
+              this._chatHistories[importId] = this.createHistoryProxy(parsed.messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content ?? '' })), importId);
               this._panel.webview.postMessage({ type: 'importDone', sessionId: importId, title: importTitle });
             } catch (e) {
               this._panel.webview.postMessage({ type: 'error', text: '匯入失敗：' + (e instanceof Error ? e.message : String(e)) });
@@ -549,6 +682,46 @@ export class OllamaChatPanel {
               );
             }
             break;
+          case 'listOllamaModelsForManage': {
+            const cfg5 = vscode.workspace.getConfiguration('amiAiClaw');
+            const mgmtUrls = getOllamaUrls(cfg5);
+            const mgmtResults: { url: string; models: string[] }[] = [];
+            for (const u of mgmtUrls) {
+              try {
+                const ms = await ollamaListModels(u);
+                mgmtResults.push({ url: u, models: ms });
+              } catch { mgmtResults.push({ url: u, models: [] }); }
+            }
+            this._panel.webview.postMessage({ type: 'ollamaModelsForManage', servers: mgmtResults });
+            break;
+          }
+          case 'deleteOllamaModel': {
+            const delUrl = message.url as string;
+            const delModel = message.model as string;
+            try {
+              await ollamaDeleteModel(delUrl, delModel);
+              this._panel.webview.postMessage({ type: 'ollamaModelDeleted', model: delModel, url: delUrl });
+              await this._queryEngine.fetchModelsFromServer();
+            } catch (e) {
+              this._panel.webview.postMessage({ type: 'ollamaModelDeleteError', model: delModel, error: e instanceof Error ? e.message : String(e) });
+            }
+            break;
+          }
+          case 'pullOllamaModel': {
+            const pullUrl = message.url as string;
+            const pullModel = (message.model as string).trim();
+            if (!pullModel) { break; }
+            try {
+              await ollamaPullModel(pullUrl, pullModel, (status, pct) => {
+                this._panel.webview.postMessage({ type: 'ollamaModelPullProgress', model: pullModel, status, pct });
+              });
+              this._panel.webview.postMessage({ type: 'ollamaModelPulled', model: pullModel, url: pullUrl });
+              await this._queryEngine.fetchModelsFromServer();
+            } catch (e) {
+              this._panel.webview.postMessage({ type: 'ollamaModelPullError', model: pullModel, error: e instanceof Error ? e.message : String(e) });
+            }
+            break;
+          }
           default:
             OllamaChatPanel.log('Unknown message type: ' + message.type);
             break;
@@ -596,7 +769,7 @@ export class OllamaChatPanel {
       } catch { /* Copilot not available */ }
       const current = _self.normalizeConfiguredModelId(cfg.get<string>('model') ?? liveModels[0]?.id ?? '');
       // 預熱模型（keep_alive=600s）：讓 Ollama 提前載入，減少第一次請求延遲
-      if (current && !current.startsWith('copilot::')) {
+      if (current && !current.startsWith('copilot::') && !current.startsWith('openai::')) {
         const { url: warmUrl, model: warmModel } = decodeOllamaModel(current, ollamaUrls);
         ollamaWarmupModel(warmUrl, warmModel);
         OllamaChatPanel.log(`Model warmup (init): ${warmModel} @ ${warmUrl}`);
@@ -641,13 +814,13 @@ export class OllamaChatPanel {
   }
 
   public static createOrShow(context: vscode.ExtensionContext) {
-    const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
-
+    // 若已有固定側邊欄（WebviewView），直接 reveal 即可
     if (OllamaChatPanel.currentPanel) {
-      OllamaChatPanel.currentPanel._panel.reveal(column, true);
+      OllamaChatPanel.currentPanel._panel.reveal?.(vscode.ViewColumn.One, true);
       return;
     }
 
+    // Fallback：用傳統 editor-column panel
     const panel = vscode.window.createWebviewPanel(
       OllamaChatPanel.viewType,
       'AMI-AiClaw',
@@ -658,30 +831,39 @@ export class OllamaChatPanel {
     OllamaChatPanel.currentPanel = new OllamaChatPanel(panel, context);
   }
 
+  /** 由 WebviewViewProvider.resolveWebviewView 呼叫，建立固定側邊欄實例 */
+  public static createFromView(view: vscode.WebviewView, context: vscode.ExtensionContext) {
+    view.webview.options = { enableScripts: true, localResourceRoots: [] };
+    if (OllamaChatPanel.currentPanel) {
+      // 已有實例：重新連結 webview（例如 VS Code 重新開啟 panel 時）
+      // 只需重設 HTML 讓前端重新初始化
+      view.webview.html = OllamaChatPanel.currentPanel.getHtmlForWebview(view.webview);
+      return;
+    }
+    const adapter = new WebviewViewAdapter(view);
+    OllamaChatPanel.currentPanel = new OllamaChatPanel(adapter, context);
+  }
+
   /**
    * 静默建立（不顯示 panel，不切換焦點）—— VS Code 開啟時自動呼叫，目的是發動 WA 自動重連。
    * 若 panel 已存在則跳過。
    */
   public static createSilent(context: vscode.ExtensionContext) {
     if (OllamaChatPanel.currentPanel) { return; }
-    const panel = vscode.window.createWebviewPanel(
-      OllamaChatPanel.viewType,
-      'AMI-AiClaw',
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
-      { enableScripts: true, retainContextWhenHidden: true }
-    );
-    // 收起避免發出邊欄進來干擾使用者
-    panel.reveal(vscode.ViewColumn.Beside, true);
-    try { panel.dispose(); } catch { /* ignore */ }
-    // 重建用 preserveFocus=true + retainContext
-    const silentPanel = vscode.window.createWebviewPanel(
-      OllamaChatPanel.viewType,
-      'AMI-AiClaw',
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
-      { enableScripts: true, retainContextWhenHidden: true }
-    );
-    OllamaChatPanel.currentPanel = new OllamaChatPanel(silentPanel, context);
-    OllamaChatPanel.log('AMI-AiClaw 已在背景初始化，WhatsApp 自動重連 開始…');
+    // WebviewView 模式：等 resolveWebviewView 被 VS Code 呼叫時自動建立，此處無需建立 panel
+    // 若 VS Code 未自動呼叫（例如使用者尚未開啟側邊欄），則建立 editor panel 作為備用
+    // 延遲 1.5s 檢查，若 createFromView 已建立則直接返回
+    setTimeout(() => {
+      if (OllamaChatPanel.currentPanel) { return; }
+      const panel = vscode.window.createWebviewPanel(
+        OllamaChatPanel.viewType,
+        'AMI-AiClaw',
+        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+        { enableScripts: true, retainContextWhenHidden: true }
+      );
+      OllamaChatPanel.currentPanel = new OllamaChatPanel(panel, context);
+      OllamaChatPanel.log('AMI-AiClaw 已在背景初始化（editor panel），WhatsApp 自動重連 開始…');
+    }, 1500);
   }
 
   private resolveSessionId(sessionId?: string): string {
@@ -692,9 +874,13 @@ export class OllamaChatPanel {
   private switchChatSession(sessionId?: string): void {
     const id = this.resolveSessionId(sessionId);
     if (!this._chatHistories[id]) {
-      this._chatHistories[id] = [];
+      this._chatHistories[id] = this.createHistoryProxy([], id);
     }
     this._activeSessionId = id;
+    // 若尚未為該 session 建立 proxy，包裝一次
+    if (!(this._chatHistories[id] as any).__isProxy) {
+      this._chatHistories[id] = this.createHistoryProxy(this._chatHistories[id] || [], id);
+    }
     this._chatHistory = this._chatHistories[id];
     this._agentExecutor.switchSession(id);
   }
@@ -748,7 +934,7 @@ export class OllamaChatPanel {
     while (this._disposables.length) { const d = this._disposables.pop(); if (d) { d.dispose(); } }
   }
 
-  private getHtmlForWebview(_webview: vscode.Webview): string {
+  public getHtmlForWebview(_webview: vscode.Webview): string {
     return getHtmlForWebview(_webview);
   }
 
@@ -843,7 +1029,12 @@ ${historyText}
       if (newLtm) {
         await this.saveLongTermMemory(newLtm);
       }
-      this._chatHistory = [];
+      // 嘗試執行簡化的自動提取（示範用），將短期對話快照作為記憶寫入
+      try {
+        const extractor = await import('./services/extractMemories/extractMemories');
+        void extractor.executeExtractMemories(historyText);
+      } catch (e) { /* ignore */ }
+      this._chatHistory = this.createHistoryProxy([], this._activeSessionId);
       this._chatHistories[this._activeSessionId] = this._chatHistory;
       this._agentExecutor.clearSessionMessages(this._activeSessionId);
       this._panel.webview.postMessage({ type: 'consolidateDone', ltm: newLtm || currentLtm });
@@ -854,10 +1045,36 @@ ${historyText}
   }
 
   private getLongTermMemory(): string {
-    return this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
+    // Prefer file-based MEMORY.md when available; fallback to globalState string
+    try {
+      // synchronous read is not available here; return cached globalState and schedule async load
+      // For simplicity, attempt to read file synchronously via require('fs').readFileSync is not ideal in extension context
+      // Use the async reader only when callers expect string immediately; we keep globalState as primary source for now
+      const ltm = this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
+      // schedule background refresh from file (best-effort)
+      void (async () => {
+        try {
+          const fileLtm = await memdir.readMemoryIndex();
+          if (fileLtm && fileLtm.trim().length > 0 && fileLtm !== ltm) {
+            // update globalState cache to reflect file content
+            await this._context.globalState.update('amiAiClaw.longTermMemory', fileLtm);
+            this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: fileLtm, persona: '', historyCount: this._chatHistory.length, historyPreview: '', sessionId: this._activeSessionId, usageStats: this._usageStats });
+          }
+        } catch (e) { /* ignore */ }
+      })();
+      return ltm;
+    } catch (e) {
+      return this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
+    }
   }
 
   private async saveLongTermMemory(text: string): Promise<void> {
+    // Save to MEMORY.md (file-based) and update globalState cache for compatibility
+    try {
+      await memdir.saveMemoryIndex(text);
+    } catch (e) {
+      OllamaChatPanel.log('saveMemoryIndex error: ' + (e instanceof Error ? e.message : String(e)));
+    }
     await this._context.globalState.update('amiAiClaw.longTermMemory', text);
   }
 
@@ -948,8 +1165,10 @@ interface ProviderInfo {
 export const AGENT_TOOLS = [
   { type: 'function', function: { name: 'get_active_file', description: '取得目前編輯器開啟的檔案路徑與內容', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'read_file', description: '讀取工作區內的檔案內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '相對或絕對路徑' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'write_file', description: '寫入(建立/覆寫)檔案', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
-  { type: 'function', function: { name: 'replace_in_file', description: '在檔案中替換特定字串', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '要替換的原始字串' }, new_str: { type: 'string', description: '替換後的字串' } }, required: ['path', 'old_str', 'new_str'] } } },
+  { type: 'function', function: { name: 'read_files', description: '一次批次讀取多個檔案內容（自動限制總量避免 token 爆量）。適合需同時參考數個相關檔案的場景，比連續呼叫 read_file 更省 round-trip。回傳格式：每個檔案以「=== <path> ===」分隔。', parameters: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' }, description: '檔案路徑陣列（相對或絕對），最多 30 個' }, max_per_file_kb: { type: 'number', description: '單檔最大讀取 KB（預設 64，超過截斷）' }, max_total_kb: { type: 'number', description: '所有檔案合計最大 KB（預設 256，超過停止並回報剩餘檔案清單）' } }, required: ['paths'] } } },
+  { type: 'function', function: { name: 'write_file', description: '寫入(建立/覆寫)檔案。支援所有文字檔案類型（.c .h .inf .dec .dsc .ts .py 等）', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+  { type: 'function', function: { name: 'replace_in_file', description: '在檔案中替換特定字串（第一個匹配）。支援所有文字檔（.c .h .inf .ts 等）', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '要替換的原始字串（需包含足夠 context 以唯一定位）' }, new_str: { type: 'string', description: '替換後的字串' } }, required: ['path', 'old_str', 'new_str'] } } },
+  { type: 'function', function: { name: 'insert_in_file', description: '在檔案指定行號後插入內容（支援多行）。適合在 .c/.h 函式間插入新函式、在 .inf [Sources] 段落新增檔案，或在任何位置插入程式碼。自動保留原始行尾（CRLF/LF）。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑（絕對或相對工作區）' }, line: { type: 'number', description: '在此行號後插入（1-based；0 = 在最前面插入）' }, content: { type: 'string', description: '要插入的內容（支援多行，以 \n 分隔）' } }, required: ['path', 'line', 'content'] } } },
   { type: 'function', function: { name: 'list_dir', description: '列出目錄內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '目錄路徑，空白表示工作區根目錄' } }, required: [] } } },
   { type: 'function', function: { name: 'run_terminal', description: '在 VS Code 終端機執行命令（無輸出捕獲）', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
   { type: 'function', function: { name: 'search_workspace', description: '在工作區中搜尋檔案名稱、函式名稱、類別名稱或程式碼關鍵字。處理任何問題前請優先呼叫此工具確認工作區現有程式碼', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜尋關鍵字（如檔案名稱、函式名稱、類別名稱、變數名稱）' } }, required: ['query'] } } },
@@ -977,7 +1196,7 @@ export const AGENT_TOOLS = [
   { type: 'function', function: { name: 'http_request', description: '發送 HTTP 請求（GET/POST/PUT/DELETE/PATCH）並回傳回應內容。適合呼叫 REST API、切換 Webhook、測試端點。非 GET 請求需使用者確認。', parameters: { type: 'object', properties: { method: { type: 'string', enum: ['GET','POST','PUT','DELETE','PATCH','HEAD'], description: 'HTTP 方法（預設 GET）' }, url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, headers: { type: 'object', description: '自訂請求標頭（可選）', additionalProperties: { type: 'string' } }, body: { type: 'string', description: '請求本文（POST/PUT 用，JSON 字串或純文字）' }, timeout: { type: 'number', description: '超時毫秒（預設 15000）' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'db_query', description: '對 SQLite 資料庫執行 SQL 查詢（SELECT/INSERT/UPDATE/DELETE）並回傳結果表格。寫入操作需使用者確認。', parameters: { type: 'object', properties: { db_path: { type: 'string', description: 'SQLite 資料庫檔案路徑（.db 檔）' }, query: { type: 'string', description: '要執行的 SQL 語句' }, params: { type: 'array', items: {}, description: 'SQL 參數（防止 SQL injection，? 佔位符對應）' } }, required: ['db_path', 'query'] } } },
   { type: 'function', function: { name: 'search_regex', description: '使用正規表達式在工作區搜尋檔案內容。支援 glob 檔案樣式、大小寫、multiline 等 flag。', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'JavaScript 正規表達式字串（不包括 //）' }, include: { type: 'string', description: 'glob 檔案樣式（預設 **/*），如 **/*.ts' }, flags: { type: 'string', description: 'regex flags（預設 i，可用 g/i/m）' } }, required: ['pattern'] } } },
-  { type: 'function', function: { name: 'agentic_file_search', description: '智慧語意搜尋：根據自然語言描述找出最相關的原始碼檔案，並回傳每個檔案的函式/類別/介面/匯出宣告摘要。適合「找處理 authentication 的檔案」、「哪個檔案負責 WebSocket 連線」等情況，比 search_workspace 更能理解功能意圖。', parameters: { type: 'object', properties: { query: { type: 'string', description: '用自然語言描述你要找的功能或責任，例如「處理使用者登入的邏輯」' }, include: { type: 'string', description: 'glob 檔案樣式（預設 **/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h}）' }, top_k: { type: 'number', description: '回傳最相關的前 N 個檔案（預設 10，最多 30）' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'agentic_file_search', description: '智慧語意搜尋：根據自然語言描述找出最相關的原始碼檔案，並回傳每個檔案的函式/類別/介面/匯出宣告摘要。適合「找處理 authentication 的檔案」、「哪個檔案負責 WebSocket 連線」等情況，比 search_workspace 更能理解功能意圖。支援 UEFI 原始碼（.c .h .inf .dec .dsc .fdf .uni .nasm .asm .asl）。', parameters: { type: 'object', properties: { query: { type: 'string', description: '用自然語言描述你要找的功能或責任，例如「處理使用者登入的邏輯」或「UEFI HII protocol 初始化」' }, include: { type: 'string', description: 'glob 檔案樣式（預設 **/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,inf,dec,dsc,fdf,uni,nasm,asm,asl}）' }, top_k: { type: 'number', description: '回傳最相關的前 N 個檔案（預設 10，最多 30）' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'lint_fix', description: '對指定路徑的檔案或目錄執行 ESLint --fix 和/或 Prettier --write 修正程式碼風格問題', parameters: { type: 'object', properties: { path: { type: 'string', description: '要格式化的檔案或目錄路徑（可選，預設工作區根目錄）' }, tool: { type: 'string', enum: ['eslint', 'prettier', 'both'], description: '要執行的工具（預設 both）' } }, required: [] } } },
   { type: 'function', function: { name: 'run_tests', description: '執行專案測試套件（自動偵測 jest/vitest/mocha/pytest），回傳測試結果輸出', parameters: { type: 'object', properties: { path: { type: 'string', description: '測試目錄路徑（可選，預設工作區根目錄）' }, filter: { type: 'string', description: '測試名稱過濾（-t / -k pattern，可選）' } }, required: [] } } },
   { type: 'function', function: { name: 'browser_navigate', description: '使用 Playwright 無頭瀏覽器訪問網頁，回傳頁面標題、文字內容與連結清單。適合需要執行 JavaScript 的 SPA 或動態頁面（靜態頁面請用 fetch_url）。需要 Python playwright：pip install playwright && playwright install chromium', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' }, selector: { type: 'string', description: '等待此 CSS selector 出現後再擷取內容（可選）' }, wait_for: { type: 'string', enum: ['load', 'networkidle', 'domcontentloaded'], description: '等待頁面事件（預設 networkidle）' }, timeout_ms: { type: 'number', description: '超時毫秒（預設 20000，最大 60000）' } }, required: ['url'] } } },
@@ -991,13 +1210,25 @@ export const AGENT_TOOLS = [
   { type: 'function', function: { name: 'whatsapp_save_credentials', description: '儲存 Meta WhatsApp Business API 的 Access Token 和 Phone Number ID 到 VS Code（僅本機儲存，不寫入 settings.json）。儲存後 whatsapp_send / whatsapp_send_template 即可使用，無需手動設定。', parameters: { type: 'object', properties: { access_token: { type: 'string', description: 'Meta WhatsApp Business Cloud API Access Token' }, phone_number_id: { type: 'string', description: 'Meta 商業管理平台的 Phone Number ID（純數字）' } }, required: ['access_token', 'phone_number_id'] } } },
   { type: 'function', function: { name: 'whatsapp_send', description: '發送 WhatsApp 文字訊息至指定手機號碼。若已透過 QR Code 綁定（whatsapp_connect）則優先使用個人帳號連線；否則使用 Meta WhatsApp Business Cloud API（需設定 whatsappAccessToken）。', parameters: { type: 'object', properties: { to: { type: 'string', description: '收件人手機號碼，必須含國碼，例如 +886912345678' }, message: { type: 'string', description: '要發送的文字訊息內容' } }, required: ['to', 'message'] } } },
   { type: 'function', function: { name: 'whatsapp_send_template', description: '透過 Meta WhatsApp Business Cloud API 發送已審核的樣板訊息。適用於初次聯絡或 24 小時窗口外的訊息（不受 24 小時限制）。需要先建立並審核樣板。', parameters: { type: 'object', properties: { to: { type: 'string', description: '收件人手機號碼，必須含國碼' }, template_name: { type: 'string', description: 'Meta 商業管理平台已審核的樣板名稱' }, language_code: { type: 'string', description: '樣板語言碼（預設 zh_TW，可選 en_US、zh_CN 等）' }, body_params: { type: 'array', items: { type: 'string' }, description: '樣板主體 {{1}} {{2}} 參數列表（可選）' } }, required: ['to', 'template_name'] } } },
-  { type: 'function', function: { name: 'jenkins_build', description: '觸發 Jenkins 任動建置（Build）並回傳排隊 / 映射編號。依設定自動取得 CSRF Crumb。預設連接 localdev.visualebios 。', parameters: { type: 'object', properties: { job: { type: 'string', description: 'Jenkins Job 名稱（預設使用 amiAiClaw.jenkinsDefaultJob，未設定則 SeamlessBuild）' }, params: { type: 'object', description: 'Build 參數（key-value，可選），有參數自動使用 buildWithParameters 端點', additionalProperties: { type: 'string' } }, wait: { type: 'boolean', description: '是否等待 Job 開始建置並回傳編號/狀態（預設 true，最多等待 60s）' } }, required: [] } } },
-  { type: 'function', function: { name: 'jenkins_status', description: '查詢 Jenkins Job 最新 Build 或指定 Build 編號的狀態及 Console 輸出。預設連接 localdev.visualebios 。', parameters: { type: 'object', properties: { job: { type: 'string', description: 'Jenkins Job 名稱（預設使用 amiAiClaw.jenkinsDefaultJob）' }, build_number: { type: 'number', description: 'Build 編號（可選，預設 lastBuild）' }, include_log: { type: 'boolean', description: '是否包含 Console 輸出（預設 true）' }, log_lines: { type: 'number', description: 'Console 輸出最後幾行（預設 100，最大 500）' } }, required: [] } } },
-  { type: 'function', function: { name: 'read_workspace', description: '遞迴讀取整個工作區所有原始碼檔案內容，回傳每個檔案路徑與完整內容。適合需要全域理解程式庫結構、跨檔案重構、全域搜尋替換等任務。大型工作區請透過 include/exclude 縮小範圍以避免超出 token 上限。', parameters: { type: 'object', properties: { include: { type: 'string', description: 'glob 檔案樣式（預設 **/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,md,json,yaml,yml,txt}）' }, exclude: { type: 'string', description: '額外排除的 glob 樣式（逗號分隔，預設已排除 node_modules/.git/dist/out/build）' }, max_file_kb: { type: 'number', description: '單檔最大讀取 KB（預設 128，超過截斷）' }, max_total_kb: { type: 'number', description: '所有檔案合計最大 KB（預設 512，超過停止並回報）' } }, required: [] } } },
+  { type: 'function', function: { name: 'jenkins_build', description: '觸發 Jenkins 建置。預設透過 VS Code 外掛指令（VisualeBios，避免 DNS/網域問題）；若關閉 amiAiClaw.jenkinsUseVscodeCommand 則改走 Jenkins HTTP API（依設定自動取得 CSRF Crumb）。可透過 tools_dir / tools_version 切換 VisualeBios 的 Tools 目錄。', parameters: { type: 'object', properties: { mode: { type: 'string', enum: ['build', 'rebuild'], description: '使用 VS Code 外掛指令時選擇 build 或 rebuild（預設 build）' }, tools_dir: { type: 'string', description: '（VS Code 模式）指定 VisualeBios 的 Tools 目錄絕對路徑，例如 C:\\\\AmiTools\\\\VebTools\\\\Tools60。觸發 Build 前會先寫入 visualebios.toolsDir 設定。' }, tools_version: { type: 'string', description: '（VS Code 模式）只給 Tools 版本號（如 "59"、"60"），自動組成 C:\\\\AmiTools\\\\VebTools\\\\Tools<N>。tools_dir 已指定時會被忽略。' }, tools_scope: { type: 'string', enum: ['workspace', 'global'], description: '（VS Code 模式）寫入 visualebios.toolsDir 的範圍，預設 workspace（只影響當前工作區）。' }, job: { type: 'string', description: '（HTTP 模式）Jenkins Job 名稱（預設使用 amiAiClaw.jenkinsDefaultJob，未設定則 SeamlessBuild）' }, params: { type: 'object', description: '（HTTP 模式）Build 參數（key-value，可選），有參數自動使用 buildWithParameters 端點', additionalProperties: { type: 'string' } }, wait: { type: 'boolean', description: '（HTTP 模式）是否等待 Job 開始建置並回傳編號/狀態（預設 true，最多等待 60s）' } }, required: [] } } },
+  { type: 'function', function: { name: 'jenkins_status', description: '查詢 Jenkins 狀態。預設透過 VS Code 外掛指令（VisualeBios 顯示建置歷史）；若關閉 amiAiClaw.jenkinsUseVscodeCommand 則改走 Jenkins HTTP API。', parameters: { type: 'object', properties: { job: { type: 'string', description: 'Jenkins Job 名稱（預設使用 amiAiClaw.jenkinsDefaultJob）' }, build_number: { type: 'number', description: 'Build 編號（可選，預設 lastBuild）' }, include_log: { type: 'boolean', description: '是否包含 Console 輸出（預設 true）' }, log_lines: { type: 'number', description: 'Console 輸出最後幾行（預設 100，最大 500）' } }, required: [] } } },
+  { type: 'function', function: { name: 'read_file_smart', description: '分區讀取大型檔案（不限大小）。支援：grep 過濾（pattern）、行範圍（start_line/end_line）、頭 N 行（head）、尾 N 行（tail）、前後 context（context_lines）。適合分析 Build.log、大型 log 檔案、尋找特定錯誤行。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑（絕對或相對工作區根目錄）' }, pattern: { type: 'string', description: 'JavaScript regex，只回傳匹配行（不填回傳全部）。例："error|failed|warning"' }, start_line: { type: 'number', description: '從第幾行開始讀（1-based，選用）' }, end_line: { type: 'number', description: '讀到第幾行（選用）' }, head: { type: 'number', description: '只回傳前 N 行（選用）' }, tail: { type: 'number', description: '只回傳最後 N 行（選用）' }, context_lines: { type: 'number', description: '每個匹配行附帶前後 N 行的 context（預設 0）' }, max_kb: { type: 'number', description: '輸出上限 KB（預設 128，最大 512）' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'read_workspace', description: '遞迴讀取整個工作區所有原始碼檔案內容，回傳每個檔案路徑與完整內容。適合需要全域理解程式庫結構、跨檔案重構、全域搜尋替換等任務。大型工作區請透過 include/exclude 縮小範圍以避免超出 token 上限。支援分批：以 offset 參數續讀剩餘檔案。預設包含 UEFI 原始碼（.c .h .inf .dec .dsc .fdf .uni .nasm .asm .asl）。', parameters: { type: 'object', properties: { include: { type: 'string', description: 'glob 檔案樣式（預設 **/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,inf,dec,dsc,fdf,uni,nasm,asm,asl,md,json,yaml,yml,txt}）' }, exclude: { type: 'string', description: '額外排除的 glob 樣式（逗號分隔，預設已排除 node_modules/.git/dist/out/build）' }, max_file_kb: { type: 'number', description: '單檔最大讀取 KB（預設 128，超過截斷）' }, max_total_kb: { type: 'number', description: '所有檔案合計最大 KB（預設 512，超過停止並回報剩餘檔案）' }, offset: { type: 'number', description: '從第幾個檔案開始讀取（用於續批，預設 0；上一批回傳的「offset=N→M」中的 M 即為下一批的 offset）' } }, required: [] } } },
+  { type: 'function', function: { name: 'glob', description: '列出符合 glob 樣式的檔案（不讀內容）。支援 **/*.{c,h}、src/** 等樣式，艷不收發對外 .gitignore 排除。比 search_workspace 更快純列檔案。適合 UEFI 專案找 .inf .dec .h 等檔案。', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Glob 樣式，例如 **/*.h、src/**/*.c、*.inf' }, root: { type: 'string', description: '搜尋根目錄（預設工作區根目錄）' }, limit: { type: 'number', description: '最多回傳檔案數（預設 200，最多 5000）' } }, required: ['pattern'] } } },
+  { type: 'function', function: { name: 'outline_file', description: '快速抽取檔案函式/類別/typedef/段落摘要，不讀完整內容。.c/.h 檢測 EFIAPI 函式、typedef struct、#define；.inf/.dec/.dsc 檢測 [Section] 標題；.ts/.py 檢測 function/class/interface。適合在 read_file 前詞小了解檔案結構。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑（絕對或相對工作區）' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'todo_write', description: '在工作區 TODO.md 新增或完成 TODO 項目。高度相似 OpenHarness TodoWriteTool。checked=true 表示標記為已完成（[ ]→[x]）。', parameters: { type: 'object', properties: { item: { type: 'string', description: 'TODO 項目內容' }, checked: { type: 'boolean', description: '標記為已完成（預設 false）' }, path: { type: 'string', description: 'TODO 檔案路徑（預設 TODO.md）' } }, required: ['item'] } } },
+  { type: 'function', function: { name: 'memory_read', description: '讀取工作區的 MEMORY.md 持久記憶檔案。假如對常需要記住的專案個人化設定、之前的討論結論、重要發現等，請先呼叫此工具。', parameters: { type: 'object', properties: { path: { type: 'string', description: '記憶檔案路徑（預設 MEMORY.md）' } }, required: [] } } },
+  { type: 'function', function: { name: 'memory_write', description: '寫入或更新工作區的 MEMORY.md 持久記憶。支援 append（新增段落）、replace（全文替換）、delete（刪除段落）三種 action。高度相似 OpenHarness MemoryManager。', parameters: { type: 'object', properties: { title: { type: 'string', description: '記憶條目標題（## section 名稱）' }, content: { type: 'string', description: '記憶內容（Markdown）' }, action: { type: 'string', enum: ['append', 'replace', 'delete'], description: '操作類型（預設 append）' }, path: { type: 'string', description: '記憶檔案路徑（預設 MEMORY.md）' } }, required: ['title', 'content'] } } },
+  { type: 'function', function: { name: 'rename_file', description: '重新命名或移動檔案/目錄。src→dest，可跨目錄。需要使用者確認。', parameters: { type: 'object', properties: { src: { type: 'string', description: '原始路徑（相對或絕對）' }, dest: { type: 'string', description: '目標路徑（相對或絕對）' }, overwrite: { type: 'boolean', description: '若目標已存在是否覆蓋（預設 false）' } }, required: ['src', 'dest'] } } },
+  { type: 'function', function: { name: 'copy_file', description: '複製檔案到新位置。src→dest，不移除原始檔案。需要使用者確認。', parameters: { type: 'object', properties: { src: { type: 'string', description: '原始路徑（相對或絕對）' }, dest: { type: 'string', description: '目標路徑（相對或絕對）' }, overwrite: { type: 'boolean', description: '若目標已存在是否覆蓋（預設 false）' } }, required: ['src', 'dest'] } } },
+  { type: 'function', function: { name: 'diff_files', description: '比較兩個檔案並回傳 unified diff。適合確認修改前後差異、比對兩個版本。', parameters: { type: 'object', properties: { a: { type: 'string', description: '第一個檔案路徑（原始）' }, b: { type: 'string', description: '第二個檔案路徑（修改後）' }, context: { type: 'number', description: '前後 context 行數（預設 3）' } }, required: ['a', 'b'] } } },
+  { type: 'function', function: { name: 'replace_all_in_file', description: '取代檔案中所有符合的字串（replace_in_file 只換第一個）。適合批次修正同一個函式名稱/變數名稱。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑' }, old_str: { type: 'string', description: '要取代的原始字串' }, new_str: { type: 'string', description: '取代後的字串' } }, required: ['path', 'old_str', 'new_str'] } } },
+  { type: 'function', function: { name: 'batch_replace', description: '使用正規表達式跨多個檔案批次搜尋取代，回傳修改的檔案清單與替換次數。適合全域重新命名 symbol 或修正 typo。', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'JavaScript 正規表達式字串（不含 //）' }, replace: { type: 'string', description: '取代字串（可用 $1 $2 back-reference）' }, include: { type: 'string', description: 'glob 篩選檔案（預設 **/*），例如 **/*.{c,h}' }, flags: { type: 'string', description: 'regex flags（預設 gi）' } }, required: ['pattern', 'replace'] } } },
+  { type: 'function', function: { name: 'file_info', description: '取得檔案/目錄詳細資訊：大小、行數、行尾格式（CRLF/LF）、BOM/編碼偵測、最後修改時間。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑（相對或絕對）' } }, required: ['path'] } } },
 ];
 
 export function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', write_file: '💾', replace_in_file: '✏️', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_search: '🔍', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_log_time: '⏱️', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', agentic_file_search: '🧠', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_connect: '📱', whatsapp_disconnect: '📵', whatsapp_status: '📶', whatsapp_save_credentials: '🔐', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊', read_workspace: '🗂️' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', read_files: '📚', write_file: '💾', replace_in_file: '✏️', insert_in_file: '📌', glob: '📂', outline_file: '📑', todo_write: '✅', memory_read: '🧠', memory_write: '📝', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_search: '🔍', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_log_time: '⏱️', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', agentic_file_search: '🧠', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_connect: '📱', whatsapp_disconnect: '📵', whatsapp_status: '📶', whatsapp_save_credentials: '🔐', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊', read_workspace: '🗂️', agent_run_tool: '🔁', 'agent:run_tool': '🔁', read_file_smart: '🔬', rename_file: '✂️', copy_file: '📋', diff_files: '🔀', replace_all_in_file: '✏️', batch_replace: '🔁', file_info: 'ℹ️' };
   return m[name] ?? '🔧';
 }
 
@@ -1005,8 +1236,19 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case 'get_active_file': return '取得目前檔案';
     case 'read_file': return `讀取檔案: ${args.path}`;
+    case 'read_files': {
+      const arr = Array.isArray(args.paths) ? args.paths as string[] : [];
+      const preview = arr.slice(0, 3).join(', ') + (arr.length > 3 ? ` …(+${arr.length - 3})` : '');
+      return `批次讀取 ${arr.length} 個檔案: ${preview}`;
+    }
     case 'write_file': return `寫入檔案: ${args.path}`;
     case 'replace_in_file': return `編輯檔案: ${args.path}`;
+    case 'insert_in_file': return `插入檔案: ${args.path} 第 ${args.line} 行後`;
+    case 'glob': return `列檔: ${args.pattern}${args.root ? ' @ ' + args.root : ''}`;
+    case 'outline_file': return `摘要: ${args.path}`;
+    case 'todo_write': return `TODO ${args.checked ? '完成' : '新增'}: ${args.item}`;
+    case 'memory_read': return `讀取記憶: ${args.path || 'MEMORY.md'}`;
+    case 'memory_write': return `寫入記憶: ${args.title} (${args.action || 'append'})`;
     case 'list_dir': return `列出目錄: ${args.path || '(根目錄)'}`;
     case 'run_terminal': return `執行命令: ${args.command}`;
     case 'search_workspace': return `搜尋工作區: ${args.query}`;
@@ -1050,6 +1292,24 @@ function formatToolTitle(name: string, args: Record<string, unknown>): string {
     case 'jenkins_build': return `🛠️ Jenkins Build: ${args.job || '(default job)'}${args.params ? ' ' + JSON.stringify(args.params).slice(0, 50) : ''}`;
     case 'jenkins_status': return `📊 Jenkins 狀態: ${args.job || '(default job)'}${args.build_number ? ' #' + args.build_number : ' (lastBuild)'}`;
     case 'read_workspace': return `讀取整個工作區${args.include ? ' [' + args.include + ']' : ''}${args.max_total_kb ? '（上限 ' + args.max_total_kb + ' KB）' : ''}`;
+    case 'read_file_smart': {
+      const p = args.pattern ? `  pattern="${args.pattern}"` : '';
+      const range = args.start_line ? `  L${args.start_line}-${args.end_line ?? '∞'}` : '';
+      const mode = args.tail ? `  tail=${args.tail}` : args.head ? `  head=${args.head}` : '';
+      return `🔬 分區讀取 ${args.path ?? ''}${p}${range}${mode}`;
+    }
+    case 'rename_file': return `重新命名: ${args.src} → ${args.dest}`;
+    case 'copy_file': return `複製: ${args.src} → ${args.dest}`;
+    case 'diff_files': return `比較: ${args.a} ↔ ${args.b}`;
+    case 'replace_all_in_file': return `全部取代 in ${args.path}: "${(args.old_str as string || '').slice(0, 40)}"`;
+    case 'batch_replace': return `批次取代: /${args.pattern}/ → "${(args.replace as string || '').slice(0, 40)}" (${args.include || '**/*'})`;
+    case 'file_info': return `檔案資訊: ${args.path}`;
+    case 'agent_run_tool':
+    case 'agent:run_tool': {
+      const targetN = (args.name ?? args.tool_name ?? args.target ?? '(未知)') as string;
+      const targetA = args.args ?? args.tool_args ?? args.parameters ?? args.input;
+      return `Meta 派發 → ${targetN}${targetA ? ': ' + JSON.stringify(targetA).slice(0, 60) : ''}`;
+    }
     default: return name;
   }
 }
@@ -1084,6 +1344,97 @@ export function estimateTokens(text: string): number {
     count += code > 0x2E7F ? 1 : 0.25;  // CJK/special ≈ 1 token; ASCII ≈ 1/4 token
   }
   return Math.ceil(count);
+}
+
+/** 快取：model context length（key = `${baseUrl}||${model}`）。TTL 5 分鐘。 */
+const _modelCtxCache = new Map<string, { len: number; ts: number }>();
+const MODEL_CTX_TTL = 5 * 60 * 1000;
+
+/** 向 Ollama `/api/show` 或 vLLM/OpenAI-compat `/v1/models/{id}` 查詢模型實際 context window 大小（tokens）。
+ *  - Ollama：解析 `model_info.*.context_length`（0.3+）或 `parameters` 段落的 `num_ctx`
+ *  - vLLM / OpenAI-compat：解析 `GET /v1/models/{model_id}` 回應中的 `max_model_len`
+ *  成功時回傳正整數；失敗時回傳 0。結果快取 5 分鐘。
+ *  `model` 可帶 `openai::` 前綴，函式會自動去除後查詢。 */
+function ollamaGetContextLength(baseUrl: string, model: string): Promise<number> {
+  const cacheKey = `${baseUrl}||${model}`;
+  const cached = _modelCtxCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < MODEL_CTX_TTL) { return Promise.resolve(cached.len); }
+
+  const isOpenAiCompat = model.startsWith('openai::');
+  const rawModel = isOpenAiCompat ? model.slice('openai::'.length) : model;
+
+  // ── vLLM / OpenAI-compat：GET /v1/models/{model_id} ──────────────────────
+  if (isOpenAiCompat) {
+    return new Promise<number>((resolve) => {
+      try {
+        const encodedId = encodeURIComponent(rawModel);
+        const url = new URL(`/v1/models/${encodedId}`, baseUrl);
+        const protocol = url.protocol === 'https:' ? https : http;
+        const req = protocol.request({
+          hostname: url.hostname,
+          port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
+          path: url.pathname,
+          method: 'GET',
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk: Buffer) => { data += chunk; });
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(data);
+              // vLLM: max_model_len；其他 OpenAI-compat 伺服器可能也有此欄位
+              const len = Number(json.max_model_len ?? 0);
+              if (len > 0) { _modelCtxCache.set(cacheKey, { len, ts: Date.now() }); }
+              resolve(len > 0 ? len : 0);
+            } catch { resolve(0); }
+          });
+        });
+        req.on('error', () => resolve(0));
+        req.setTimeout(5000, () => { req.destroy(); resolve(0); });
+        req.end();
+      } catch { resolve(0); }
+    });
+  }
+
+  // ── Ollama：POST /api/show ────────────────────────────────────────────────
+  return new Promise<number>((resolve) => {
+    try {
+      const url = new URL('/api/show', baseUrl);
+      const body = JSON.stringify({ name: rawModel });
+      const protocol = url.protocol === 'https:' ? https : http;
+      const req = protocol.request({
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+        path: url.pathname,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            // Ollama 0.3+：model_info 物件中的 *.context_length 欄位
+            const modelInfo: Record<string, unknown> = json.model_info ?? {};
+            let len = 0;
+            for (const k of Object.keys(modelInfo)) {
+              if (k.endsWith('.context_length')) { len = Number(modelInfo[k]); break; }
+            }
+            // 舊版 fallback：parameters 段落的 num_ctx
+            if (!len && json.parameters) {
+              const m = String(json.parameters).match(/num_ctx\s+(\d+)/);
+              if (m) { len = Number(m[1]); }
+            }
+            if (len > 0) { _modelCtxCache.set(cacheKey, { len, ts: Date.now() }); }
+            resolve(len > 0 ? len : 0);
+          } catch { resolve(0); }
+        });
+      });
+      req.on('error', () => resolve(0));
+      req.setTimeout(5000, () => { req.destroy(); resolve(0); });
+      req.write(body);
+      req.end();
+    } catch { resolve(0); }
+  });
 }
 
 /** 傳送 keep_alive=600 給 Ollama 以預熱（fire-and-forget），讓模型提前載入以減少首次請求延遲。 */
@@ -1316,98 +1667,126 @@ function openaiCompatChatCallStream(
         }
         return { role: m.role as 'system' | 'user' | 'assistant', content: m.content ?? '' };
       });
-      // 轉換 tools 為 OpenAI 格式（與 Ollama 格式相同）
-      const oaiTools = tools.length > 0 ? tools : undefined;
-      const bodyObj: Record<string, unknown> = { model, messages: oaiMessages, stream: true };
-      if (oaiTools) { bodyObj.tools = oaiTools; bodyObj.tool_choice = 'auto'; }
-      const body = JSON.stringify(bodyObj);
       const protocol = url.protocol === 'https:' ? https : http;
-      const options: http.RequestOptions = {
-        hostname: url.hostname,
-        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
-        path: url.pathname, method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Accept': 'text/event-stream' },
-      };
-      let lineBuffer = '';
-      let accContent = '';
-      // tool_calls 是增量合併結構（index-based）
-      const toolCallBuilders: Map<number, { id: string; name: string; args: string }> = new Map();
-      let promptTokens = 0; let completionTokens = 0; const startMs = Date.now();
-      const req = protocol.request(options, (res) => {
-        if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-          let errBody = '';
+      let triedWithoutTools = false;
+
+      const sendRequest = (includeTools: boolean) => {
+        const oaiTools = includeTools && tools.length > 0 ? tools : undefined;
+        const bodyObj: Record<string, unknown> = { model, messages: oaiMessages, stream: true };
+        if (oaiTools) { bodyObj.tools = oaiTools; }
+        const body = JSON.stringify(bodyObj);
+
+        const options: http.RequestOptions = {
+          hostname: url.hostname,
+          port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
+          path: url.pathname, method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Accept': 'text/event-stream' },
+        };
+
+        let lineBuffer = '';
+        let accContent = '';
+        // tool_calls 是增量合併結構（index-based）
+        const toolCallBuilders: Map<number, { id: string; name: string; args: string }> = new Map();
+        let promptTokens = 0; let completionTokens = 0; const startMs = Date.now();
+
+        const req = protocol.request(options, (res) => {
+          if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+            let errBody = '';
+            res.setEncoding('utf8');
+            res.on('data', (d: string) => { errBody += d; });
+            res.on('end', () => {
+              let apiMessage = 'HTTP ' + res.statusCode;
+              try {
+                const j = JSON.parse(errBody);
+                apiMessage = j.error?.message ?? apiMessage;
+              } catch { /* ignore parse error */ }
+
+              const isAutoToolChoiceError = apiMessage.includes('"auto" tool choice requires')
+                || apiMessage.includes('--enable-auto-tool-choice');
+
+              // vLLM 在未啟用 auto tool choice 時會拒絕 tools；自動降級為無工具重試一次。
+              if (includeTools && !triedWithoutTools && isAutoToolChoiceError) {
+                triedWithoutTools = true;
+                sendRequest(false);
+                return;
+              }
+
+              if (apiMessage.startsWith('HTTP ')) {
+                reject(new Error('OpenAI API HTTP ' + res.statusCode + ': ' + errBody.slice(0, 200)));
+                return;
+              }
+              reject(new Error('OpenAI API 錯誤：' + apiMessage));
+            });
+            return;
+          }
           res.setEncoding('utf8');
-          res.on('data', (d: string) => { errBody += d; });
-          res.on('end', () => {
-            try { const j = JSON.parse(errBody); reject(new Error('OpenAI API 錯誤：' + (j.error?.message ?? 'HTTP ' + res.statusCode))); }
-            catch { reject(new Error('OpenAI API HTTP ' + res.statusCode + ': ' + errBody.slice(0, 200))); }
-          });
-          return;
-        }
-        res.setEncoding('utf8');
-        res.on('data', (data: string) => {
-          lineBuffer += data;
-          const lines = lineBuffer.split('\n');
-          lineBuffer = lines.pop() ?? '';
-          for (const line of lines) {
-            const t = line.trim();
-            if (!t || !t.startsWith('data:')) continue;
-            const payload = t.slice(5).trim();
-            if (payload === '[DONE]') continue;
-            try {
-              const chunk = JSON.parse(payload) as {
-                choices?: Array<{
-                  delta?: {
-                    content?: string | null;
-                    tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
-                  };
-                  finish_reason?: string;
-                }>;
-                usage?: { prompt_tokens?: number; completion_tokens?: number };
-              };
-              const delta = chunk.choices?.[0]?.delta;
-              if (delta?.content) { accContent += delta.content; if (onTextChunk) onTextChunk(delta.content); }
-              if (delta?.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  if (!toolCallBuilders.has(tc.index)) { toolCallBuilders.set(tc.index, { id: tc.id ?? '', name: tc.function?.name ?? '', args: '' }); }
-                  const b = toolCallBuilders.get(tc.index)!;
-                  if (tc.id) b.id = tc.id;
-                  if (tc.function?.name) b.name += tc.function.name;
-                  if (tc.function?.arguments) b.args += tc.function.arguments;
+          res.on('data', (data: string) => {
+            lineBuffer += data;
+            const lines = lineBuffer.split('\n');
+            lineBuffer = lines.pop() ?? '';
+            for (const line of lines) {
+              const t = line.trim();
+              if (!t || !t.startsWith('data:')) continue;
+              const payload = t.slice(5).trim();
+              if (payload === '[DONE]') continue;
+              try {
+                const chunk = JSON.parse(payload) as {
+                  choices?: Array<{
+                    delta?: {
+                      content?: string | null;
+                      tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
+                    };
+                    finish_reason?: string;
+                  }>;
+                  usage?: { prompt_tokens?: number; completion_tokens?: number };
+                };
+                const delta = chunk.choices?.[0]?.delta;
+                if (delta?.content) { accContent += delta.content; if (onTextChunk) onTextChunk(delta.content); }
+                if (delta?.tool_calls) {
+                  for (const tc of delta.tool_calls) {
+                    if (!toolCallBuilders.has(tc.index)) { toolCallBuilders.set(tc.index, { id: tc.id ?? '', name: tc.function?.name ?? '', args: '' }); }
+                    const b = toolCallBuilders.get(tc.index)!;
+                    if (tc.id) b.id = tc.id;
+                    if (tc.function?.name) b.name += tc.function.name;
+                    if (tc.function?.arguments) b.args += tc.function.arguments;
+                  }
                 }
-              }
-              if (chunk.usage) {
-                promptTokens = chunk.usage.prompt_tokens ?? 0;
-                completionTokens = chunk.usage.completion_tokens ?? 0;
-              }
-            } catch { /* partial */ }
-          }
+                if (chunk.usage) {
+                  promptTokens = chunk.usage.prompt_tokens ?? 0;
+                  completionTokens = chunk.usage.completion_tokens ?? 0;
+                }
+              } catch { /* partial */ }
+            }
+          });
+          res.on('end', () => {
+            if (onStats && completionTokens > 0) {
+              const elapsed = (Date.now() - startMs) / 1000;
+              onStats(promptTokens + completionTokens, elapsed > 0 ? completionTokens / elapsed : 0);
+            }
+            if (toolCallBuilders.size > 0) {
+              const tool_calls = Array.from(toolCallBuilders.entries())
+                .sort(([a], [b]) => a - b)
+                .map(([, b]) => ({
+                  id: b.id || b.name,
+                  function: {
+                    name: b.name,
+                    arguments: (() => { try { return JSON.parse(b.args) as Record<string, unknown>; } catch { return {}; } })(),
+                  },
+                }));
+              resolve({ role: 'assistant', content: accContent || null, tool_calls });
+            } else {
+              resolve({ role: 'assistant', content: accContent || null });
+            }
+          });
+          res.on('error', (e: Error) => reject(e));
         });
-        res.on('end', () => {
-          if (onStats && completionTokens > 0) {
-            const elapsed = (Date.now() - startMs) / 1000;
-            onStats(promptTokens + completionTokens, elapsed > 0 ? completionTokens / elapsed : 0);
-          }
-          if (toolCallBuilders.size > 0) {
-            const tool_calls = Array.from(toolCallBuilders.entries())
-              .sort(([a], [b]) => a - b)
-              .map(([, b]) => ({
-                id: b.id || b.name,
-                function: {
-                  name: b.name,
-                  arguments: (() => { try { return JSON.parse(b.args) as Record<string, unknown>; } catch { return {}; } })(),
-                },
-              }));
-            resolve({ role: 'assistant', content: accContent || null, tool_calls });
-          } else {
-            resolve({ role: 'assistant', content: accContent || null });
-          }
-        });
-        res.on('error', (e: Error) => reject(e));
-      });
-      req.on('error', (e: Error) => reject(new Error(`無法連線到 OpenAI-compatible server (${baseUrl})：${e.message}`)));
-      req.setTimeout(600000, () => { req.destroy(new Error('OpenAI-compatible 呼叫逾時 (600s)')); });
-      req.write(body); req.end();
+
+        req.on('error', (e: Error) => reject(new Error(`無法連線到 OpenAI-compatible server (${baseUrl})：${e.message}`)));
+        req.setTimeout(600000, () => { req.destroy(new Error('OpenAI-compatible 呼叫逾時 (600s)')); });
+        req.write(body); req.end();
+      };
+
+      sendRequest(true);
     } catch (e) { reject(e); }
   });
 }
@@ -1831,11 +2210,25 @@ export function decodeOllamaModel(modelId: string, fallbackUrls: string[]): { ur
 
 /** 編碼 Ollama model ID：多伺服器時加 URL 前綴，單伺服器時返回原始 model 名稱（向後相容）。 */
 export function encodeOllamaModelId(url: string, model: string, allUrls: string[]): string {
+  if (model.startsWith('openai::')) { return model; }
   return allUrls.length > 1 ? `${url}||${model}` : model;
 }
 
 /** 顯示標籤：多伺服器時加上 [hostname:port] 前綴。 */
 export function ollamaDisplayLabel(url: string, model: string, allUrls: string[]): string {
+  if (model.startsWith('openai::')) {
+    const inner = model.slice('openai::'.length);
+    const sep = inner.indexOf('||');
+    const sourceUrl = sep !== -1 ? inner.slice(0, sep) : url;
+    const modelName = sep !== -1 ? inner.slice(sep + 2) : inner;
+    if (allUrls.length <= 1 && sep === -1) { return modelName; }
+    try {
+      const u = new URL(sourceUrl);
+      return `[${u.hostname}:${u.port || (u.protocol === 'https:' ? '443' : '80')}] ${modelName}`;
+    } catch {
+      return modelName;
+    }
+  }
   if (allUrls.length <= 1) return model;
   try { const u = new URL(url); return `[${u.hostname}:${u.port || '11434'}] ${model}`; } catch { return model; }
 }
@@ -1843,27 +2236,63 @@ export function ollamaDisplayLabel(url: string, model: string, allUrls: string[]
 function ollamaListModels(baseUrl: string): Promise<string[]> {
   return new Promise((resolve, reject) => {
     try {
-      const url = new URL('/api/tags', baseUrl);
-      const protocol = url.protocol === 'https:' ? https : http;
-      const options: http.RequestOptions = {
-        hostname: url.hostname,
-        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
-        path: url.pathname,
-        method: 'GET',
+      const ollamaUrl = new URL('/api/tags', baseUrl);
+      const openAiUrl = new URL('/v1/models', baseUrl);
+
+      const loadOpenAiModels = () => {
+        const openAiProtocol = openAiUrl.protocol === 'https:' ? https : http;
+        const openAiReq = openAiProtocol.request({
+          hostname: openAiUrl.hostname,
+          port: openAiUrl.port ? parseInt(openAiUrl.port, 10) : (openAiUrl.protocol === 'https:' ? 443 : 80),
+          path: openAiUrl.pathname,
+          method: 'GET',
+        }, (openAiRes) => {
+          let openAiData = '';
+          openAiRes.on('data', (chunk: Buffer) => { openAiData += chunk; });
+          openAiRes.on('end', () => {
+            if (openAiRes.statusCode !== 200) { reject(new Error('HTTP ' + openAiRes.statusCode)); return; }
+            try {
+              const json = JSON.parse(openAiData);
+              const ids: string[] = (json.data ?? [])
+                .map((m: { id?: string }) => m.id)
+                .filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
+                .map((id: string) => `openai::${baseUrl.replace(/\/$/, '')}||${id}`)
+                .sort();
+              resolve(ids);
+            } catch { reject(new Error('Invalid JSON from /v1/models')); }
+          });
+        });
+        openAiReq.on('error', (e: NodeJS.ErrnoException) => reject(ollamaConnectError(openAiUrl.hostname, e)));
+        openAiReq.setTimeout(8000, () => { openAiReq.destroy(new Error('ETIMEDOUT')); });
+        openAiReq.end();
       };
-      const req = protocol.request(options, (res) => {
+
+      const protocol = ollamaUrl.protocol === 'https:' ? https : http;
+      const req = protocol.request({
+        hostname: ollamaUrl.hostname,
+        port: ollamaUrl.port ? parseInt(ollamaUrl.port, 10) : (ollamaUrl.protocol === 'https:' ? 443 : 11434),
+        path: ollamaUrl.pathname,
+        method: 'GET',
+      }, (res) => {
         let data = '';
         res.on('data', (chunk: Buffer) => { data += chunk; });
         res.on('end', () => {
-          if (res.statusCode !== 200) { reject(new Error('HTTP ' + res.statusCode)); return; }
-          try {
-            const json = JSON.parse(data);
-            const names: string[] = (json.models ?? []).map((m: { name: string }) => m.name).sort();
-            resolve(names);
-          } catch { reject(new Error('Invalid JSON from /api/tags')); }
+          if (res.statusCode === 200) {
+            try {
+              const json = JSON.parse(data);
+              const names: string[] = (json.models ?? []).map((m: { name: string }) => m.name).sort();
+              resolve(names);
+            } catch {
+              reject(new Error('Invalid JSON from /api/tags'));
+            }
+            return;
+          }
+          loadOpenAiModels();
         });
       });
-      req.on('error', (e: NodeJS.ErrnoException) => reject(ollamaConnectError(url.hostname, e)));
+      req.on('error', () => {
+        loadOpenAiModels();
+      });
       req.setTimeout(8000, () => { req.destroy(new Error('ETIMEDOUT')); });
       req.end();
     } catch (e) { reject(e); }
@@ -1874,6 +2303,7 @@ function ollamaCheckConnection(baseUrl: string): Promise<{ ok: boolean; message:
   return new Promise((resolve) => {
     try {
       const url = new URL('/api/tags', baseUrl);
+      const openAiUrl = new URL('/v1/models', baseUrl);
       const protocol = url.protocol === 'https:' ? https : http;
       const options: http.RequestOptions = {
         hostname: url.hostname,
@@ -1882,21 +2312,122 @@ function ollamaCheckConnection(baseUrl: string): Promise<{ ok: boolean; message:
         method: 'GET',
       };
       let settled = false;
+
+      const probeOpenAi = () => {
+        if (settled) { return; }
+        const p = openAiUrl.protocol === 'https:' ? https : http;
+        const req2 = p.request({
+          hostname: openAiUrl.hostname,
+          port: openAiUrl.port ? parseInt(openAiUrl.port, 10) : (openAiUrl.protocol === 'https:' ? 443 : 80),
+          path: openAiUrl.pathname,
+          method: 'GET',
+        }, (res2) => {
+          res2.resume();
+          if (!settled) {
+            settled = true;
+            resolve({ ok: res2.statusCode === 200, message: res2.statusCode === 200 ? 'OpenAI-compatible OK' : 'HTTP ' + res2.statusCode });
+          }
+        });
+        req2.on('error', (e: NodeJS.ErrnoException) => {
+          if (!settled) { settled = true; resolve({ ok: false, message: ollamaConnectError(openAiUrl.hostname, e).message }); }
+        });
+        req2.setTimeout(8000, () => {
+          if (!settled) { settled = true; req2.destroy(); resolve({ ok: false, message: '連線逾時 (8s)，請確認主機 ' + openAiUrl.hostname + ' 可達' }); }
+        });
+        req2.end();
+      };
+
       const req = protocol.request(options, (res) => {
         res.resume();
         if (!settled) {
-          settled = true;
-          resolve({ ok: res.statusCode === 200, message: res.statusCode === 200 ? 'OK' : 'HTTP ' + res.statusCode });
+          if (res.statusCode === 200) {
+            settled = true;
+            resolve({ ok: true, message: 'OK' });
+          } else {
+            probeOpenAi();
+          }
         }
       });
       req.on('error', (e: NodeJS.ErrnoException) => {
-        if (!settled) { settled = true; resolve({ ok: false, message: ollamaConnectError(url.hostname, e).message }); }
+        if (!settled) { probeOpenAi(); }
       });
       req.setTimeout(8000, () => {
-        if (!settled) { settled = true; req.destroy(); resolve({ ok: false, message: '連線逾時 (8s)，請確認主機 ' + url.hostname + ' 可達' }); }
+        if (!settled) { req.destroy(); probeOpenAi(); }
       });
       req.end();
     } catch (e) { resolve({ ok: false, message: e instanceof Error ? e.message : String(e) }); }
+  });
+}
+
+/** 刪除 Ollama 本機模型 */
+function ollamaDeleteModel(baseUrl: string, modelName: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      const url = new URL('/api/delete', baseUrl);
+      const protocol = url.protocol === 'https:' ? https : http;
+      const body = JSON.stringify({ model: modelName });
+      const options: http.RequestOptions = {
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+        path: url.pathname,
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      };
+      const req = protocol.request(options, (res) => {
+        res.resume();
+        if (res.statusCode === 200) { resolve(); }
+        else { reject(new Error('HTTP ' + res.statusCode)); }
+      });
+      req.on('error', (e: NodeJS.ErrnoException) => reject(ollamaConnectError(url.hostname, e)));
+      req.setTimeout(15000, () => { req.destroy(new Error('ETIMEDOUT')); });
+      req.write(body);
+      req.end();
+    } catch (e) { reject(e); }
+  });
+}
+
+/** 拉取 Ollama 模型，透過 onProgress 回報進度字串。返回 Promise，完成或失敗時 resolve/reject。 */
+function ollamaPullModel(
+  baseUrl: string,
+  modelName: string,
+  onProgress: (status: string, percent: number | null) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      const url = new URL('/api/pull', baseUrl);
+      const protocol = url.protocol === 'https:' ? https : http;
+      const body = JSON.stringify({ model: modelName, stream: true });
+      const options: http.RequestOptions = {
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+        path: url.pathname,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      };
+      const req = protocol.request(options, (res) => {
+        if (res.statusCode !== 200) { res.resume(); reject(new Error('HTTP ' + res.statusCode)); return; }
+        let buf = '';
+        res.on('data', (chunk: Buffer) => {
+          buf += chunk.toString();
+          const lines = buf.split('\n');
+          buf = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.trim()) { continue; }
+            try {
+              const obj = JSON.parse(line) as { status?: string; completed?: number; total?: number; error?: string };
+              if (obj.error) { reject(new Error(obj.error)); return; }
+              const pct = (obj.total && obj.total > 0) ? Math.round((obj.completed ?? 0) / obj.total * 100) : null;
+              onProgress(obj.status ?? '', pct);
+            } catch { /* skip malformed JSON lines */ }
+          }
+        });
+        res.on('end', () => resolve());
+        res.on('error', (e: Error) => reject(e));
+      });
+      req.on('error', (e: NodeJS.ErrnoException) => reject(ollamaConnectError(url.hostname, e)));
+      req.write(body);
+      req.end();
+    } catch (e) { reject(e); }
   });
 }
 

@@ -15,9 +15,15 @@ IF /I "%1"=="" (
   REM prefer local if npm available, else use docker
   npm --version >nul 2>&1
   IF NOT ERRORLEVEL 1 GOTO local
-  docker --version >nul 2>&1
+  docker info >nul 2>&1
   IF NOT ERRORLEVEL 1 GOTO docker
-  echo Neither npm nor docker found. Please install Node.js or Docker.
+  docker --version >nul 2>&1
+  IF NOT ERRORLEVEL 1 (
+    echo Docker CLI is installed, but the Docker engine is not running.
+    echo Start Docker Desktop or use: build.bat local
+    GOTO fail
+  )
+  echo Neither npm nor Docker was found. Please install Node.js or Docker.
   GOTO fail
 )
 
@@ -91,6 +97,12 @@ echo ---------- Docker build ----------
 docker --version >nul 2>&1
 IF ERRORLEVEL 1 (
   echo Docker not found. Install Docker or use "local" build.
+  GOTO fail
+)
+docker info >nul 2>&1
+IF ERRORLEVEL 1 (
+  echo Docker CLI is installed, but the Docker engine is not running.
+  echo Start Docker Desktop, then rerun build.bat docker.
   GOTO fail
 )
 if exist "%HOSTROOT%\dist" rd /s /q "%HOSTROOT%\dist"

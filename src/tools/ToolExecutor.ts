@@ -30,6 +30,78 @@ export interface ToolExecutorCallbacks {
   handleWhatsAppTool: (name: string, args: Record<string, unknown>) => Promise<string>;
 }
 
+// ─── Unified Diff helper ──────────────────────────────────────────────────────
+function computeUnifiedDiff(
+  aLines: string[], bLines: string[],
+  fileA: string, fileB: string,
+  contextLines: number
+): string {
+  // 簡易 LCS-based unified diff
+  const m = aLines.length, n = bLines.length;
+  // DP LCS table (只存長度，用回溯)
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (aLines[i - 1] === bLines[j - 1]) { dp[i][j] = dp[i-1][j-1] + 1; }
+      else { dp[i][j] = Math.max(dp[i-1][j], dp[i][j-1]); }
+    }
+  }
+  // Backtrack to get edit script
+  type Edit = { op: ' ' | '-' | '+'; line: string; ai: number; bi: number };
+  const edits: Edit[] = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && aLines[i-1] === bLines[j-1]) {
+      edits.push({ op: ' ', line: aLines[i-1], ai: i, bi: j }); i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+      edits.push({ op: '+', line: bLines[j-1], ai: i, bi: j }); j--;
+    } else {
+      edits.push({ op: '-', line: aLines[i-1], ai: i, bi: j }); i--;
+    }
+  }
+  edits.reverse();
+  // Build hunks
+  const changed = new Set(edits.map((e, idx) => e.op !== ' ' ? idx : -1).filter(x => x >= 0));
+  if (changed.size === 0) { return ''; }
+  const inHunk = new Set<number>();
+  for (const c of changed) {
+    for (let k = Math.max(0, c - contextLines); k <= Math.min(edits.length - 1, c + contextLines); k++) {
+      inHunk.add(k);
+    }
+  }
+  const lines: string[] = [`--- ${fileA}`, `+++ ${fileB}`];
+  let inBlock = false, aStart = 0, bStart = 0, aCount = 0, bCount = 0;
+  const hunkLines: string[] = [];
+  const flushHunk = () => {
+    if (hunkLines.length) {
+      lines.push(`@@ -${aStart},${aCount} +${bStart},${bCount} @@`);
+      lines.push(...hunkLines);
+      hunkLines.length = 0; inBlock = false;
+    }
+  };
+  let aIdx = 1, bIdx = 1;
+  for (let k = 0; k < edits.length; k++) {
+    const e = edits[k];
+    if (inHunk.has(k)) {
+      if (!inBlock) {
+        flushHunk();
+        aStart = e.op === '+' ? aIdx : aIdx;
+        bStart = e.op === '-' ? bIdx : bIdx;
+        aCount = 0; bCount = 0; inBlock = true;
+      }
+      hunkLines.push(e.op + e.line);
+      if (e.op !== '+') { aCount++; aIdx++; }
+      if (e.op !== '-') { bCount++; bIdx++; }
+    } else {
+      if (inBlock) { flushHunk(); }
+      if (e.op !== '+') { aIdx++; }
+      if (e.op !== '-') { bIdx++; }
+    }
+  }
+  flushHunk();
+  return lines.join('\n');
+}
+
 export class ToolExecutor {
   private _toolCache = new Map<string, { value: string; ts: number }>();
   private static readonly TOOL_CACHE_TTL = 30_000;
@@ -54,7 +126,8 @@ export class ToolExecutor {
       this._callbacks.log(`WA agent: auto-allow tool category=${category} tool=${toolName || '(none)'}`);
       return Promise.resolve(true);
     }
-    if (pcfg.get<boolean>('agentAutoApproveWrite', false) && (category === 'write' || toolName === 'write_file' || toolName === 'replace_in_file')) {
+    const _autoWriteTools = new Set(['write_file','replace_in_file','insert_in_file','replace_all_in_file','batch_replace','rename_file','copy_file','todo_write','memory_write']);
+    if (pcfg.get<boolean>('agentAutoApproveWrite', false) && (category === 'write' || (toolName && _autoWriteTools.has(toolName)))) {
       return Promise.resolve(true);
     }
     if ((toolName && alwaysAllowList.includes(toolName)) || alwaysAllowList.includes(category)) {
@@ -379,7 +452,69 @@ export class ToolExecutor {
       } catch { resolve(null); }
     });
   }
+  /** 常見替代工具名稱 → 正式工具名稱映射表（供各家 LLM 使用不同名稱時自動對齊） */
+  private static readonly TOOL_ALIASES: Record<string, string> = {
+    // shell / 終端
+    'run_shell_command':  'run_command',
+    'shell':              'run_command',
+    'execute_command':    'run_command',
+    'bash':               'run_command',
+    'terminal':           'run_terminal',
+    'run_bash':           'run_command',
+    'exec':               'run_command',
+    // Python
+    'python_interpreter': 'run_python',
+    'python':             'run_python',
+    'execute_python':     'run_python',
+    'run_code':           'run_python',
+    // 瀏覽器
+    'browser':            'browser_navigate',
+    'navigate':           'browser_navigate',
+    'open_url':           'open_browser',
+    'visit_url':          'browser_navigate',
+    'web_browse':         'browser_navigate',
+    // 檔案讀取
+    'read_file_content':  'read_file',
+    'get_file':           'read_file',
+    'file_read':          'read_file',
+    // 網路請求
+    'http_get':           'http_request',
+    'http_post':          'http_request',
+    'request':            'http_request',
+    'curl':               'fetch_url',
+    'wget':               'fetch_url',
+    // 搜尋
+    'search':             'search_workspace',
+    'grep':               'search_regex',
+    'find':               'search_workspace',
+    // meta 派發器別名
+    'agent:run_tool':     'agent_run_tool',
+    'run_tool':           'agent_run_tool',   // LLM 常誤用 run_tool 作為 meta-dispatcher
+    'tool_call':          'agent_run_tool',
+    'call_tool':          'agent_run_tool',
+    'invoke_tool':        'agent_run_tool',
+    // 檔案讀取備用名
+    'view_file':          'read_file',
+    'cat':                'read_file',
+    'open_file':          'read_file',
+    'show_file':          'read_file',
+    // 分區讀取別名
+    'grep_file':          'read_file_smart',
+    'grep_log':           'read_file_smart',
+    'read_log':           'read_file_smart',
+    'tail_file':          'read_file_smart',
+    'head_file':          'read_file_smart',
+    'search_file':        'read_file_smart',
+    'filter_file':        'read_file_smart',
+  };
+
   public async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+    // 工具名稱正規化：將常見替代名稱映射至正式名稱
+    const resolved = ToolExecutor.TOOL_ALIASES[name] ?? name;
+    if (resolved !== name) {
+      this._callbacks.log(`executeTool: alias "${name}" → "${resolved}"`);
+      return this.executeTool(resolved, args);
+    }
     const folders = vscode.workspace.workspaceFolders ?? [];
     const wsRoot = folders[0]?.uri.fsPath ?? '';
     const resolvePath = (p: string) => {
@@ -396,6 +531,57 @@ export class ToolExecutor {
       }
       return path.join(wsRoot, p);
     };
+
+    /**
+     * 三層優先順序路徑解析：
+     *  1. 絕對路徑 / 相對路徑（存在於磁碟）→ 直接使用
+     *  2. 找不到 → 查 VS Code 已開啟的 openTextDocuments（basename 或 相對路徑 suffix 比對）
+     *  3. 還找不到 → workspace.findFiles 在整個工作區搜尋
+     */
+    const resolvePathWithPriority = async (raw: string): Promise<string> => {
+      if (!raw) { return wsRoot; }
+      // ① 絕對路徑直接用
+      if (path.isAbsolute(raw)) {
+        try { require('fs').accessSync(raw); return raw; } catch { /* fall through */ }
+      }
+      // ① 相對路徑：先嘗試 workspace folder 解析
+      const candidate = resolvePath(raw);
+      try { require('fs').accessSync(candidate); return candidate; } catch { /* not on disk */ }
+
+      // ② 已開啟的 editor documents（不須在磁碟，可能是 untitled 或虛擬 FS）
+      const rawBase = path.basename(raw).toLowerCase();
+      const rawNorm = raw.replace(/\\/g, '/').toLowerCase();
+      for (const doc of vscode.workspace.textDocuments) {
+        const docPath = doc.uri.fsPath;
+        const docNorm = docPath.replace(/\\/g, '/').toLowerCase();
+        if (docNorm.endsWith(rawNorm) || path.basename(docPath).toLowerCase() === rawBase) {
+          return docPath;
+        }
+      }
+
+      // ③ workspace.findFiles 搜全工作區
+      try {
+        // 先嘗試精確 glob（保留原始路徑結構）
+        const exactGlob = `**/${raw.replace(/\\/g, '/')}`;
+        const found = await vscode.workspace.findFiles(exactGlob, '**/node_modules/**', 5);
+        if (found.length > 0) {
+          // 若多個結果，優先選最短路徑（最靠近根目錄）
+          found.sort((a, b) => a.fsPath.length - b.fsPath.length);
+          return found[0].fsPath;
+        }
+        // basename glob fallback
+        const baseGlob = `**/${rawBase}`;
+        const found2 = await vscode.workspace.findFiles(baseGlob, '**/node_modules/**', 5);
+        if (found2.length > 0) {
+          found2.sort((a, b) => a.fsPath.length - b.fsPath.length);
+          return found2[0].fsPath;
+        }
+      } catch { /* ignore findFiles error */ }
+
+      // fallback：回傳原始 resolvePath 結果（讓呼叫端的 stat 報「找不到」）
+      return candidate;
+    };
+
     switch (name) {
       case 'get_active_file': {
         const editor = vscode.window.activeTextEditor;
@@ -403,7 +589,7 @@ export class ToolExecutor {
         return `檔案: ${editor.document.uri.fsPath}\n\n${editor.document.getText()}`;
       }
       case 'read_file': {
-        const fpath = resolvePath(args.path as string);
+        const fpath = await resolvePathWithPriority(args.path as string);
         const rfKey = `rf:${fpath}`;
         const rfCached = this._toolCache.get(rfKey);
         if (rfCached && Date.now() - rfCached.ts < ToolExecutor.TOOL_CACHE_TTL) { return rfCached.value; }
@@ -413,13 +599,219 @@ export class ToolExecutor {
         catch { return `錯誤：找不到檔案 ${fpath}`; }
         const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
         if (fileStat.size > MAX_BYTES) {
-          return `檔案過大（${(fileStat.size / 1024 / 1024).toFixed(1)} MB > 5 MB），拒絕讀取以防止凍結。請改用 search_regex 或指定行範圍。`;
+          // 自動降階到 read_file_smart
+          // Build log 策略：先取尾端 300 行（錯誤在尾端），再附帶全檔 error 關鍵字搜尋
+          const ext = fpath.split('.').pop()?.toLowerCase() ?? '';
+          const isLog = ['log', 'txt', 'out', 'err', 'bld'].includes(ext);
+          const sizeMb = (fileStat.size / 1024 / 1024).toFixed(1);
+          if (isLog) {
+            // 兩段回傳：尾端 300 行 + error 關鍵字行
+            const tailResult  = await this.executeTool('read_file_smart', { path: args.path, tail: 300, max_kb: 96 });
+            const errorResult = await this.executeTool('read_file_smart', {
+              path: args.path,
+              pattern: 'error :|Error:|BUILD FAILURE|undefined reference|Unresolved|cannot find|fatal error',
+              context_lines: 0,
+              max_kb: 64,
+            });
+            return `⚠️ 檔案過大（${sizeMb} MB），自動分兩段回傳——\n\n` +
+              `【尾端 300 行（最終建置結果）】\n${tailResult}\n\n` +
+              `【全檔 error 關鍵字行】\n${errorResult}`;
+          } else {
+            const headResult = await this.executeTool('read_file_smart', { path: args.path, head: 300, max_kb: 64 });
+            return `⚠️ 檔案過大（${sizeMb} MB），自動回傳前 300 行：\n${headResult}`;
+          }
         }
         const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
         const text = Buffer.from(bytes).toString('utf8');
         const rfResult = text.length > 50000 ? text.slice(0, 50000) + '\n…（已截斷至 50KB）' : text;
         if (text.length <= 10000) { this._toolCache.set(rfKey, { value: rfResult, ts: Date.now() }); }
         return rfResult;
+      }
+      case 'read_file_smart': {
+        // 分區讀取大型檔案：支援行範圍、grep 過濾、head/tail，不會把整個檔案載入記憶體
+        const rfsFpath = await resolvePathWithPriority(args.path as string);
+        const rfsPattern   = args.pattern   ? String(args.pattern)          : null;
+        const rfsStartLine = args.start_line ? Math.max(1, Number(args.start_line)) : null;
+        const rfsEndLine   = args.end_line   ? Math.max(1, Number(args.end_line))   : null;
+        const rfsHead      = args.head       ? Math.max(1, Number(args.head))       : null;
+        const rfsTail      = args.tail       ? Math.max(1, Number(args.tail))       : null;
+        const rfsCtx       = args.context_lines ? Math.max(0, Number(args.context_lines)) : 0;
+        const rfsMaxKb     = args.max_kb     ? Math.max(1, Math.min(512, Number(args.max_kb))) : 128;
+
+        try {
+          const nodefs    = require('fs') as typeof import('fs');
+          const readline  = require('readline') as typeof import('readline');
+
+          // 取得檔案資訊
+          let stat: import('fs').Stats;
+          try { stat = nodefs.statSync(rfsFpath); }
+          catch { return `錯誤：找不到檔案 ${rfsFpath}`; }
+          const fileSizeMb = (stat.size / 1024 / 1024).toFixed(1);
+
+          const rfsRegex = rfsPattern ? new RegExp(rfsPattern, 'i') : null;
+          const maxOutputBytes = rfsMaxKb * 1024;
+
+          // 收集匹配行（含 context 支援）
+          const matchedLines: Array<{ lineNo: number; text: string; isContext?: boolean }> = [];
+          const ringBuffer: string[] = [];                // 用於 context_lines 的前置緩衝
+          const pendingCtxLineNos = new Set<number>();    // 標記需要輸出的後置 context 行號
+          let totalFileLines = 0;                         // 全檔案行數（用於計算百分比）
+
+          await new Promise<void>((resolve, reject) => {
+            const rl = readline.createInterface({
+              input: nodefs.createReadStream(rfsFpath, { encoding: 'utf8' }),
+              crlfDelay: Infinity,
+            });
+            let lineNo = 0;
+            let outputBytes = 0;
+            let collecting = true;    // 停止收集但繼續計行以取得全檔行數
+            let tailLines: string[] = rfsTail ? [] : [];
+
+            rl.on('line', (line: string) => {
+              lineNo++;
+
+              if (!collecting) { return; } // 繼續計行但不收集
+
+              // tail 模式：保留最後 N 行
+              if (rfsTail) {
+                tailLines.push(line);
+                if (tailLines.length > rfsTail) tailLines.shift();
+                return;
+              }
+
+              // head 模式
+              if (rfsHead && lineNo > rfsHead) { collecting = false; return; }
+
+              // 行範圍過濾
+              if (rfsStartLine && lineNo < rfsStartLine) {
+                if (rfsCtx > 0) { ringBuffer.push(line); if (ringBuffer.length > rfsCtx) ringBuffer.shift(); }
+                return;
+              }
+              if (rfsEndLine && lineNo > rfsEndLine) { collecting = false; return; }
+
+              const isMatch = rfsRegex ? rfsRegex.test(line) : true;
+
+              if (isMatch) {
+                // 先補前置 context
+                if (rfsCtx > 0 && rfsRegex) {
+                  for (let i = 0; i < ringBuffer.length; i++) {
+                    const ctxNo = lineNo - ringBuffer.length + i;
+                    if (!matchedLines.find(m => m.lineNo === ctxNo)) {
+                      matchedLines.push({ lineNo: ctxNo, text: ringBuffer[i], isContext: true });
+                    }
+                  }
+                  ringBuffer.length = 0;
+                  // 標記後置 context
+                  for (let j = 1; j <= rfsCtx; j++) pendingCtxLineNos.add(lineNo + j);
+                }
+                matchedLines.push({ lineNo, text: line });
+                outputBytes += line.length + 1;
+                if (outputBytes > maxOutputBytes) { collecting = false; return; }
+              } else {
+                // 後置 context
+                if (pendingCtxLineNos.has(lineNo)) {
+                  pendingCtxLineNos.delete(lineNo);
+                  matchedLines.push({ lineNo, text: line, isContext: true });
+                  outputBytes += line.length + 1;
+                }
+                if (rfsCtx > 0 && rfsRegex) {
+                  ringBuffer.push(line);
+                  if (ringBuffer.length > rfsCtx) ringBuffer.shift();
+                }
+              }
+            });
+            rl.on('close', () => {
+              totalFileLines = lineNo;
+              // 處理 tail 模式結果
+              if (rfsTail && tailLines.length > 0) {
+                const tailStart = lineNo - tailLines.length + 1;
+                tailLines.forEach((tl, i) => {
+                  matchedLines.push({ lineNo: tailStart + i, text: tl });
+                });
+              }
+              resolve();
+            });
+            rl.on('error', reject);
+          });
+
+          const header = `📄 ${rfsFpath}  (${fileSizeMb} MB, ${totalFileLines.toLocaleString()} 行)` +
+            (rfsPattern  ? `  pattern="${rfsPattern}"` : '') +
+            (rfsStartLine ? `  lines=${rfsStartLine}-${rfsEndLine ?? '∞'}` : '') +
+            (rfsHead     ? `  head=${rfsHead}` : '') +
+            (rfsTail     ? `  tail=${rfsTail}` : '') +
+            `  matched=${matchedLines.length} 行\n`;
+
+          if (matchedLines.length === 0) {
+            return header + '（無匹配行）';
+          }
+
+          let totalOut = 0;
+          const lines = matchedLines.map(m => {
+            totalOut += m.text.length + 1;
+            const pct = totalFileLines > 0 ? ` (${(m.lineNo * 100 / totalFileLines).toFixed(1)}%)` : '';
+            return `${m.isContext ? '  ' : ''}${String(m.lineNo).padStart(6)}${pct}: ${m.text}`;
+          });
+
+          const truncated = totalOut > maxOutputBytes;
+          const body = lines.join('\n') + (truncated ? `\n…（已達 ${rfsMaxKb}KB 輸出上限，請縮小範圍或增大 max_kb）` : '');
+          return header + body;
+        } catch (e) {
+          return `read_file_smart 錯誤：${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
+      case 'read_files': {
+        const rawPaths = Array.isArray(args.paths) ? (args.paths as unknown[]).map(String).filter(Boolean) : [];
+        if (rawPaths.length === 0) { return '錯誤：paths 為空陣列'; }
+        const MAX_FILES = 30;
+        const truncatedPaths = rawPaths.slice(0, MAX_FILES);
+        const overflowFiles = rawPaths.length > MAX_FILES ? rawPaths.length - MAX_FILES : 0;
+        const maxPerFileKb = Math.max(1, Math.min(512, Number(args.max_per_file_kb) || 64));
+        const maxTotalKb = Math.max(maxPerFileKb, Math.min(2048, Number(args.max_total_kb) || 256));
+        const maxPerBytes = maxPerFileKb * 1024;
+        const maxTotalBytes = maxTotalKb * 1024;
+        const FILE_HARD_MAX = 5 * 1024 * 1024;
+        const parts: string[] = [];
+        let totalBytes = 0;
+        let stoppedAt = -1;
+        for (let i = 0; i < truncatedPaths.length; i++) {
+          if (totalBytes >= maxTotalBytes) { stoppedAt = i; break; }
+          const p = truncatedPaths[i];
+          const fpath = resolvePath(p);
+          let header = `=== ${p} ===\n`;
+          let body = '';
+          try {
+            const stat = await vscode.workspace.fs.stat(vscode.Uri.file(fpath));
+            if (stat.size > FILE_HARD_MAX) {
+              body = `（檔案過大 ${(stat.size / 1024 / 1024).toFixed(1)} MB > 5 MB，跳過）\n`;
+            } else {
+              const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
+              let text = Buffer.from(bytes).toString('utf8');
+              if (text.length > maxPerBytes) {
+                text = text.slice(0, maxPerBytes) + `\n…（已截斷至 ${maxPerFileKb}KB，原始 ${Math.round(text.length / 1024)}KB）\n`;
+              }
+              const remaining = maxTotalBytes - totalBytes - header.length;
+              if (text.length > remaining) {
+                text = text.slice(0, Math.max(0, remaining)) + `\n…（達總量上限 ${maxTotalKb}KB，本檔截斷）\n`;
+              }
+              body = text + (text.endsWith('\n') ? '' : '\n');
+            }
+          } catch {
+            body = `（找不到檔案：${fpath}）\n`;
+          }
+          parts.push(header + body);
+          totalBytes += header.length + body.length;
+        }
+        const summary: string[] = [];
+        const readCount = stoppedAt === -1 ? truncatedPaths.length : stoppedAt;
+        summary.push(`📚 read_files: 已讀取 ${readCount}/${rawPaths.length} 個檔案，總 ${(totalBytes / 1024).toFixed(1)}KB`);
+        if (stoppedAt !== -1) {
+          const skipped = truncatedPaths.slice(stoppedAt).concat(rawPaths.slice(MAX_FILES));
+          summary.push(`⚠️ 達總量上限（${maxTotalKb}KB），未讀取：${skipped.slice(0, 10).join(', ')}${skipped.length > 10 ? ` …(+${skipped.length - 10})` : ''}`);
+          summary.push(`💡 請對剩餘檔案再次呼叫 read_files 並調整 max_total_kb，或改用 search_regex 縮小範圍。`);
+        } else if (overflowFiles > 0) {
+          summary.push(`⚠️ paths 數量超過上限 ${MAX_FILES}，未處理 ${overflowFiles} 個檔案。`);
+        }
+        return summary.join('\n') + '\n\n' + parts.join('\n');
       }
       case 'write_file': {
         const fpath = resolvePath(args.path as string);
@@ -431,6 +823,7 @@ export class ToolExecutor {
         if (!allowed) { return '使用者已拒絕寫入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
         this._toolCache.delete(`rf:${fpath}`);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now() });
         return `已寫入 ${fpath}（${content.length} 字元）`;
       }
       case 'replace_in_file': {
@@ -445,7 +838,308 @@ export class ToolExecutor {
         if (!allowed) { return '使用者已拒絕編輯操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.replace(oldStr, newStr), 'utf8'));
         this._toolCache.delete(`rf:${fpath}`);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'replace', ts: Date.now() });
         return `已更新 ${fpath}`;
+      }
+      case 'insert_in_file': {
+        // 在指定行號後插入內容（1-based；line=0 表示在最前面插入）
+        const fpath = resolvePath(args.path as string);
+        const lineNum = Math.max(0, Number(args.line) || 0);
+        const insertContent = (args.content as string) ?? '';
+        let original: string;
+        try {
+          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
+          original = Buffer.from(bytes).toString('utf8');
+        } catch {
+          return `錯誤：找不到檔案 ${fpath}`;
+        }
+        // 保留原始行尾（CRLF 或 LF）
+        const hasCrlf = original.includes('\r\n');
+        const lineEnding = hasCrlf ? '\r\n' : '\n';
+        const lines = original.split(/\r?\n/);
+        if (lineNum > lines.length) {
+          return `錯誤：行號 ${lineNum} 超過檔案總行數 ${lines.length}`;
+        }
+        const insertLines = insertContent.split(/\r?\n/);
+        lines.splice(lineNum, 0, ...insertLines);
+        const newContent = lines.join(lineEnding);
+        const ifDiff: ToolPermissionDiff = { filePath: fpath, before: original, after: newContent, mode: 'replace', oldStr: '', newStr: insertContent };
+        const ifAllowed = await this.requestPermission('write', `插入檔案: ${path.basename(fpath)} 第 ${lineNum} 行後（${insertLines.length} 行）`, 'insert_in_file', ifDiff);
+        if (!ifAllowed) { return '使用者已拒絕插入操作'; }
+        await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(newContent, 'utf8'));
+        this._toolCache.delete(`rf:${fpath}`);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'insert', ts: Date.now() });
+        return `已在 ${fpath} 第 ${lineNum} 行後插入 ${insertLines.length} 行`;
+      }
+      case 'glob': {
+        // 列出符合 glob 樣式的檔案（類似 OpenHarness GlobTool）
+        const globPattern = (args.pattern as string) || '**/*';
+        const globRoot = (args.root as string) ? resolvePath(args.root as string) : wsRoot;
+        const globLimit = Math.min(Math.max(Number(args.limit) || 200, 1), 5000);
+        const globExclude = '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/build/**,**/__pycache__/**}';
+        try {
+          // 若 pattern 含絕對路徑，只取樣式部分
+          const relPattern = path.isAbsolute(globPattern) ? path.relative(globRoot, globPattern) : globPattern;
+          const globUris = await vscode.workspace.findFiles(
+            new vscode.RelativePattern(globRoot, relPattern),
+            globExclude, globLimit
+          );
+          if (globUris.length === 0) { return '(no matches)'; }
+          const sorted = globUris
+            .map(u => path.relative(globRoot, u.fsPath).replace(/\\/g, '/'))
+            .sort();
+          return sorted.join('\n') + `\n\n共 ${sorted.length} 個檔案`;
+        } catch (e) { return `glob 錯誤: ${e}`; }
+      }
+      case 'outline_file': {
+        // 快速抽取函式/類別/typedef/protocol 宣告（不讀完整檔案內容）
+        const ofPath = resolvePath(args.path as string);
+        let ofBytes: Uint8Array;
+        try { ofBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(ofPath)); }
+        catch { return `錯誤：找不到檔案 ${ofPath}`; }
+        const ofText = Buffer.from(ofBytes).toString('utf8').slice(0, 200_000);
+        const ofLines = ofText.split('\n');
+        const ofExt = path.extname(ofPath).toLowerCase();
+        // 宣告正規式：根據副檔名選擇策略
+        const isCLike = ['.c','.h','.cpp','.cc','.cxx'].includes(ofExt);
+        const isUefi  = ['.inf','.dec','.dsc','.fdf'].includes(ofExt);
+        const ofResults: string[] = [];
+        if (isUefi) {
+          // INF/DEC/DSC: 擷取 [Section] 標題
+          for (let i = 0; i < ofLines.length; i++) {
+            const m = /^\[([A-Za-z][\w.]+)\]/.exec(ofLines[i]);
+            if (m) ofResults.push(`L${i+1}  [${m[1]}]`);
+          }
+        } else if (isCLike) {
+          // C/C++：函式定義（回傳型別 + EFIAPI/OPTIONAL + 函式名稱(）、typedef、struct、enum
+          const cDeclRe = /^(?:[A-Z_a-z][\w*]+\s+)+(?:EFIAPI\s+)?(\w+)\s*\(|^typedef\s+.*?(\w+)\s*;|^(?:typedef\s+)?(?:struct|union|enum)\s+(\w+)|^#define\s+(\w+)/;
+          for (let i = 0; i < ofLines.length; i++) {
+            const m = cDeclRe.exec(ofLines[i]);
+            if (m) {
+              const name = m[1] || m[2] || m[3] || m[4];
+              if (name) ofResults.push(`L${i+1}  ${ofLines[i].trim().slice(0, 80)}`);
+            }
+          }
+        } else {
+          // 通用：TS/JS/Python
+          const genRe = /^\s*(?:export\s+)?(?:(?:async\s+)?function\*?\s+([\w$]+)|class\s+([\w$]+)|interface\s+([\w$]+)|type\s+([\w$]+)\s*(?:<[^>]*>)?\s*=|(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>|def\s+([\w_]+)|func\s+([\w_]+)\s*\(|public\s+(?:static\s+)?\S+\s+([\w_]+)\s*\()/;
+          for (let i = 0; i < ofLines.length; i++) {
+            const m = genRe.exec(ofLines[i]);
+            if (m) { const name = m.slice(1).find(Boolean); if (name) ofResults.push(`L${i+1}  ${name}`); }
+          }
+        }
+        if (ofResults.length === 0) { return `${ofPath}\n(未偵測到宣告)`; }
+        return `=== ${path.basename(ofPath)} 宣告摘要 (${ofResults.length} 項) ===\n${ofResults.join('\n')}`;
+      }
+      case 'todo_write': {
+        // 新增或更新 TODO.md 中的項目（inspired by OpenHarness TodoWriteTool）
+        const twItem = (args.item as string || '').trim();
+        if (!twItem) { return '請提供 item 參數'; }
+        const twChecked = !!(args.checked as boolean);
+        const twRelPath = (args.path as string) || 'TODO.md';
+        const twFpath = resolvePath(twRelPath);
+        let twText = '';
+        try { twText = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(twFpath))).toString('utf8'); }
+        catch { twText = '# TODO\n'; }
+        const unchecked = `- [ ] ${twItem}`;
+        const checked   = `- [x] ${twItem}`;
+        const target    = twChecked ? checked : unchecked;
+        let updated = twText;
+        if (twText.includes(unchecked) && twChecked) {
+          updated = twText.replace(unchecked, checked);
+        } else if (!twText.includes(target)) {
+          updated = twText.trimEnd() + `\n${target}\n`;
+        } else {
+          return `無需更改 ${twFpath}`;
+        }
+        await vscode.workspace.fs.writeFile(vscode.Uri.file(twFpath), Buffer.from(updated, 'utf8'));
+        this._toolCache.delete(`rf:${twFpath}`);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: twFpath, op: 'write', ts: Date.now() });
+        return `已更新 ${twFpath}: ${target}`;
+      }
+      case 'memory_read': {
+        // 讀取工作區 MEMORY.md（或指定路徑）
+        const mrRelPath = (args.path as string) || 'MEMORY.md';
+        const mrFpath = resolvePath(mrRelPath);
+        try {
+          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(mrFpath));
+          return Buffer.from(bytes).toString('utf8');
+        } catch {
+          return `(MEMORY.md 不存在於 ${mrFpath})`;
+        }
+      }
+      case 'memory_write': {
+        // 寫入或追加記憶條目到 MEMORY.md（inspired by OpenHarness MemoryManager）
+        const mwTitle   = (args.title   as string || '').trim();
+        const mwContent = (args.content as string || '').trim();
+        const mwAction  = (args.action  as string || 'append'); // append | replace | delete
+        const mwRelPath = (args.path    as string) || 'MEMORY.md';
+        if (!mwTitle && mwAction !== 'replace') { return '請提供 title 參數'; }
+        const mwFpath = resolvePath(mwRelPath);
+        let mwText = '';
+        try { mwText = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(mwFpath))).toString('utf8'); }
+        catch { mwText = '# Memory\n'; }
+        let mwUpdated = mwText;
+        const ts = new Date().toISOString().slice(0, 10);
+        if (mwAction === 'delete') {
+          // 刪除含 title 的段落（## title 開始到下個 ## 之間）
+          const delRe = new RegExp(`## ${mwTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?(?=\n## |$)`, 'g');
+          mwUpdated = mwText.replace(delRe, '').replace(/\n{3,}/g, '\n\n');
+        } else if (mwAction === 'replace') {
+          mwUpdated = `# Memory\n${mwContent}\n`;
+        } else {
+          // append: 新增段落
+          const entry = `\n## ${mwTitle}\n> ${ts}\n\n${mwContent}\n`;
+          if (!mwText.includes(`## ${mwTitle}`)) {
+            mwUpdated = mwText.trimEnd() + entry;
+          } else {
+            // 更新現有段落
+            const updRe = new RegExp(`(## ${mwTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})[\\s\\S]*?(?=\n## |$)`);
+            mwUpdated = mwText.replace(updRe, `$1\n> ${ts}\n\n${mwContent}\n`);
+          }
+        }
+        await vscode.workspace.fs.writeFile(vscode.Uri.file(mwFpath), Buffer.from(mwUpdated, 'utf8'));
+        this._toolCache.delete(`rf:${mwFpath}`);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: mwFpath, op: 'write', ts: Date.now() });
+        return `已更新記憶：${mwFpath}（${mwAction}）`;
+      }
+      case 'rename_file': {
+        // 重新命名或移動檔案/目錄
+        const rfSrc = resolvePath(args.src as string || args.path as string || '');
+        const rfDst = resolvePath(args.dest as string || args.new_path as string || '');
+        if (!rfSrc || !rfDst) { return '請提供 src 與 dest 參數'; }
+        const allowed = await this.requestPermission('write', `重新命名: ${rfSrc} → ${rfDst}`, 'rename_file');
+        if (!allowed) { return '使用者已拒絕操作'; }
+        try {
+          const overwrite = !!(args.overwrite as boolean);
+          await vscode.workspace.fs.rename(vscode.Uri.file(rfSrc), vscode.Uri.file(rfDst), { overwrite });
+          this._toolCache.delete(`rf:${rfSrc}`);
+          this._toolCache.delete(`rf:${rfDst}`);
+          this._callbacks.postToWebview({ type: 'fileModified', filePath: rfDst, op: 'rename', ts: Date.now() });
+          return `已重新命名: ${rfSrc} → ${rfDst}`;
+        } catch (e) { return `rename_file 錯誤: ${e}`; }
+      }
+      case 'copy_file': {
+        // 複製檔案到新位置
+        const cfSrc = resolvePath(args.src as string || args.path as string || '');
+        const cfDst = resolvePath(args.dest as string || args.new_path as string || '');
+        if (!cfSrc || !cfDst) { return '請提供 src 與 dest 參數'; }
+        const cfAllowed = await this.requestPermission('write', `複製: ${cfSrc} → ${cfDst}`, 'copy_file');
+        if (!cfAllowed) { return '使用者已拒絕操作'; }
+        try {
+          const overwrite = !!(args.overwrite as boolean);
+          await vscode.workspace.fs.copy(vscode.Uri.file(cfSrc), vscode.Uri.file(cfDst), { overwrite });
+          this._toolCache.delete(`rf:${cfDst}`);
+          this._callbacks.postToWebview({ type: 'fileModified', filePath: cfDst, op: 'write', ts: Date.now() });
+          return `已複製: ${cfSrc} → ${cfDst}`;
+        } catch (e) { return `copy_file 錯誤: ${e}`; }
+      }
+      case 'diff_files': {
+        // 比較兩個檔案，回傳 unified diff
+        const dfA = resolvePath(args.a as string || args.path_a as string || '');
+        const dfB = resolvePath(args.b as string || args.path_b as string || '');
+        if (!dfA || !dfB) { return '請提供 a 與 b 參數'; }
+        try {
+          const [bytesA, bytesB] = await Promise.all([
+            vscode.workspace.fs.readFile(vscode.Uri.file(dfA)),
+            vscode.workspace.fs.readFile(vscode.Uri.file(dfB)),
+          ]);
+          const linesA = Buffer.from(bytesA).toString('utf8').split('\n');
+          const linesB = Buffer.from(bytesB).toString('utf8').split('\n');
+          // 簡易 unified diff (Myers LCS)
+          const maxContext = Number(args.context) || 3;
+          const diff = computeUnifiedDiff(linesA, linesB, path.relative(wsRoot, dfA), path.relative(wsRoot, dfB), maxContext);
+          return diff || '（兩個檔案完全相同）';
+        } catch (e) { return `diff_files 錯誤: ${e}`; }
+      }
+      case 'replace_all_in_file': {
+        // 取代檔案中所有符合的字串（replace_in_file 只換第一個）
+        const raPath = resolvePath(args.path as string || '');
+        const raOld  = args.old_str as string;
+        const raNew  = args.new_str as string;
+        if (!raPath || raOld === undefined) { return '請提供 path、old_str、new_str 參數'; }
+        const raAllowed = await this.requestPermission('write', `全部取代 in ${raPath}: "${raOld.slice(0, 40)}"`, 'replace_all_in_file');
+        if (!raAllowed) { return '使用者已拒絕操作'; }
+        try {
+          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(raPath));
+          const original = Buffer.from(bytes).toString('utf8');
+          if (!original.includes(raOld)) { return `找不到字串: "${raOld.slice(0, 60)}" 於 ${raPath}`; }
+          const count = original.split(raOld).length - 1;
+          const updated = original.split(raOld).join(raNew);
+          await vscode.workspace.fs.writeFile(vscode.Uri.file(raPath), Buffer.from(updated, 'utf8'));
+          this._toolCache.delete(`rf:${raPath}`);
+          this._callbacks.postToWebview({ type: 'fileModified', filePath: raPath, op: 'replace', ts: Date.now() });
+          return `已取代 ${count} 處於 ${raPath}`;
+        } catch (e) { return `replace_all_in_file 錯誤: ${e}`; }
+      }
+      case 'batch_replace': {
+        // 跨多個檔案批次搜尋取代（正規表達式，glob 篩選）
+        const brPattern  = args.pattern as string;
+        const brReplace  = args.replace as string;
+        const brGlob     = (args.include as string) || '**/*';
+        const brFlags    = ((args.flags as string) || 'g').includes('g') ? (args.flags as string || 'g') : (args.flags as string || 'g') + 'g';
+        if (!brPattern || brReplace === undefined) { return '請提供 pattern 與 replace 參數'; }
+        const brAllowed = await this.requestPermission('write', `批次取代: /${brPattern}/ → "${brReplace.slice(0, 40)}" (${brGlob})`, 'batch_replace');
+        if (!brAllowed) { return '使用者已拒絕操作'; }
+        let brRe: RegExp;
+        try { brRe = new RegExp(brPattern, brFlags); } catch (e) { return `正規表達式錯誤: ${e}`; }
+        const brUris = await vscode.workspace.findFiles(
+          new vscode.RelativePattern(wsRoot, brGlob),
+          '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**}', 2000
+        );
+        const brResults: string[] = [];
+        let brTotalFiles = 0;
+        for (const uri of brUris) {
+          try {
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const original = Buffer.from(bytes).toString('utf8');
+            const updated = original.replace(brRe, brReplace);
+            if (updated !== original) {
+              await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
+              this._toolCache.delete(`rf:${uri.fsPath}`);
+              this._callbacks.postToWebview({ type: 'fileModified', filePath: uri.fsPath, op: 'replace', ts: Date.now() });
+              const count = (original.match(new RegExp(brPattern, brFlags)) || []).length;
+              brResults.push(`  ${path.relative(wsRoot, uri.fsPath).replace(/\\/g,'/')}  (${count} 處)`);
+              brTotalFiles++;
+            }
+          } catch { /* skip binary / unreadable */ }
+        }
+        if (brTotalFiles === 0) { return `找不到符合的內容 (/${brPattern}/ in ${brGlob})`; }
+        return `批次取代完成，共修改 ${brTotalFiles} 個檔案:\n${brResults.join('\n')}`;
+      }
+      case 'file_info': {
+        // 取得檔案資訊（大小、行數、BOM/編碼、最後修改時間）
+        const fiPath = resolvePath(args.path as string || '');
+        if (!fiPath) { return '請提供 path 參數'; }
+        try {
+          const [stat, bytes] = await Promise.all([
+            vscode.workspace.fs.stat(vscode.Uri.file(fiPath)),
+            vscode.workspace.fs.readFile(vscode.Uri.file(fiPath)),
+          ]);
+          const buf = Buffer.from(bytes);
+          const sizeKb = (stat.size / 1024).toFixed(1);
+          // 偵測 BOM
+          let encoding = 'UTF-8';
+          if (buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) { encoding = 'UTF-8 BOM'; }
+          else if (buf[0] === 0xFF && buf[1] === 0xFE) { encoding = 'UTF-16 LE BOM'; }
+          else if (buf[0] === 0xFE && buf[1] === 0xFF) { encoding = 'UTF-16 BE BOM'; }
+          const text = buf.toString('utf8');
+          const lineCount = text.split('\n').length;
+          const crlf = (text.match(/\r\n/g) || []).length;
+          const lf   = (text.match(/(?<!\r)\n/g) || []).length;
+          const eol  = crlf > lf ? 'CRLF' : 'LF';
+          const mtime = new Date(stat.mtime).toISOString().replace('T',' ').slice(0,19);
+          const isDir = (stat.type & vscode.FileType.Directory) !== 0;
+          return [
+            `路徑: ${fiPath}`,
+            `類型: ${isDir ? '目錄' : '檔案'}`,
+            `大小: ${stat.size} bytes (${sizeKb} KB)`,
+            `行數: ${lineCount}`,
+            `行尾: ${eol} (CRLF:${crlf} / LF:${lf})`,
+            `編碼: ${encoding}`,
+            `修改時間: ${mtime} UTC`,
+          ].join('\n');
+        } catch (e) { return `file_info 錯誤: ${e}`; }
       }
       case 'list_dir': {
         const dirArg = (args.path as string) || '';
@@ -548,7 +1242,12 @@ export class ToolExecutor {
         return new Promise<string>((resolve) => {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
           const { exec } = require('child_process') as typeof import('child_process');
-          exec(cmd, { cwd, timeout: 30000, shell: true as unknown as string }, (_err, stdout, stderr) => {
+          // On Windows, auto-detect Unix-style commands and run under PowerShell
+          const unixCmdPattern = /^(find|grep|ls|cat|wc|head|tail|awk|sed|chmod|which|touch|mkdir|rm|cp|mv|echo|sort|uniq|xargs|cut|tr|diff|tar|curl|wget)\s/;
+          const shellOpt: string | boolean = (process.platform === 'win32' && unixCmdPattern.test(cmd.trim()))
+            ? 'powershell.exe'
+            : true;
+          exec(cmd, { cwd, timeout: 30000, shell: shellOpt as unknown as string }, (_err, stdout, stderr) => {
             const out = (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
             resolve(out.trim().slice(0, 8000) || '(無輸出)');
           });
@@ -1256,7 +1955,7 @@ except Exception as e:
       case 'agentic_file_search': {
         const afQuery = ((args.query as string) ?? '').trim();
         if (!afQuery) return '請提供 query 參數';
-        const afInclude = (args.include as string) || '**/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,vue,svelte}';
+        const afInclude = (args.include as string) || '**/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,inf,dec,dsc,fdf,uni,nasm,asm,asl,vue,svelte}';
         const afTopK = Math.min(Math.max(Number(args.top_k) || 10, 1), 30);
         // 從 query 中抽取關鍵字（切 camelCase/snake_case，小寫，去掉停用詞）
         const afStopWords = new Set(['的','在','裡','中','使用','處理','負責','找出','哪個','檔案','函式','類別','實作','實現','相關','所有','一個','如何','為何','what','which','file','for','the','and','or','that','with','from','this','how','where','when']);
@@ -1266,8 +1965,8 @@ except Exception as e:
           .toLowerCase().split(/\s+/)
           .filter(w => w.length >= 2 && !afStopWords.has(w));
         const SKIP_BINARY = new Set(['.png','.jpg','.jpeg','.gif','.ico','.svg','.woff','.woff2','.ttf','.eot','.vsix','.zip','.tar','.gz','.exe','.dll','.pdf','.db','.sqlite','.lock','.wasm']);
-        // 宣告抽取：函式/類別/介面/const/export
-        const afDeclReLines = /^\s*(?:export\s+)?(?:(?:async\s+)?function\*?\s+([\w$]+)|class\s+([\w$]+)|interface\s+([\w$]+)|type\s+([\w$]+)\s*(?:<[^>]*>)?\s*=|(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>|def\s+([\w_]+)|func\s+([\w_]+)\s*\(|public\s+(?:static\s+)?\S+\s+([\w_]+)\s*\()/;
+        // 宣告抽取：函式/類別/介面/const/export，含 C/UEFI EFIAPI 函式與 INF section
+        const afDeclReLines = /^\s*(?:export\s+)?(?:(?:async\s+)?function\*?\s+([\w$]+)|class\s+([\w$]+)|interface\s+([\w$]+)|type\s+([\w$]+)\s*(?:<[^>]*>)?\s*=|(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>|def\s+([\w_]+)|func\s+([\w_]+)\s*\(|public\s+(?:static\s+)?\S+\s+([\w_]+)\s*\(|EFIAPI\s+([\w_]+)\s*\(|^\[([A-Za-z][\w.]+)\])/;
         const afAllUris = await vscode.workspace.findFiles(afInclude, '{**/node_modules/**,**/.git/**,**/out/**,**/dist/**,**/build/**}', 1000);
         const afScores: { rel: string; score: number; decls: string[] }[] = [];
         for (const uri of afAllUris) {
@@ -1655,6 +2354,56 @@ except Exception as e:
         return this._callbacks.handleWhatsAppTool(name, args);
       case 'jenkins_build': {
         const jbCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const jbUseVscode = jbCfg.get<boolean>('jenkinsUseVscodeCommand', true);
+        // 優先：透過 VS Code 外掛指令（VisualeBios）觸發，不走 HTTP，避免 DNS/網域問題
+        if (jbUseVscode) {
+          const jbMode = (args.mode as string) || 'build'; // build | rebuild
+          const jbCmdId = jbMode === 'rebuild'
+            ? jbCfg.get<string>('jenkinsRebuildCommand', 'visualebios.jenkins.rebuild')
+            : jbCfg.get<string>('jenkinsBuildCommand', 'visualebios.jenkins.build');
+          // 解析 Tools Dir 控制：tools_dir 直接指定，或 tools_version=59 自動組成 C:\AmiTools\VebTools\Tools59
+          const jbToolsDir = (args.tools_dir as string | undefined)?.trim();
+          const jbToolsVer = args.tools_version;
+          let jbResolvedToolsDir = '';
+          if (jbToolsDir) {
+            jbResolvedToolsDir = jbToolsDir;
+          } else if (jbToolsVer !== undefined && jbToolsVer !== null && String(jbToolsVer).trim() !== '') {
+            const verStr = String(jbToolsVer).trim();
+            jbResolvedToolsDir = /[\\/:]/.test(verStr) ? verStr : `C:\\AmiTools\\VebTools\\Tools${verStr}`;
+          }
+          const jbToolsScope = ((args.tools_scope as string) || 'workspace').toLowerCase();
+          const jbAllowedCmd = await this.requestPermission('run', `透過 VS Code 外掛執行: ${jbCmdId}${jbResolvedToolsDir ? `\n[ToolsDir → ${jbResolvedToolsDir}]` : ''}`, 'jenkins_build');
+          if (!jbAllowedCmd) return '使用者已拒絕 Jenkins Build';
+          try {
+            const all = await vscode.commands.getCommands(true);
+            if (!all.includes(jbCmdId)) {
+              return `❌ 找不到 VS Code 指令 "${jbCmdId}"。請確認 VisualeBios 外掛已安裝，或在設定 amiAiClaw.jenkinsBuildCommand 中改成正確的 command id。`;
+            }
+            // 套用 Tools Dir（呼叫 visualebios 指令前更新其設定）
+            let jbToolsNote = '';
+            if (jbResolvedToolsDir) {
+              const vebCfg = vscode.workspace.getConfiguration('visualebios');
+              const target = jbToolsScope === 'global'
+                ? vscode.ConfigurationTarget.Global
+                : vscode.ConfigurationTarget.Workspace;
+              const prev = vebCfg.get<string>('toolsDir', '');
+              if (prev !== jbResolvedToolsDir) {
+                try {
+                  await vebCfg.update('toolsDir', jbResolvedToolsDir, target);
+                  jbToolsNote = `\n🛠️ ToolsDir 已更新 (${jbToolsScope}): ${prev || '(空)'} → ${jbResolvedToolsDir}`;
+                } catch (e) {
+                  jbToolsNote = `\n⚠️ ToolsDir 更新失敗: ${e instanceof Error ? e.message : String(e)}（仍會嘗試觸發 Build）`;
+                }
+              } else {
+                jbToolsNote = `\n🛠️ ToolsDir 已是 ${jbResolvedToolsDir}（未變更）`;
+              }
+            }
+            const ret = await vscode.commands.executeCommand(jbCmdId);
+            return `✅ 已透過 VS Code 外掛指令觸發 Jenkins ${jbMode}: ${jbCmdId}${jbToolsNote}${ret !== undefined ? `\n回傳: ${typeof ret === 'string' ? ret : JSON.stringify(ret).slice(0, 300)}` : ''}`;
+          } catch (e) {
+            return `❌ 執行 VS Code 指令 "${jbCmdId}" 失敗: ${e instanceof Error ? e.message : String(e)}`;
+          }
+        }
         const jbUrl = jbCfg.get<string>('jenkinsUrl', 'http://localdev.visualebios').replace(/\/+$/, '');
         const jbUser = jbCfg.get<string>('jenkinsUser', '').trim();
         const jbToken = jbCfg.get<string>('jenkinsToken', '').trim();
@@ -1762,19 +2511,30 @@ except Exception as e:
         return `✅ Jenkins Build 已觸發: ${jbUrl}/job/${jbJob}${queueMsg}${buildNumber ? `\n建置詳情: ${jbUrl}/job/${encodeURIComponent(jbJob)}/${buildNumber}` : '\n提示: 可用 jenkins_status 工具查詢建置結果'}`;
       }
       case 'read_workspace': {
-        const rwInclude = (args.include as string) || '**/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,md,json,yaml,yml,txt}';
+        const rwInclude = (args.include as string) || '**/*.{ts,js,tsx,jsx,py,cs,java,go,rs,cpp,c,h,inf,dec,dsc,fdf,uni,nasm,asm,asl,md,json,yaml,yml,txt}';
         const rwExtraExclude = ((args.exclude as string) || '').split(',').map(s => s.trim()).filter(Boolean);
         const rwDefaultExclude = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/out/**', '**/build/**', '**/.next/**', '**/__pycache__/**', '**/*.min.js', '**/*.map'];
         const rwExcludeGlob = '{' + [...rwDefaultExclude, ...rwExtraExclude].join(',') + '}';
         const rwMaxFileBytes = Math.max(1, (args.max_file_kb as number) || 128) * 1024;
         const rwMaxTotalBytes = Math.max(1, (args.max_total_kb as number) || 512) * 1024;
+        const rwOffset = Math.max(0, Number(args.offset) || 0);
         const rwUris = await vscode.workspace.findFiles(rwInclude, rwExcludeGlob, 2000);
         const rwBinaryExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.bmp', '.vsix', '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.dylib', '.wasm', '.pdf', '.db', '.sqlite']);
+        const rwCandidates = rwUris.filter((u) => !rwBinaryExts.has(path.extname(u.fsPath).toLowerCase()));
+        const rwSliced = rwCandidates.slice(rwOffset);
         const rwParts: string[] = [];
         let rwTotalBytes = 0;
         let rwTruncated = false;
-        for (const uri of rwUris) {
-          if (rwBinaryExts.has(path.extname(uri.fsPath).toLowerCase())) { continue; }
+        let rwProcessed = 0;
+        const rwTotal = rwSliced.length;
+        for (const uri of rwSliced) {
+          rwProcessed++;
+          if (rwProcessed % 10 === 0) {
+            this._callbacks.postToWebview({
+              type: 'agentStepProgress',
+              text: `📂 read_workspace 進度 ${rwProcessed}/${rwTotal} (≈${Math.round(rwTotalBytes / 1024)}KB)`,
+            });
+          }
           let content: string;
           try {
             const bytes = await vscode.workspace.fs.readFile(uri);
@@ -1787,16 +2547,37 @@ except Exception as e:
           } catch { continue; }
           const relPath = vscode.workspace.asRelativePath(uri);
           const entry = `### ${relPath}\n\`\`\`\n${content}\n\`\`\``;
+          if (rwTotalBytes + Buffer.byteLength(entry, 'utf8') > rwMaxTotalBytes) { rwTruncated = true; rwProcessed--; break; }
           rwTotalBytes += Buffer.byteLength(entry, 'utf8');
-          if (rwTotalBytes > rwMaxTotalBytes) { rwTruncated = true; break; }
           rwParts.push(entry);
         }
-        if (rwParts.length === 0) { return `找不到符合 "${rwInclude}" 的檔案`; }
-        const rwHeader = `工作區共讀取 ${rwParts.length} 個檔案（合計 ≈${Math.round(rwTotalBytes / 1024)} KB）${rwTruncated ? '，已達上限提早停止' : ''}`;
-        return rwHeader + '\n\n' + rwParts.join('\n\n');
+        if (rwParts.length === 0 && rwOffset === 0) { return `找不到符合 "${rwInclude}" 的檔案`; }
+        const nextOffset = rwOffset + rwProcessed;
+        const remaining = Math.max(0, rwCandidates.length - nextOffset);
+        const rwHeader = `工作區共 ${rwCandidates.length} 個檔案，本批讀取 ${rwParts.length} 個（offset=${rwOffset}→${nextOffset}，合計 ≈${Math.round(rwTotalBytes / 1024)} KB）${rwTruncated ? '，已達容量上限提早停止' : ''}`;
+        const hint = remaining > 0
+          ? `\n💡 剩餘 ${remaining} 個檔案未讀取，如需繼續請再次呼叫 read_workspace 並使用 offset=${nextOffset}。`
+          : `\n✅ 所有符合條件的檔案已讀取完畢。`;
+        return rwHeader + hint + '\n\n' + rwParts.join('\n\n');
       }
       case 'jenkins_status': {
         const jsCfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const jsUseVscode = jsCfg.get<boolean>('jenkinsUseVscodeCommand', true);
+        if (jsUseVscode) {
+          const jsCmdId = jsCfg.get<string>('jenkinsHistoryCommand', 'visualebios.jenkins.showBuildHistory');
+          const jsAllowedCmd = await this.requestPermission('read', `透過 VS Code 外掛查詢 Jenkins 狀態: ${jsCmdId}`, 'jenkins_status');
+          if (!jsAllowedCmd) return '使用者已拒絕 Jenkins Status';
+          try {
+            const all = await vscode.commands.getCommands(true);
+            if (!all.includes(jsCmdId)) {
+              return `❌ 找不到 VS Code 指令 "${jsCmdId}"。請確認 VisualeBios 外掛已安裝，或在設定 amiAiClaw.jenkinsHistoryCommand 中改成正確的 command id。`;
+            }
+            const ret = await vscode.commands.executeCommand(jsCmdId);
+            return `✅ 已透過 VS Code 外掛指令查詢 Jenkins 狀態: ${jsCmdId}${ret !== undefined ? `\n回傳: ${typeof ret === 'string' ? ret : JSON.stringify(ret).slice(0, 500)}` : '\n（建置歷史已開啟在 VS Code 視窗中）'}`;
+          } catch (e) {
+            return `❌ 執行 VS Code 指令 "${jsCmdId}" 失敗: ${e instanceof Error ? e.message : String(e)}`;
+          }
+        }
         const jsUrl = jsCfg.get<string>('jenkinsUrl', 'http://localdev.visualebios').replace(/\/+$/, '');
         const jsUser = jsCfg.get<string>('jenkinsUser', '').trim();
         const jsToken = jsCfg.get<string>('jenkinsToken', '').trim();
@@ -1858,6 +2639,23 @@ except Exception as e:
           }
         }
         return statusOut + consoleOut;
+      }
+      case 'agent_run_tool': {
+        const targetName = (args.name ?? args.tool_name ?? args.target) as string | undefined;
+        if (!targetName) {
+          return '請提供 name 參數（要執行的目標工具名稱）。正確格式：{"name":"<工具名稱>","args":{...工具參數...}}。支援的工具範例：read_file、run_command、list_dir、search_workspace';
+        }
+        // 防止循環呼叫自身
+        if (targetName === 'agent_run_tool' || targetName === 'agent:run_tool') {
+          return '錯誤：agent_run_tool 不能遞迴呼叫自身';
+        }
+        // 支援 args / tool_args / parameters / input 作為目標工具參數的 key
+        const rawTargetArgs =
+          (typeof args.args === 'object' && args.args !== null) ? args.args :
+          (typeof args.tool_args === 'object' && args.tool_args !== null) ? args.tool_args :
+          (typeof args.parameters === 'object' && args.parameters !== null) ? args.parameters :
+          (typeof args.input === 'object' && args.input !== null) ? args.input : {};
+        return this.executeTool(targetName, rawTargetArgs as Record<string, unknown>);
       }
       default:
         return `未知工具: ${name}`;

@@ -213,6 +213,8 @@ Search `amiAiClaw` in VS Code `settings.json`:
 }
 ```
 
+If you use the Codex compatibility proxy in `scripts/ollama-codex-proxy.js`, it now accepts either an Ollama upstream or an OpenAI-compatible upstream such as vLLM.
+
 ### Troubleshooting
 
 **AMI-AiClaw command not found** → Confirm the extension is enabled in the Extensions panel, then `Ctrl+Shift+P` → Reload Window

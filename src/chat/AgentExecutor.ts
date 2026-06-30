@@ -25,6 +25,7 @@ export interface AgentExecutorCallbacks {
   setWaAgentMode: (value: boolean) => void;
   clearAgentTodos: () => void;
   recordAuditEntry: (tool: string, args: Record<string, unknown>, error: boolean) => void;
+  expandFileMentions?: (prompt: string) => Promise<string>;
 }
 
 export interface AgentExecutorServices {
@@ -52,6 +53,7 @@ export interface AgentExecutorServices {
     messages: AgentExecutorChatMessage[],
     tools: unknown[]
   ) => Promise<AgentExecutorChatMessage>;
+  ollamaGetContextLength: (url: string, model: string) => Promise<number>;
   ollamaGenerate: (url: string, model: string, prompt: string) => Promise<{ response: string; thinking?: string }>;
   estimateTokens: (text: string) => number;
   getCopilotMultiplierById: (id: string) => string;
@@ -61,14 +63,31 @@ export interface AgentExecutorServices {
   agentTools: unknown[];
 }
 
+// ── Carry-over 追蹤狀態（仿 OpenHarness tool_metadata）──────────────────────
+interface CarryoverState {
+  recentReadFiles: Array<{ path: string; span: string; preview: string }>;  // max 6
+  recentWorkLog:  string[];  // max 10
+  taskGoal:       string;
+  recentGoals:    string[];  // max 5
+  activeArtifacts:string[];  // max 8
+  verifiedWork:   string[];  // max 10
+  invokedTools:   string[];  // max 12
+}
+
+const COMPACTABLE_TOOL_RESULT_CHARS = 4000;
+const COMPACTABLE_TOOLS = new Set(['read_file','read_file_smart','read_files','read_workspace','search_workspace','search_regex','agentic_file_search','run_command','run_python','batch_replace','replace_all_in_file']);
+const MC_CLEARED = '[舊工具結果已清除]';
+
 export class AgentExecutor {
   private _agentMessagesBySession: Record<string, AgentExecutorChatMessage[]> = { default: [] };
   private _agentMessages: AgentExecutorChatMessage[] = this._agentMessagesBySession.default;
+  private _modelContextLength = 0;   // 從 Ollama /api/show 取得的實際 context window（0 = 未知）
   private _agentRunning = false;
   private _agentCancel = false;
   private _autoRunning = false;
   private _autoCancel = false;
   private _autoMaxIterations = 50;
+  private _carryover: CarryoverState = { recentReadFiles: [], recentWorkLog: [], taskGoal: '', recentGoals: [], activeArtifacts: [], verifiedWork: [], invokedTools: [] };
 
   public constructor(
     private readonly _callbacks: AgentExecutorCallbacks,
@@ -162,29 +181,49 @@ export class AgentExecutor {
     if (this._agentMessages.length === 0) {
       const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
       const folderList = workspaceFolders.map((folder) => folder.uri.fsPath).join(', ') || process.cwd();
-      const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? '';
+      const activeEditor = vscode.window.activeTextEditor;
+      const activeFile = activeEditor?.document.uri.fsPath ?? '';
       const openFiles = vscode.workspace.textDocuments
         .filter((document) => !document.isUntitled && document.uri.scheme === 'file')
         .map((document) => document.uri.fsPath);
       const openFilesText = openFiles.length > 0 ? `\n目前編輯器中開啟的檔案:\n${openFiles.join('\n')}` : '';
       const activeFileText = activeFile ? `\n目前作用中的檔案: ${activeFile}` : '';
 
+      // 自動附帶作用中檔案內容（可由設定關閉）
+      const cfgAuto = vscode.workspace.getConfiguration('amiAiClaw');
+      const autoInclude = cfgAuto.get<boolean>('autoIncludeActiveFile', true);
+      const maxBytes = Math.max(1024, Math.min(64 * 1024, (cfgAuto.get<number>('autoIncludeActiveMaxKb', 16) || 16) * 1024));
+      let activeFileBlock = '';
+      if (autoInclude && activeEditor && !activeEditor.document.isUntitled && activeEditor.document.uri.scheme === 'file') {
+        const raw = activeEditor.document.getText();
+        const lang = activeEditor.document.languageId || '';
+        const text = raw.length > maxBytes
+          ? raw.slice(0, maxBytes) + `\n…（內容已截斷至 ${Math.floor(maxBytes / 1024)}KB，原始 ${Math.round(raw.length / 1024)}KB；如需完整內容請呼叫 read_file）`
+          : raw;
+        activeFileBlock = `\n\n## 作用中檔案內容（自動附帶）\n\`\`\`${lang}\n${text}\n\`\`\``;
+      }
+
       this._callbacks.clearAgentTodos();
       const ltm = this._callbacks.getLongTermMemory();
       this._agentMessages.push({
         role: 'system',
-        content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。${activeFileText}${openFilesText}
+        content: `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${folderList}。${activeFileText}${openFilesText}${activeFileBlock}
 
 ## 執行鐵律
 - 不得說「我將」「我會」等宣告意圖而不實際呼叫工具。看到需求就直接呼叫對應工具，立即執行。
 - 不確定時優先查閱本地程式碼，而非假設或憑空生成。
 - 複雜任務先用 manage_todo 建立清單，逐步完成。
+- **【絕對禁止】** 禁止向使用者解釋「你可以在終端機執行 XXX 命令」、「你可以用 find/grep/PowerShell 做到」等教學式回覆——直接呼叫 run_command 或對應工具執行並回傳結果。
+- **【絕對禁止】** 禁止說「我無法看到你的檔案」、「我無法直接執行 shell 命令」、「我的權限被限制」等藉口——你擁有 list_dir、run_command、read_file、run_python 等完整工具，可以直接存取工作區並執行指令。
+- **【絕對禁止】** 禁止說「我無法使用 run_shell_command / python_interpreter / browser 等工具」——這些名稱會自動對應到正確工具，直接呼叫即可。
+- 任何可以用工具查到的資訊（檔案數量、目錄結構、程式碼內容、Git 狀態等），必須呼叫工具取得，不得叫使用者自行操作。
 
 ## 可用工具總覽
 
 ### 📁 檔案操作
 - get_active_file：取得目前編輯器開啟的檔案路徑與內容
 - read_file(path)：讀取工作區內的檔案內容
+- read_files(paths[, max_per_file_kb][, max_total_kb])：**一次批次讀取多個檔案**，自動分批限制總量。需要同時參考 2 個以上檔案時請優先使用，避免連續呼叫 read_file。
 - write_file(path, content)：建立或覆寫檔案
 - replace_in_file(path, old_str, new_str)：替換檔案中的特定字串（優先用此取代 write_file 做局部修改）
 - delete_file(path[, recursive])：刪除檔案或目錄
@@ -254,6 +293,7 @@ export class AgentExecutor {
 ### 🎨 其他
 - vscode_action(action[, path][, line][, message][, command])：VS Code 操作（開檔、顯示通知、執行內建指令）
 - manage_todo(action[, text][, id])：Agent 內部任務清單（add/done/list/clear）
+- agent_run_tool(name, args)：Meta 工具派發器，以程式化方式呼叫其他任意工具（別名：agent:run_tool）
 
 ## Atlassian 整合【強制規則】
 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key，必須立即呼叫 jira_fetch，禁止說「我將查詢」。
@@ -266,7 +306,10 @@ ${ltm.trim() ? `\n## 長期記憶\n${ltm.trim()}` : ''}
       });
     }
 
-    this._agentMessages.push({ role: 'user', content: userPrompt });
+    const expandedPrompt = this._callbacks.expandFileMentions
+      ? await this._callbacks.expandFileMentions(userPrompt)
+      : userPrompt;
+    this._agentMessages.push({ role: 'user', content: expandedPrompt });
     if (recordToShortTerm) {
       const chatHistory = this._callbacks.getChatHistory();
       chatHistory.push({ role: 'user', content: userPrompt });
@@ -282,6 +325,7 @@ ${ltm.trim() ? `\n## 長期記憶\n${ltm.trim()}` : ''}
         let response: AgentExecutorChatMessage | undefined;
         const isOllama = !model.startsWith('copilot::') && !isOpenAICompat;
         await this.autoSummarizeHistory(model, baseUrl);
+        this._postContextPercent();
 
         if (isOllama || isOpenAICompat) {
           this._callbacks.postToWebview({ type: 'streamStart' });
@@ -380,9 +424,22 @@ ${ltm.trim() ? `\n## 長期記憶\n${ltm.trim()}` : ''}
             this._callbacks.recordAuditEntry(fn.name, args, isError);
             this._callbacks.trackUsage(model, 0, '', true);
 
+            // ── Carry-over 追蹤（仿 OpenHarness _record_tool_carryover）──
+            this._trackCarryover(fn.name, args, result, isError);
+
             const preview = result.length > 400 ? `${result.slice(0, 400)}\n…（已截斷）` : result;
             this._callbacks.postToWebview({ type: 'agentStepDone', result: preview, isError });
             this._agentMessages.push({ role: 'tool', content: result, tool_call_id: toolCall.id ?? fn.name });
+
+            // 大型檔案讀取後注入分析指令，避免 LLM 拿到大量資料後放棄不分析
+            const isReadTool = ['read_file', 'read_file_smart', 'read_files', 'read_workspace'].includes(fn.name);
+            if (isReadTool && result.length > 2000) {
+              const originalQ = this._agentMessages.find(m => m.role === 'user')?.content ?? '';
+              this._agentMessages.push({
+                role: 'user',
+                content: `以上是工具回傳的檔案內容。請立即根據內容完成任務：${typeof originalQ === 'string' ? originalQ.slice(0, 200) : ''}\n\n**不要描述你能做什麼，直接分析並給出結論。**`,
+              });
+            }
 
             if (recordToShortTerm) {
               const chatHistory = this._callbacks.getChatHistory();
@@ -403,6 +460,27 @@ ${ltm.trim() ? `\n## 長期記憶\n${ltm.trim()}` : ''}
           return match ? match[1].trim() : '';
         })();
         const text = thinkContent ? rawText.replace(/^<think>[\s\S]*?<\/think>\s*/, '') : rawText;
+
+        // ── 拒絕/謙遜偵測：模型說「無法執行」但應直接呼叫工具時，自動注入強制指令重試 ──
+        if (this.isRefusalResponse(text) && step < 3) {
+          this._callbacks.log(`AgentExecutor: 偵測到拒絕回覆（step=${step}），注入強制工具指令`);
+          // 移除剛剛加入的錯誤 assistant 訊息（避免帶入歷史）
+          this._agentMessages.pop();
+          const toolReminder = step === 0
+            ? '你剛才說無法執行，但這是錯誤的。你現在就在 AmiClaw Agent 模式中，擁有完整工具存取權限。'
+              + '\n\n**可直接呼叫的工具（無需任何額外設定）：**\n'
+              + '- run_command(command) — 執行任意 shell/PowerShell 指令\n'
+              + '- read_file(path) — 讀取任意檔案\n'
+              + '- list_dir(path) — 列出目錄\n'
+              + '- search_workspace(query) — 搜尋工作區\n'
+              + '- run_python(code) — 執行 Python\n'
+              + '\n**禁止事項：** 禁止說「我的權限」「請切換至 Agent 模式」「Read-only 模式」等語句——你現在就是 Agent，直接呼叫工具即可。'
+              + '\n\n請立即呼叫工具完成使用者的任務。'
+            : '再次提醒：你是 AmiClaw Agent，直接呼叫 run_command 或 read_file 等工具即可，不得再解釋或建議使用者自行操作。立即執行。';
+          this._agentMessages.push({ role: 'user', content: toolReminder });
+          continue;
+        }
+
         const tokenEstimate = Math.ceil(this._services.estimateTokens(rawText));
         this._agentMessages.push({ role: 'assistant', content: rawText });
 
@@ -523,65 +601,274 @@ ${ltm.trim() ? `\n## 長期記憶\n${ltm.trim()}` : ''}
     vscode.window.showInformationMessage(wasCancelled ? '自動執行已被中止。' : '自動執行已結束。');
   }
 
+  /**
+   * 偵測模型是否給出「拒絕執行」或「教學式」回覆——這類回覆應觸發強制重試。
+   * 命中任一模式即視為拒絕。
+   */
+  private isRefusalResponse(text: string): boolean {
+    const lower = text.toLowerCase();
+    const patterns = [
+      // 中文拒絕語
+      '無法直接',
+      '我無法看到',
+      '我無法直接',
+      '我目前無法',
+      '無法執行',
+      '我的權限',
+      '沙盒環境',
+      '你可以在終端機',
+      '你可以輸入以下',
+      '你可以透過以下',
+      '請將檔案內容貼給我',
+      '把結果貼給我',
+      '請把清單貼上',
+      '你可以執行以下',
+      '你可以嘗試以下',
+      'find . -type f',
+      'wc -l',
+      'dir /s /b',
+      'get-childitem -recurse',
+      // gemma4 / 其他模型特有的拒絕語句
+      '權限僅限於',
+      '僅限於「讀取',
+      '僅限於讀取',
+      'read-only',
+      '唯讀模式',
+      '讀取模式',
+      '切換至.*agent',
+      '切換到.*agent',
+      '請切換模式',
+      '切換為 agent',
+      '我沒有辦法執行',
+      '我沒有能力執行',
+      '無法直接存取',
+      '我無法存取',
+      '我目前的權限',
+      '目前模式不支援',
+      '此模式不允許',
+      // 英文拒絕語
+      "i can't directly",
+      "i cannot directly",
+      "i don't have access",
+      "i don't have the ability",
+      "i'm not able to",
+      "unable to access your",
+      "you can run the following",
+      "you can execute",
+      "paste the output",
+      "read-only mode",
+      "switch to agent",
+      "i only have read",
+      "limited to read",
+    ];
+    // 支援正規表達式模式（含 .*）
+    return patterns.some(p => {
+      if (p.includes('.*')) {
+        try { return new RegExp(p, 'i').test(text); } catch { return false; }
+      }
+      return lower.includes(p.toLowerCase());
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Context 百分比（通知 webview 更新進度條）
+  // ─────────────────────────────────────────────────────────────────────────
+  private _postContextPercent(): void {
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const cfgThreshold = cfg.get<number>('autoSummarizeThreshold', 8000);
+    const threshold = this._modelContextLength > 0 ? this._modelContextLength : cfgThreshold;
+    const tokens = Math.ceil(this._services.estimateTokens(this._agentMessages.map(m => m.content ?? '').join('')));
+    const pct = Math.round(tokens / threshold * 100);
+    this._callbacks.postToWebview({ type: 'contextPercent', tokens, pct, threshold });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Carry-over 追蹤
+  // ─────────────────────────────────────────────────────────────────────────
+  private _cappedPush<T>(arr: T[], val: T, max: number): void {
+    const idx = arr.indexOf(val as unknown as T);
+    if (idx !== -1) { arr.splice(idx, 1); }
+    arr.push(val);
+    if (arr.length > max) { arr.shift(); }
+  }
+
+  private _trackCarryover(toolName: string, args: Record<string, unknown>, output: string, isError: boolean): void {
+    if (isError) { return; }
+    const path = (args.path ?? args.src ?? args.command ?? '') as string;
+    if (path) { this._cappedPush(this._carryover.activeArtifacts, path.slice(0, 240), 8); }
+    this._cappedPush(this._carryover.invokedTools, toolName, 12);
+
+    if (toolName === 'read_file' || toolName === 'read_file_smart') {
+      const preview = output.split('\n').slice(0, 4).map(l => l.trim()).filter(Boolean).join(' | ').slice(0, 200);
+      const span = args.start_line ? `L${args.start_line}-${args.end_line ?? '∞'}` : (args.head ? `head:${args.head}` : '');
+      this._cappedPush(this._carryover.recentReadFiles, { path: String(path), span, preview }, 6);
+      this._cappedPush(this._carryover.verifiedWork, `讀取 ${path}${span ? ' (' + span + ')' : ''}`, 10);
+      this._cappedPush(this._carryover.recentWorkLog, `read_file: ${path}`, 10);
+    } else if (toolName === 'run_command' || toolName === 'run_terminal') {
+      const cmd = (args.command as string || '').slice(0, 160);
+      const out = output.split('\n')[0].trim().slice(0, 100);
+      this._cappedPush(this._carryover.verifiedWork, `執行指令: ${cmd} [${out}]`, 10);
+      this._cappedPush(this._carryover.recentWorkLog, `run: ${cmd}`, 10);
+    } else if (toolName === 'run_python') {
+      const desc = (args.description as string || '').slice(0, 120);
+      this._cappedPush(this._carryover.recentWorkLog, `python: ${desc}`, 10);
+    } else if (['write_file','replace_in_file','replace_all_in_file','insert_in_file','batch_replace'].includes(toolName)) {
+      this._cappedPush(this._carryover.verifiedWork, `修改檔案: ${path}`, 10);
+      this._cappedPush(this._carryover.recentWorkLog, `edit: ${path}`, 10);
+    } else if (toolName === 'search_workspace' || toolName === 'search_regex') {
+      const q = (args.query ?? args.pattern ?? '') as string;
+      this._cappedPush(this._carryover.recentWorkLog, `search: ${String(q).slice(0, 120)}`, 10);
+    } else if (toolName === 'glob') {
+      this._cappedPush(this._carryover.recentWorkLog, `glob: ${(args.pattern as string || '').slice(0, 120)}`, 10);
+    }
+  }
+
+  private _buildCarryoverAttachments(): string {
+    const c = this._carryover;
+    const sections: string[] = [];
+    if (c.taskGoal) { sections.push(`**當前目標：** ${c.taskGoal}`); }
+    if (c.recentGoals.length) { sections.push(`**最近目標：**\n${c.recentGoals.slice(-3).map(g => `- ${g}`).join('\n')}`); }
+    if (c.recentReadFiles.length) {
+      sections.push(`**最近讀取的檔案：**\n${c.recentReadFiles.map(f => `- ${f.path}${f.span ? ' (' + f.span + ')' : ''}${f.preview ? '\n  Preview: ' + f.preview : ''}`).join('\n')}`);
+    }
+    if (c.verifiedWork.length) { sections.push(`**已驗證的操作：**\n${c.verifiedWork.slice(-6).map(w => `- ${w}`).join('\n')}`); }
+    if (c.recentWorkLog.length) { sections.push(`**最近執行記錄：**\n${c.recentWorkLog.slice(-8).map(w => `- ${w}`).join('\n')}`); }
+    if (c.activeArtifacts.length) { sections.push(`**活躍 artifacts：**\n${c.activeArtifacts.slice(-5).map(a => `- ${a}`).join('\n')}`); }
+    return sections.length ? `\n\n[壓縮前狀態快照]\n${sections.join('\n\n')}` : '';
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Microcompact：清除舊工具結果（零 LLM，最便宜）
+  // 仿 OpenHarness microcompact_messages()
+  // ─────────────────────────────────────────────────────────────────────────
+  private _microcompact(keepRecent = 5): number {
+    // 收集所有可壓縮工具結果的 tool_call_id（依工具名稱或內容大小判斷）
+    const toolNameById = new Map<string, string>();
+    const resultContentById = new Map<string, string>();
+    const orderedIds: string[] = [];
+
+    for (const msg of this._agentMessages) {
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          const id = tc.id ?? tc.function.name;
+          orderedIds.push(id);
+          toolNameById.set(id, tc.function.name);
+        }
+      }
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        resultContentById.set(msg.tool_call_id, msg.content ?? '');
+      }
+    }
+
+    const compactableIds = orderedIds.filter(id => {
+      const name = toolNameById.get(id) ?? '';
+      const content = resultContentById.get(id) ?? '';
+      return COMPACTABLE_TOOLS.has(name) || content.length >= COMPACTABLE_TOOL_RESULT_CHARS;
+    });
+
+    if (compactableIds.length <= keepRecent) { return 0; }
+
+    const clearSet = new Set(compactableIds.slice(0, compactableIds.length - keepRecent));
+    let tokensSaved = 0;
+    for (const msg of this._agentMessages) {
+      if (msg.role === 'tool' && msg.tool_call_id && clearSet.has(msg.tool_call_id) && msg.content !== MC_CLEARED) {
+        tokensSaved += Math.ceil((msg.content ?? '').length / 4);
+        msg.content = MC_CLEARED;
+      }
+    }
+    return tokensSaved;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 自動摘要（3 層瀑布：Microcompact → LLM Summary → Fallback Drop）
+  // ─────────────────────────────────────────────────────────────────────────
   private async autoSummarizeHistory(model: string, baseUrl: string): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const enabled = cfg.get<boolean>('autoSummarizeHistory', true);
-    const threshold = cfg.get<number>('autoSummarizeThreshold', 8000);
+    const cfgThreshold = cfg.get<number>('autoSummarizeThreshold', 8000);
+
+    // 向 Ollama/vLLM 查詢實際 context window；Copilot 模型回傳 0
+    if (!model.startsWith('copilot::')) {
+      const ctxLen = await this._services.ollamaGetContextLength(baseUrl, model);
+      if (ctxLen > 0) { this._modelContextLength = ctxLen; }
+    } else {
+      this._modelContextLength = 0;
+    }
+
+    // 觸發摘要的門檻：若已知 context window 則取其 75%，否則沿用設定值
+    const threshold = this._modelContextLength > 0
+      ? Math.floor(this._modelContextLength * 0.75)
+      : cfgThreshold;
+
     const systemMessage = this._agentMessages[0];
     const remainingMessages = this._agentMessages.slice(1);
     const totalTokens = this._services.estimateTokens((systemMessage?.content ?? '') + remainingMessages.map((message) => message.content ?? '').join(''));
 
-    if (totalTokens < threshold) {
-      return;
+    if (totalTokens < threshold) { return; }
+
+    // ① Microcompact（零 LLM）
+    const freed = this._microcompact(5);
+    if (freed > 0) {
+      const newTokens = this._services.estimateTokens((systemMessage?.content ?? '') + this._agentMessages.slice(1).map(m => m.content ?? '').join(''));
+      this._callbacks.postToWebview({ type: 'agentStep', icon: '🗜️', title: `Microcompact：清除舊工具結果，釋出≈${freed} tokens（剩 ≈${newTokens}）`, fullPath: '' });
+      if (newTokens < threshold) { return; }
     }
 
     const dropFallback = (messages: AgentExecutorChatMessage[]) => {
       let trimmed = messages;
       while (trimmed.length > 2 && this._services.estimateTokens((systemMessage?.content ?? '') + trimmed.map((message) => message.content ?? '').join('')) >= threshold) {
         let dropCount = 1;
-        while (dropCount < trimmed.length && trimmed[dropCount].role === 'tool') {
-          dropCount++;
-        }
+        while (dropCount < trimmed.length && trimmed[dropCount].role === 'tool') { dropCount++; }
         trimmed = trimmed.slice(dropCount);
-        while (trimmed.length > 0 && trimmed[0].role === 'tool') {
-          trimmed = trimmed.slice(1);
-        }
+        while (trimmed.length > 0 && trimmed[0].role === 'tool') { trimmed = trimmed.slice(1); }
       }
       this._agentMessages = [systemMessage, ...trimmed];
       this._agentMessagesBySession[this._callbacks.getActiveSessionId()] = this._agentMessages;
     };
 
-    if (!enabled) {
-      dropFallback(remainingMessages);
-      return;
-    }
+    if (!enabled) { dropFallback(remainingMessages); return; }
 
+    // 保留最新 4 則，對前面的進行 LLM 摘要
     let splitAt = Math.max(remainingMessages.length - 4, 0);
-    while (splitAt > 0 && remainingMessages[splitAt].role === 'tool') {
-      splitAt--;
-    }
+    while (splitAt > 0 && remainingMessages[splitAt].role === 'tool') { splitAt--; }
     const keepTail = remainingMessages.slice(splitAt);
     const toSummarize = remainingMessages.slice(0, splitAt);
-    if (toSummarize.length < 2) {
-      return;
-    }
+    if (toSummarize.length < 2) { return; }
 
-    this._callbacks.postToWebview({
-      type: 'agentStep',
-      icon: '📝',
-      title: `對話歷史過長（≈${totalTokens} tokens），自動摘要舊訊息中…`,
-      fullPath: '',
-    });
+    this._callbacks.postToWebview({ type: 'agentStep', icon: '📝', title: `對話歷史過長（≈${totalTokens} tokens），自動摘要舊訊息中…`, fullPath: '' });
+
+    // ② 結構化 9-段摘要 Prompt（仿 OpenHarness BASE_COMPACT_PROMPT）
+    const compactPrompt = `**重要：只能輸出純文字，禁止呼叫任何工具。**
+
+你的任務是對以下對話記錄產生一份詳細的繁體中文摘要，此摘要將取代舊訊息，因此必須捕捉所有重要資訊。
+
+請先在 <分析> 標籤內草擬你的分析，按時間順序整理：
+- 每個使用者請求的完整意圖
+- 採用的技術方法與決策
+- 討論到的具體程式碼、檔案路徑（含行號）
+- 遇到的錯誤以及修復方式
+- 使用者的反饋或更正
+
+然後在 <摘要> 標籤內產生結構化摘要，包含以下 9 個段落：
+
+1. **主要請求與意圖**：所有使用者請求的完整細節（含隱含需求與限制條件）
+2. **關鍵技術概念**：討論過的技術、框架、設計模式與慣例
+3. **檔案與程式碼段落**：每個檢查或修改過的檔案（含具體程式碼片段與行號）
+4. **錯誤與修復**：每個遇到的錯誤、原因及解決方式
+5. **問題解決過程**：已解決的問題、有效與無效的方法
+6. **所有使用者訊息**：保留原文以維持上下文
+7. **待完成任務**：明確要求但尚未完成的工作
+8. **目前工作**：壓縮前正在進行的最後任務的詳細描述
+9. **建議的下一步**：與最近使用者請求直接對應的最合邏輯的下一步
+
+**再次提醒：禁止呼叫工具，只輸出 <分析>...</分析> 和 <摘要>...</摘要>。**`;
 
     const summaryMessages: AgentExecutorChatMessage[] = [
-      {
-        role: 'system',
-        content: '你是對話摘要助手。請將以下對話記錄濃縮成一段繁體中文摘要，保留重要的決策、已完成的操作、重要的程式碼路徑或資訊，省略冗餘問答。摘要長度不超過 600 字，直接輸出摘要內容不需要前言。',
-      },
+      { role: 'system', content: '你是對話摘要助手，只輸出繁體中文純文字，禁止呼叫工具。' },
       {
         role: 'user',
-        content: '請摘要以下對話記錄：\n\n'
-          + toSummarize.map((message) => `[${message.role}]: ${(message.content ?? '').slice(0, 800)}`).join('\n\n').slice(0, 12000),
+        content: compactPrompt + '\n\n以下是要摘要的對話記錄：\n\n'
+          + toSummarize.map(m => `[${m.role}]: ${(m.content ?? '').slice(0, 800)}`).join('\n\n').slice(0, 12000),
       },
     ];
 
@@ -592,7 +879,10 @@ ${ltm.trim() ? `\n## 長期記憶\n${ltm.trim()}` : ''}
         : model.startsWith('openai::')
           ? await this._services.openaiCompatChatCallStream(baseUrl, model.slice('openai::'.length), summaryMessages, [])
           : await this._services.ollamaChatCallStream(baseUrl, model, summaryMessages, []);
-      summary = (response?.content ?? '').trim();
+      // 擷取 <摘要>...</摘要> 段落，若無則取全文
+      const raw = (response?.content ?? '').trim();
+      const m = raw.match(/<摘要>([\s\S]*?)<\/摘要>/);
+      summary = m ? `摘要：\n${m[1].trim()}` : raw;
     } catch {
       // fallback below
     }
@@ -603,17 +893,21 @@ ${ltm.trim() ? `\n## 長期記憶\n${ltm.trim()}` : ''}
       return;
     }
 
+    // 加入 carry-over attachments（task focus、read files、work log）
+    const carryoverText = this._buildCarryoverAttachments();
+
     this._agentMessages = [
       systemMessage,
-      { role: 'user', content: `[自動摘要 — 先前 ${toSummarize.length} 則對話重點]\n${summary}` },
+      { role: 'user', content: `[自動摘要 — 先前 ${toSummarize.length} 則對話重點]\n${summary}${carryoverText}` },
       { role: 'assistant', content: '已了解先前對話的進度與重要資訊，繼續執行任務。' },
       ...keepTail,
     ];
     this._agentMessagesBySession[this._callbacks.getActiveSessionId()] = this._agentMessages;
+    const newTokens = this._services.estimateTokens(this._agentMessages.map(m => m.content ?? '').join(''));
     this._callbacks.postToWebview({
       type: 'agentStep',
       icon: '✅',
-      title: `摘要完成：${toSummarize.length} 則壓縮為 1 則摘要，釋出≈${totalTokens - this._services.estimateTokens(summary)} tokens`,
+      title: `摘要完成：${toSummarize.length} 則壓縮為 1 則摘要，釋出≈${totalTokens - newTokens} tokens`,
       fullPath: '',
     });
   }

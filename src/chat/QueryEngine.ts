@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { findRelevantMemories } from '../memdir/findRelevantMemories';
 
 export interface QueryEngineChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -28,6 +29,7 @@ export interface QueryEngineServices {
   encodeOllamaModelId: (url: string, model: string, allUrls: string[]) => string;
   ollamaDisplayLabel: (url: string, model: string, allUrls: string[]) => string;
   ollamaListModels: (url: string) => Promise<string[]>;
+  ollamaGetContextLength: (url: string, model: string) => Promise<number>;
   ollamaWarmupModel: (url: string, model: string) => void;
   ollamaUnloadModel: (url: string, model: string) => Promise<void>;
   ollamaListRunningModels: (url: string) => Promise<string[]>;
@@ -51,6 +53,21 @@ export interface QueryEngineServices {
     token: vscode.CancellationToken
   ) => Promise<string>;
   estimateTokens: (text: string) => number;
+  // Ask 模式工具支援（選用，未注入時 fallback 到純 generate）
+  ollamaChatCallStream?: (
+    baseUrl: string,
+    model: string,
+    messages: QueryEngineChatMessage[],
+    tools: unknown[],
+    onThinkChunk?: (chunk: string) => void,
+    onTextChunk?: (chunk: string) => void,
+    onStats?: (tokens: number, tps: number) => void
+  ) => Promise<QueryEngineChatMessage>;
+  executeTool?: (name: string, args: Record<string, unknown>) => Promise<string>;
+  getToolIcon?: (name: string) => string;
+  formatToolTitle?: (name: string, args: Record<string, unknown>) => string;
+  filterSensitiveInfo?: (text: string) => string;
+  agentTools?: unknown[];
 }
 
 interface WebviewModelOption {
@@ -72,6 +89,7 @@ export class QueryEngine {
   private _pendingSendCts: vscode.CancellationTokenSource | null = null;
   private _lastOllamaUrl = '';
   private _lastOllamaModel = '';
+  private _modelContextLength = 0;   // 從 Ollama /api/show 取得的實際 context window（0 = 未知）
 
   public constructor(
     private readonly _callbacks: QueryEngineCallbacks,
@@ -138,6 +156,124 @@ export class QueryEngine {
     };
   }
 
+  /**
+   * 解析 prompt 中的檔案提及，自動讀取內容並回傳擴充後的 prompt。
+   * 支援格式：
+   *   - #file:src/foo.ts
+   *   - #path:src/foo.ts
+   *   - @src/foo.ts （需以 / 或 \ 含路徑）
+   *   - `src/foo.ts` （反引號包住，需以已知副檔名結尾）
+   * 自動限制總量避免 token 爆量。
+   */
+  public async expandFileMentions(prompt: string): Promise<string> {
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    if (!cfg.get<boolean>('expandFileMentions', true)) { return prompt; }
+
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length === 0) { return prompt; }
+    const wsRoot = folders[0].uri.fsPath;
+
+    // 收集候選路徑（去重保序）
+    const seen = new Set<string>();
+    const mentions: string[] = [];
+    const push = (p: string) => {
+      const t = p.trim().replace(/^[\s,;。：:、]+|[\s,;。：:、]+$/g, '');
+      if (t && !seen.has(t)) { seen.add(t); mentions.push(t); }
+    };
+    // #file:path 或 #path:path
+    const fileRe = /#(?:file|path):([^\s`'"，,；;]+)/gi;
+    let m: RegExpExecArray | null;
+    while ((m = fileRe.exec(prompt)) !== null) { push(m[1]); }
+    // @path （需含 / 或 \）
+    const atRe = /@([^\s`'"，,；;]*[\\/][^\s`'"，,；;]+)/g;
+    while ((m = atRe.exec(prompt)) !== null) { push(m[1]); }
+    // 反引號路徑
+    const bqRe = /`([^`\n]+\.(?:ts|tsx|js|jsx|py|cs|java|go|rs|cpp|cc|c|h|hpp|md|json|yaml|yml|txt|sh|bat|ps1|html|css|scss|sql|vue|svelte))`/gi;
+    while ((m = bqRe.exec(prompt)) !== null) { push(m[1]); }
+
+    if (mentions.length === 0) { return prompt; }
+
+    const MAX_MENTIONS = 10;
+    const MAX_PER_FILE = 32 * 1024; // 32KB
+    const MAX_TOTAL = 96 * 1024; // 96KB
+    const blocks: string[] = [];
+    const skipped: string[] = [];
+    let totalBytes = 0;
+
+    for (const rel of mentions.slice(0, MAX_MENTIONS)) {
+      // ── 三層優先順序路徑解析 ──────────────────────────────────────────────
+      // 1. 直接存在於磁碟（絕對路徑 or workspace join）
+      // 2. VS Code 已開啟的 textDocuments（basename / suffix 比對）
+      // 3. workspace.findFiles 搜尋整個工作區
+      let fpath = require('path').isAbsolute(rel) ? rel : require('path').join(wsRoot, rel);
+      const relNorm = rel.replace(/\\/g, '/').toLowerCase();
+      const relBase = require('path').basename(rel).toLowerCase();
+      try { await vscode.workspace.fs.stat(vscode.Uri.file(fpath)); }
+      catch {
+        // ② 查已開啟的 documents
+        let resolved = '';
+        for (const doc of vscode.workspace.textDocuments) {
+          const dNorm = doc.uri.fsPath.replace(/\\/g, '/').toLowerCase();
+          if (dNorm.endsWith(relNorm) || require('path').basename(doc.uri.fsPath).toLowerCase() === relBase) {
+            resolved = doc.uri.fsPath; break;
+          }
+        }
+        if (!resolved) {
+          // ③ findFiles 搜尋工作區
+          try {
+            const hits = await vscode.workspace.findFiles(`**/${rel.replace(/\\/g, '/')}`, '**/node_modules/**', 5);
+            if (!hits.length) {
+              const hits2 = await vscode.workspace.findFiles(`**/${relBase}`, '**/node_modules/**', 5);
+              hits.push(...hits2);
+            }
+            if (hits.length) {
+              hits.sort((a, b) => a.fsPath.length - b.fsPath.length);
+              resolved = hits[0].fsPath;
+            }
+          } catch { /* ignore */ }
+        }
+        if (resolved) { fpath = resolved; }
+      }
+      try {
+        const stat = await vscode.workspace.fs.stat(vscode.Uri.file(fpath));
+        if (stat.type === vscode.FileType.Directory) {
+          // 目錄：列出檔案清單
+          const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(fpath));
+          const lines = entries.slice(0, 50).map(([name, t]) => `  - ${name}${t === vscode.FileType.Directory ? '/' : ''}`);
+          const block = `=== ${rel} (目錄) ===\n${lines.join('\n')}${entries.length > 50 ? `\n  …(+${entries.length - 50})` : ''}\n`;
+          if (totalBytes + block.length > MAX_TOTAL) { skipped.push(rel); continue; }
+          blocks.push(block);
+          totalBytes += block.length;
+          continue;
+        }
+        if (stat.size > 5 * 1024 * 1024) { skipped.push(`${rel} (>5MB)`); continue; }
+        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
+        let text = Buffer.from(bytes).toString('utf8');
+        if (text.length > MAX_PER_FILE) {
+          text = text.slice(0, MAX_PER_FILE) + `\n…（已截斷至 ${MAX_PER_FILE / 1024}KB，原始 ${Math.round(text.length / 1024)}KB）`;
+        }
+        const remaining = MAX_TOTAL - totalBytes;
+        if (text.length > remaining) {
+          text = text.slice(0, Math.max(0, remaining)) + `\n…（達總量上限）`;
+        }
+        const block = `=== ${rel} ===\n${text}\n`;
+        blocks.push(block);
+        totalBytes += block.length;
+        if (totalBytes >= MAX_TOTAL) { break; }
+      } catch {
+        skipped.push(`${rel} (找不到)`);
+      }
+    }
+
+    if (mentions.length > MAX_MENTIONS) {
+      skipped.push(`…(超過上限 ${MAX_MENTIONS}，未處理 ${mentions.length - MAX_MENTIONS} 個)`);
+    }
+
+    if (blocks.length === 0) { return prompt; }
+    const header = `\n\n## 使用者提及的檔案/目錄（自動讀取）\n${skipped.length > 0 ? `⚠️ 略過：${skipped.join(', ')}\n` : ''}`;
+    return prompt + header + blocks.join('\n');
+  }
+
   public async handleSend(
     prompt: string,
     modelOverride?: string,
@@ -160,9 +296,32 @@ export class QueryEngine {
 
     await this.ensureModelReady(baseUrl, model);
 
-    const systemContent = this.buildSystemContent(false);
+    // 自動展開 #file/@path 提及
+    const expandedPrompt = await this.expandFileMentions(prompt);
+
+    let systemContent = this.buildSystemContent(false);
     const chatHistory = this._callbacks.getChatHistory();
+    await this.autoSummarizeHistory(chatHistory, model, baseUrl);
+    // 通知 webview 更新 context 百分比
+    try {
+      const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+      const cfgThreshold = cfg.get<number>('autoSummarizeThreshold', 8000);
+      const threshold = this._modelContextLength > 0 ? this._modelContextLength : cfgThreshold;
+      const { estimateTokens } = this._services;
+      const tokens = Math.ceil(estimateTokens(chatHistory.map(m => m.content ?? '').join('')));
+      const pct = Math.round(tokens / threshold * 100);
+      this._callbacks.postToWebview({ type: 'contextPercent', tokens, pct, threshold });
+    } catch { /* 非關鍵 */ }
     const recent = chatHistory.slice(-20);
+
+    // 嘗試找出與本次 prompt 相關的記憶檔案並注入（非阻塞核心流程，但在此 await 簡單實作）
+    try {
+      const relevant = await findRelevantMemories(expandedPrompt, 5);
+      if (relevant && relevant.length > 0) {
+        const memLines = relevant.map(m => `- ${m.path} (mtime=${new Date(m.mtimeMs).toISOString()})\n${m.excerpt.slice(0,800)}\n`).join('\n');
+        systemContent += `\n\n## 注入的相關記憶檔案\n${memLines}`;
+      }
+    } catch (e) { /* ignore */ }
 
     let fullPrompt = '';
     if (systemContent.trim()) {
@@ -172,7 +331,7 @@ export class QueryEngine {
       const role = message.role === 'user' ? 'User' : 'Assistant';
       fullPrompt += `${role}: ${message.content ?? ''}\n\n`;
     }
-    fullPrompt += `User: ${prompt}`;
+    fullPrompt += `User: ${expandedPrompt}`;
 
     chatHistory.push({ role: 'user', content: prompt });
     this._callbacks.postToWebview({
@@ -208,7 +367,7 @@ export class QueryEngine {
                 : vscode.LanguageModelChatMessage.Assistant(message.content ?? '')
             );
           }
-          copilotMessages.push(vscode.LanguageModelChatMessage.User(prompt));
+          copilotMessages.push(vscode.LanguageModelChatMessage.User(expandedPrompt));
           fullResponse = await this._services.copilotStreamText(
             copilotId,
             copilotMessages,
@@ -225,18 +384,34 @@ export class QueryEngine {
           cts.dispose();
         }
       } else {
-        fullResponse = await this._services.ollamaGenerateStream(
-          baseUrl,
-          model,
-          fullPrompt,
-          (chunk) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk }),
-          (chunk) => this._callbacks.postToWebview({ type: 'thinkChunk', chunk }),
-          (tokens, tps) => {
-            this._callbacks.postToWebview({ type: 'streamStats', tokens, tps });
-            this._callbacks.trackUsage(model, tokens);
-          },
-          images
-        );
+        // ── Ask 模式唯讀工具：當設定啟用且 services 已注入時，走 chat API + tools 迴圈 ──
+        const askToolsEnabled = cfg.get<boolean>('askModeTools', true);
+        const canUseTools = askToolsEnabled
+          && this._services.ollamaChatCallStream
+          && this._services.executeTool
+          && this._services.agentTools;
+        if (canUseTools) {
+          fullResponse = await this.handleAskWithTools(
+            baseUrl,
+            model,
+            systemContent,
+            recent,
+            expandedPrompt
+          );
+        } else {
+          fullResponse = await this._services.ollamaGenerateStream(
+            baseUrl,
+            model,
+            fullPrompt,
+            (chunk) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk }),
+            (chunk) => this._callbacks.postToWebview({ type: 'thinkChunk', chunk }),
+            (tokens, tps) => {
+              this._callbacks.postToWebview({ type: 'streamStats', tokens, tps });
+              this._callbacks.trackUsage(model, tokens);
+            },
+            images
+          );
+        }
       }
 
       this._callbacks.trackLatency(model, Date.now() - sendStart);
@@ -253,6 +428,108 @@ export class QueryEngine {
     }
   }
 
+  /**
+   * Ask 模式工具迴圈：使用唯讀工具子集，模型可呼叫 read_file/list_dir/search 等工具自動取得上下文。
+   * 寫入類工具（write_file/replace_in_file/delete_file/run_command 等）一律過濾掉。
+   * 失敗時拋出，由 handleSend 回退處理。
+   */
+  private async handleAskWithTools(
+    baseUrl: string,
+    model: string,
+    systemContent: string,
+    recent: QueryEngineChatMessage[],
+    userPrompt: string
+  ): Promise<string> {
+    const READONLY_TOOL_NAMES = new Set([
+      'get_active_file', 'read_file', 'read_files', 'list_dir',
+      'search_workspace', 'search_regex', 'agentic_file_search',
+      'git_status', 'git_diff', 'git_log',
+    ]);
+    const allTools = (this._services.agentTools as Array<{ function?: { name?: string } }>) ?? [];
+    const tools = allTools.filter((t) => t.function?.name && READONLY_TOOL_NAMES.has(t.function.name));
+    const messages: QueryEngineChatMessage[] = [];
+    if (systemContent.trim()) {
+      messages.push({ role: 'system', content: systemContent + '\n\n## 工具使用守則（Ask 模式）\n- 你有唯讀工具：read_file、read_files、list_dir、search_workspace、search_regex、git_status、git_diff、git_log。\n- 任何修改檔案/執行命令的請求請拒絕並提示使用者切換到 🤖 Agent 模式。\n- 需要查看多個檔案時優先用 read_files 一次取得，避免連續 read_file。' });
+    }
+    for (const m of recent) {
+      messages.push({ role: m.role, content: m.content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id });
+    }
+    messages.push({ role: 'user', content: userPrompt });
+
+    const onThinkChunk = (chunk: string) => this._callbacks.postToWebview({ type: 'thinkChunk', chunk, model });
+    const onTextChunk = (chunk: string) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk });
+    const onStats = (tokens: number, tps: number) => {
+      this._callbacks.postToWebview({ type: 'streamStats', tokens, tps });
+      this._callbacks.trackUsage(model, tokens);
+    };
+
+    const MAX_STEPS = 6;
+    let finalText = '';
+    for (let step = 0; step < MAX_STEPS; step++) {
+      let response: QueryEngineChatMessage;
+      try {
+        response = await this._services.ollamaChatCallStream!(baseUrl, model, messages, tools, onThinkChunk, onTextChunk, onStats);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/does not support tools/i.test(message)) {
+          // 模型不支援工具：退回非工具模式
+          this._callbacks.postToWebview({ type: 'streamAbort' });
+          this._callbacks.log(`Ask tools: model ${model} 不支援工具，退回 generate 模式`);
+          let fullPrompt = systemContent.trim() ? `System: ${systemContent}\n\n` : '';
+          for (const m of recent) {
+            fullPrompt += `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content ?? ''}\n\n`;
+          }
+          fullPrompt += `User: ${userPrompt}`;
+          return await this._services.ollamaGenerateStream(
+            baseUrl, model, fullPrompt,
+            (c) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk: c }),
+            (c) => this._callbacks.postToWebview({ type: 'thinkChunk', chunk: c }),
+            onStats
+          );
+        }
+        throw error;
+      }
+
+      if (response.tool_calls && response.tool_calls.length > 0) {
+        this._callbacks.postToWebview({ type: 'streamAbort' });
+        messages.push({ role: 'assistant', content: response.content ?? null, tool_calls: response.tool_calls });
+        for (const tc of response.tool_calls) {
+          const fn = tc.function;
+          const args = (typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments) as Record<string, unknown>;
+          if (!READONLY_TOOL_NAMES.has(fn.name)) {
+            const denyMsg = `❌ Ask 模式不允許 ${fn.name}（寫入/執行類）。請切換到 🤖 Agent 模式。`;
+            this._callbacks.postToWebview({ type: 'agentStep', icon: '🚫', title: denyMsg, fullPath: '' });
+            this._callbacks.postToWebview({ type: 'agentStepDone', result: denyMsg, isError: true });
+            messages.push({ role: 'tool', content: denyMsg, tool_call_id: tc.id ?? fn.name });
+            continue;
+          }
+          const icon = this._services.getToolIcon ? this._services.getToolIcon(fn.name) : '🔧';
+          const title = this._services.formatToolTitle ? this._services.formatToolTitle(fn.name, args) : fn.name;
+          this._callbacks.postToWebview({ type: 'agentStep', icon, title, fullPath: (args.path as string) || '' });
+          let result: string;
+          let isError = false;
+          try {
+            result = await this._services.executeTool!(fn.name, args);
+          } catch (error) {
+            result = '錯誤：' + (error instanceof Error ? error.message : String(error));
+            isError = true;
+          }
+          if (this._services.filterSensitiveInfo) { result = this._services.filterSensitiveInfo(result); }
+          const preview = result.length > 400 ? `${result.slice(0, 400)}\n…（已截斷）` : result;
+          this._callbacks.postToWebview({ type: 'agentStepDone', result: preview, isError });
+          messages.push({ role: 'tool', content: result, tool_call_id: tc.id ?? fn.name });
+        }
+        // 進入下一輪，模型決定是否再呼叫工具或產出最終回答
+        this._callbacks.postToWebview({ type: 'streamStart' });
+        continue;
+      }
+
+      finalText = response.content ?? '';
+      break;
+    }
+    return finalText;
+  }
+
   public buildSystemContent(includeAtlassian = true): string {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const persona = cfg.get<string>('systemPrompt') ?? '';
@@ -261,7 +538,8 @@ export class QueryEngine {
 
     const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
     const workspaceRoot = workspaceFolders.length > 0 ? workspaceFolders.map((folder) => folder.uri.fsPath).join(', ') : process.cwd();
-    const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? '';
+    const activeEditor = vscode.window.activeTextEditor;
+    const activeFile = activeEditor?.document.uri.fsPath ?? '';
     const openFiles = vscode.window.tabGroups?.activeTabGroup?.tabs
       .map((tab) => (tab.input as { uri?: vscode.Uri })?.uri?.fsPath ?? '')
       .filter(Boolean) ?? [];
@@ -274,6 +552,19 @@ export class QueryEngine {
       workspaceInfo += `\n【開啟的檔案】\n${openFiles.map((file) => `  - ${file}`).join('\n')}`;
     }
     content += workspaceInfo;
+
+    // 自動附帶作用中檔案內容（Copilot-like）：可由設定關閉，限制大小避免 token 爆量
+    const autoIncludeActive = cfg.get<boolean>('autoIncludeActiveFile', true);
+    const maxActiveBytes = Math.max(1024, Math.min(64 * 1024, (cfg.get<number>('autoIncludeActiveMaxKb', 16) || 16) * 1024));
+    if (autoIncludeActive && activeEditor && !activeEditor.document.isUntitled && activeEditor.document.uri.scheme === 'file') {
+      const text = activeEditor.document.getText();
+      const fileName = activeEditor.document.uri.fsPath;
+      const lang = activeEditor.document.languageId || '';
+      const truncated = text.length > maxActiveBytes
+        ? text.slice(0, maxActiveBytes) + `\n…（內容已截斷至 ${Math.floor(maxActiveBytes / 1024)}KB，原始 ${Math.round(text.length / 1024)}KB；如需完整內容請呼叫 read_file）`
+        : text;
+      content += `\n\n## 作用中檔案內容（自動附帶）\n【路徑】${fileName}\n\`\`\`${lang}\n${truncated}\n\`\`\``;
+    }
 
     if (ltm.trim()) {
       content += `\n\n## 長期記憶（關於使用者的重要資訊）\n${ltm.trim()}`;
@@ -356,7 +647,7 @@ export class QueryEngine {
     }
 
     const currentModel = this.normalizeConfiguredModelId(cfg.get<string>('model') ?? liveModels[0]?.id ?? '');
-    if (currentModel && !currentModel.startsWith('copilot::')) {
+    if (currentModel && !currentModel.startsWith('copilot::') && !currentModel.startsWith('openai::')) {
       const { url, model } = this._services.decodeOllamaModel(currentModel, ollamaUrls);
       this._services.ollamaWarmupModel(url, model);
       this._callbacks.log(`Model warmup: ${model} @ ${url}`);
@@ -381,7 +672,7 @@ export class QueryEngine {
   }
 
   public async ensureModelReady(baseUrl: string, model: string): Promise<void> {
-    if (model.startsWith('copilot::')) {
+    if (model.startsWith('copilot::') || model.startsWith('openai::')) {
       return;
     }
 
@@ -398,22 +689,140 @@ export class QueryEngine {
       return;
     }
 
+    const fromShort = previousModel.split('/').pop();
+    const toShort = model.split('/').pop();
     this._callbacks.log(`Model switch: ${previousModel} -> ${model}，正在卸載舊模型並等待 VRAM 釋放`);
     await this._services.ollamaUnloadModel(baseUrl, previousModel);
+    this._callbacks.postToWebview({
+      type: 'assistant',
+      text: `⏳ 模型切換 ${fromShort} → ${toShort}，等待 VRAM 釋放…`,
+    });
 
     for (let seconds = 90; seconds > 0; seconds--) {
-      this._callbacks.postToWebview({
-        type: 'assistant',
-        text: `⏳ 模型切換（${previousModel.split('/').pop()} → ${model.split('/').pop()}），等待 VRAM 釋放… ${seconds}s`,
-      });
       const runningModels = await this._services.ollamaListRunningModels(baseUrl);
       const stillLoaded = runningModels.some((name) => name === previousModel || name.startsWith(previousModel.split(':')[0]));
       if (!stillLoaded) {
-        this._callbacks.log(`VRAM 已釋放，等待結束（剩 ${seconds}s）`);
-        this._callbacks.postToWebview({ type: 'assistant', text: `✅ VRAM 釋放完成，正在載入 ${model.split('/').pop()}…` });
+        const waited = 90 - seconds;
+        this._callbacks.log(`VRAM 已釋放，等待結束（用時 ${waited}s）`);
+        this._callbacks.postToWebview({ type: 'assistant', text: `✅ VRAM 釋放完成（${waited}s），載入 ${toShort}…` });
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
+  }
+
+  /**
+   * Ask 模式對話歷史自動摘要壓縮。
+   * 超過 threshold tokens 時，將較舊的訊息壓縮為一則摘要。
+   * 直接 mutate chatHistory 陣列（splice），不需要 setChatHistory。
+   */
+  private async autoSummarizeHistory(
+    chatHistory: QueryEngineChatMessage[],
+    model: string,
+    baseUrl: string
+  ): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const enabled = cfg.get<boolean>('autoSummarizeHistory', true);
+    const cfgThreshold = cfg.get<number>('autoSummarizeThreshold', 8000);
+
+    // 向 Ollama/vLLM 查詢實際 context window；Copilot 模型回傳 0
+    if (!model.startsWith('copilot::')) {
+      const ctxLen = await this._services.ollamaGetContextLength(baseUrl, model);
+      if (ctxLen > 0) { this._modelContextLength = ctxLen; }
+    } else {
+      this._modelContextLength = 0;
+    }
+
+    // 觸發摘要的門檻：若已知 context window 則取其 75%，否則沿用設定值
+    const threshold = this._modelContextLength > 0
+      ? Math.floor(this._modelContextLength * 0.75)
+      : cfgThreshold;
+
+    if (chatHistory.length < 4) { return; }
+
+    const totalTokens = this._services.estimateTokens(chatHistory.map(m => m.content ?? '').join(''));
+    if (totalTokens < threshold) { return; }
+
+    // 保留最新 4 則，對前面的摘要
+    const keepTail = chatHistory.slice(-4);
+    const toSummarize = chatHistory.slice(0, chatHistory.length - 4);
+    if (toSummarize.length < 2) { return; }
+
+    this._callbacks.postToWebview({
+      type: 'agentStep',
+      icon: '📝',
+      title: `對話歷史過長（≈${totalTokens} tokens），自動摘要舊訊息中…`,
+      fullPath: '',
+    });
+
+    const summaryMessages: QueryEngineChatMessage[] = [
+      {
+        role: 'system',
+        content: '你是對話摘要助手，只輸出繁體中文純文字，禁止呼叫工具。',
+      },
+      {
+        role: 'user',
+        content: `**重要：只能輸出純文字，禁止呼叫任何工具。**
+
+你的任務是對以下對話記錄產生一份詳細的繁體中文摘要，此摘要將取代舊訊息，因此必須捕捉所有重要資訊。
+
+請先在 <分析> 標籤內草擬你的分析，然後在 <摘要> 標籤內產生結構化摘要，包含以下 9 個段落：
+
+1. **主要請求與意圖**：所有使用者請求的完整細節（含隱含需求與限制條件）
+2. **關鍵技術概念**：討論過的技術、框架、設計模式與慣例
+3. **檔案與程式碼段落**：每個檢查或修改過的檔案（含具體程式碼片段與行號）
+4. **錯誤與修復**：每個遇到的錯誤、原因及解決方式
+5. **問題解決過程**：已解決的問題、有效與無效的方法
+6. **所有使用者訊息**：保留原文以維持上下文
+7. **待完成任務**：明確要求但尚未完成的工作
+8. **目前工作**：壓縮前正在進行的最後任務的詳細描述
+9. **建議的下一步**：與最近使用者請求直接對應的最合邏輯的下一步
+
+**再次提醒：禁止呼叫工具，只輸出 <分析>...</分析> 和 <摘要>...</摘要>。**
+
+以下是要摘要的對話記錄：
+
+` + toSummarize.map(m => `[${m.role}]: ${(m.content ?? '').slice(0, 800)}`).join('\n\n').slice(0, 12000),
+      },
+    ];
+
+    let summary = '';
+    try {
+      if (this._services.ollamaChatCallStream && !model.startsWith('copilot::')) {
+        const resp = await this._services.ollamaChatCallStream(baseUrl, model, summaryMessages, []);
+        const raw = (resp?.content ?? '').trim();
+        const m = raw.match(/<摘要>([\s\S]*?)<\/摘要>/);
+        summary = m ? `摘要：\n${m[1].trim()}` : raw;
+      }
+      if (!summary) {
+        const resp = await this._services.ollamaGenerate(baseUrl, model,
+          summaryMessages[0].content + '\n\n' + summaryMessages[1].content);
+        const raw = (resp.response ?? '').trim();
+        const m = raw.match(/<摘要>([\s\S]*?)<\/摘要>/);
+        summary = m ? `摘要：\n${m[1].trim()}` : raw;
+      }
+    } catch { /* fall through to trim fallback */ }
+
+    if (!summary) {
+      // fallback：直接裁除舊訊息
+      const trimmed = chatHistory.slice(-Math.floor(chatHistory.length / 2));
+      chatHistory.splice(0, chatHistory.length, ...trimmed);
+      this._callbacks.postToWebview({ type: 'agentStep', icon: '⚠️', title: '摘要失敗，改用裁剪模式', fullPath: '' });
+      return;
+    }
+
+    const compressed: QueryEngineChatMessage[] = [
+      { role: 'user', content: `[自動摘要—先前 ${toSummarize.length} 則對話重點]\n${summary}` },
+      { role: 'assistant', content: '已了解先前對話的進度與重要資訊，繼續回答。' },
+      ...keepTail,
+    ];
+    chatHistory.splice(0, chatHistory.length, ...compressed);
+
+    this._callbacks.postToWebview({
+      type: 'agentStep',
+      icon: '✅',
+      title: `Ask 模式歷史摘要完成：${toSummarize.length} 則壓縮為 1 則摘要`,
+      fullPath: '',
+    });
   }
 }

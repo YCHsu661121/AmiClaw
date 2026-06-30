@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import { exec as nodeExec } from 'child_process';
+import { promisify } from 'util';
+const exec = promisify(nodeExec);
 import { OllamaChatPanel } from './ollama-chat';
 
 interface ChatSessionInfo { id: string; title: string; }
@@ -37,6 +40,18 @@ function openAndSend(context: vscode.ExtensionContext, msg: object) {
 
 export function activate(context: vscode.ExtensionContext) {
   const sessionsProvider = new ChatSessionsProvider(context);
+
+  // ── 固定側邊欄 WebviewView Provider ──────────────────────────────────────
+  const viewProvider: vscode.WebviewViewProvider = {
+    resolveWebviewView(view: vscode.WebviewView) {
+      OllamaChatPanel.createFromView(view, context);
+    }
+  };
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('amiAiClaw.chatView', viewProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    })
+  );
 
   // VS Code 開啟時自動在背景初始化（不顯示 panel）以接受 WhatsApp 指令
   OllamaChatPanel.createSilent(context);
@@ -229,6 +244,128 @@ export function activate(context: vscode.ExtensionContext) {
 
       if (prompt) {
         openAndSend(context, { type: 'agentSend', prompt });
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.debugWriteMemory', async () => {
+      const example = `# Demo MEMORY\n\nThis is a demo memory written at ${new Date().toISOString()}\n`;
+      try {
+        const mem = await import('./memdir/memdir');
+        await mem.saveMemoryIndex(example);
+        vscode.window.showInformationMessage('已寫入 MEMORY.md 至 memory 目錄（示範）');
+      } catch (e) {
+        vscode.window.showErrorMessage('寫入 MEMORY.md 失敗：' + (e instanceof Error ? e.message : String(e)));
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.migrateMemory', async () => {
+      try {
+        const mem = await import('./memdir/memdir');
+        const res = await mem.migrateGlobalIndexToWorkspace();
+        if (res.migrated) {
+          vscode.window.showInformationMessage(`Memory migration completed (${res.details || 'ok'})`);
+        } else {
+          vscode.window.showInformationMessage(`Memory migration skipped: ${res.details || 'nothing to do'}`);
+        }
+      } catch (e) {
+        vscode.window.showErrorMessage('Memory migration failed: ' + (e instanceof Error ? e.message : String(e)));
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.showMemoryPath', async () => {
+      try {
+        const paths = await import('./memdir/paths');
+        const fs = await import('fs/promises');
+        const wsDir = paths.getWorkspaceMemoryDir();
+        const defDir = paths.getDefaultMemoryDir();
+        let wsExists = false;
+        let defExists = false;
+        if (wsDir) {
+          try { await fs.stat(wsDir); wsExists = true; } catch {}
+        }
+        try { await fs.stat(defDir); defExists = true; } catch {}
+        const msg = `workspace: ${wsDir ?? '<none>'} (exists:${wsExists})\ndefault: ${defDir} (exists:${defExists})`;
+        void vscode.window.showInformationMessage(msg, { modal: false } as any);
+      } catch (e) {
+        vscode.window.showErrorMessage('Cannot determine memory paths: ' + (e instanceof Error ? e.message : String(e)));
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.showFileCount', async () => {
+      try {
+        if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+          vscode.window.showInformationMessage('No workspace folder is open.');
+          return;
+        }
+        // exclude common large folders
+        const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**}';
+        const uris = await vscode.workspace.findFiles('**/*', exclude);
+        const count = uris.length;
+        const msg = `Workspace file count: ${count.toLocaleString()} (excludes node_modules, .git, dist, out)`;
+        const chan = vscode.window.createOutputChannel('AMI-AiClaw');
+        chan.appendLine(msg);
+        chan.show(true);
+        vscode.window.showInformationMessage(msg);
+      } catch (e) {
+        vscode.window.showErrorMessage('Failed to count files: ' + (e instanceof Error ? e.message : String(e)));
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.execFileCountShell', async () => {
+      try {
+        if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+          vscode.window.showInformationMessage('No workspace folder is open.');
+          return;
+        }
+        const activeUri = vscode.window.activeTextEditor?.document.uri;
+        const wf = (activeUri && vscode.workspace.getWorkspaceFolder(activeUri)) ?? vscode.workspace.workspaceFolders[0];
+        const root = wf.uri.fsPath;
+        let cmd: string;
+        if (process.platform === 'win32') {
+          // Use PowerShell for reliable recursive file count
+          cmd = `powershell -NoProfile -Command "(Get-ChildItem -Path '${root.replace(/'/g, "''")}' -File -Recurse -ErrorAction SilentlyContinue | Measure-Object).Count"`;
+        } else {
+          // POSIX: use ls -R | wc -l
+          cmd = `sh -c "ls -R '${root.replace(/'/g, "'\\''")}' | wc -l"`;
+        }
+
+        const oc = vscode.window.createOutputChannel('AMI-AiClaw');
+        oc.appendLine(`Running: ${cmd}`);
+        oc.show(true);
+        try {
+          const { stdout, stderr } = await exec(cmd, { windowsHide: true, maxBuffer: 50 * 1024 * 1024 });
+          if (stderr && String(stderr).trim()) oc.appendLine(String(stderr));
+          const n = parseInt(String(stdout).trim().split(/\r?\n/).pop() || '', 10);
+          if (!Number.isNaN(n)) {
+            const msg = `Shell file count: ${n.toLocaleString()} (path: ${root})`;
+            oc.appendLine(msg);
+            vscode.window.showInformationMessage(msg);
+            return;
+          }
+        } catch (e) {
+          oc.appendLine('Shell command failed: ' + (e instanceof Error ? e.message : String(e)));
+        }
+
+        // Fallback to JS counting via workspace.findFiles
+        oc.appendLine('Falling back to workspace.findFiles count...');
+        const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**}';
+        const uris = await vscode.workspace.findFiles('**/*', exclude);
+        const count = uris.length;
+        const msg = `Fallback file count: ${count.toLocaleString()} (excludes node_modules, .git, dist, out)`;
+        oc.appendLine(msg);
+        vscode.window.showInformationMessage(msg);
+      } catch (e) {
+        vscode.window.showErrorMessage('Failed to execute file-count: ' + (e instanceof Error ? e.message : String(e)));
       }
     })
   );
