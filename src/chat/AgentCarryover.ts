@@ -40,6 +40,19 @@ export class AgentCarryover {
     };
   }
 
+  /** 取得目前狀態的唯讀快照（供 SessionNotes 序列化用） */
+  public getState(): CarryoverState {
+    return {
+      recentReadFiles: [...this._state.recentReadFiles],
+      recentWorkLog: [...this._state.recentWorkLog],
+      taskGoal: this._state.taskGoal,
+      recentGoals: [...this._state.recentGoals],
+      activeArtifacts: [...this._state.activeArtifacts],
+      verifiedWork: [...this._state.verifiedWork],
+      invokedTools: [...this._state.invokedTools],
+    };
+  }
+
   public setTaskGoal(goal: string): void {
     if (goal && goal !== this._state.taskGoal) {
       if (this._state.taskGoal) { cappedPush(this._state.recentGoals, this._state.taskGoal, 5); }

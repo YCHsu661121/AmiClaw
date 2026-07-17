@@ -6,6 +6,12 @@ import { buildWorkspaceDigest, getCurrentContextDepth, fmtSize } from '../contex
 import { buildAgentSystemPrompt } from '../context/SystemPromptBuilder';
 import { AgentCarryover } from './AgentCarryover';
 import { isRefusalResponse } from './RefusalDetector';
+import {
+  buildSessionNotes,
+  loadSessionNotes,
+  saveSessionNotes,
+  shouldUpdateNotes,
+} from '../services/SessionNotes';
 
 export interface AgentExecutorChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -33,6 +39,10 @@ export interface AgentExecutorCallbacks {
   clearAgentTodos: () => void;
   recordAuditEntry: (tool: string, args: Record<string, unknown>, error: boolean) => void;
   expandFileMentions?: (prompt: string) => Promise<string>;
+  /** Session Notes — 啟動時載入上次筆記（可空字串） */
+  getSessionNotes: () => Promise<string>;
+  /** Session Notes — Agent 執行中每 N 次工具呼叫後自動呼叫，持久化筆記 */
+  onSessionNotesUpdate: (notes: string) => Promise<void>;
 }
 
 export interface AgentExecutorServices {
@@ -90,6 +100,11 @@ export class AgentExecutor {
   private _autoCancel = false;
   private _autoMaxIterations = 50;
   private _carryover = new AgentCarryover();
+  // Session Notes 追蹤
+  private _sessionToolCallCount = 0;
+  private _sessionTaskDescription = '';
+  private _sessionRecentErrors: string[] = [];
+  private _sessionNotesCache = '';  // 最後一次儲存的筆記（避免重複 I/O）
 
   public constructor(
     private readonly _callbacks: AgentExecutorCallbacks,
@@ -134,6 +149,12 @@ export class AgentExecutor {
     if (this._callbacks.getActiveSessionId() === sessionId) {
       this._agentMessages = cleared;
     }
+    // 清除會話時重置 Session Notes 狀態
+    this._sessionToolCallCount = 0;
+    this._sessionTaskDescription = '';
+    this._sessionRecentErrors = [];
+    this._sessionNotesCache = '';
+    this._carryover.reset();
   }
 
   public initSessionMessages(sessionId: string): void {
@@ -228,6 +249,14 @@ export class AgentExecutor {
 
       this._callbacks.clearAgentTodos();
       const ltm = this._callbacks.getLongTermMemory();
+      // Session Notes：載入上次筆記（若有），注入 system prompt 讓模型知道上次進度
+      const sessionNotes = await this._callbacks.getSessionNotes();
+      if (sessionNotes) {
+        this._sessionNotesCache = sessionNotes;
+        this._callbacks.log(`[SessionNotes] 注入上次筆記（${sessionNotes.length} bytes）`);
+      }
+      // 記錄本次任務描述（第一條 user 訊息，用於筆記 Task 區段）
+      this._sessionTaskDescription = userPrompt.slice(0, 400);
       this._agentMessages.push({
         role: 'system',
         content: buildAgentSystemPrompt({
@@ -237,6 +266,7 @@ export class AgentExecutor {
           activeFileBlock,
           workspaceDigestBlock,
           longTermMemory: ltm,
+          sessionNotes: sessionNotes || undefined,
         }),
       });
     }
@@ -362,6 +392,26 @@ export class AgentExecutor {
             // ── Carry-over 追蹤（仿 OpenHarness _record_tool_carryover）──
             this._carryover.track(fn.name, args, result, isError);
 
+            // ── Session Notes：記錄錯誤 + 每 N 次工具呼叫自動儲存筆記 ──
+            this._sessionToolCallCount++;
+            if (isError) {
+              this._sessionRecentErrors.push(`[${fn.name}] ${result.slice(0, 160)}`);
+              if (this._sessionRecentErrors.length > 10) this._sessionRecentErrors.shift();
+            }
+            if (shouldUpdateNotes(this._sessionToolCallCount)) {
+              const notes = buildSessionNotes(
+                {
+                  carryover: this._carryover.getState(),
+                  taskDescription: this._sessionTaskDescription,
+                  toolCallCount: this._sessionToolCallCount,
+                  recentErrors: this._sessionRecentErrors,
+                },
+                this._sessionNotesCache,
+              );
+              this._sessionNotesCache = notes;
+              this._callbacks.onSessionNotesUpdate(notes).catch(() => { /* 非致命 */ });
+            }
+
             const preview = result.length > 400 ? `${result.slice(0, 400)}\n…（已截斷）` : result;
             this._callbacks.postToWebview({ type: 'agentStepDone', result: preview, isError });
             this._agentMessages.push({ role: 'tool', content: result, tool_call_id: toolCall.id ?? fn.name });
@@ -445,6 +495,20 @@ export class AgentExecutor {
       this._callbacks.postToWebview({ type: 'error', text: 'Agent 錯誤：' + (error instanceof Error ? error.message : String(error)) });
     } finally {
       this._callbacks.trackLatency(model, Date.now() - agentStart);
+      // Session Notes：任務完成時強制儲存一次（確保最終狀態持久化）
+      if (this._sessionToolCallCount > 0) {
+        const notes = buildSessionNotes(
+          {
+            carryover: this._carryover.getState(),
+            taskDescription: this._sessionTaskDescription,
+            toolCallCount: this._sessionToolCallCount,
+            recentErrors: this._sessionRecentErrors,
+          },
+          this._sessionNotesCache,
+        );
+        this._sessionNotesCache = notes;
+        this._callbacks.onSessionNotesUpdate(notes).catch(() => { /* 非致命 */ });
+      }
       this._agentRunning = false;
       this._agentCancel = false;
       this._callbacks.setWaAgentMode(false);

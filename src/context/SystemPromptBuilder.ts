@@ -201,6 +201,12 @@ export interface BuildAgentSystemPromptInput {
   workspaceDigestBlock?: string;
   /** 長期記憶內容（可空） */
   longTermMemory?: string;
+  /**
+   * Session Notes — 移植自 claude-code SessionMemory。
+   * Agent 執行期間自動維護，下次啟動時注入此欄位，
+   * 讓模型知道「上次做到哪裡」。
+   */
+  sessionNotes?: string;
 }
 
 /**
@@ -218,6 +224,7 @@ export function buildAgentSystemPrompt(input: BuildAgentSystemPromptInput): stri
     ? `\n目前編輯器中開啟的檔案:\n${input.openFiles!.join('\n')}`
     : '';
   const ltm = (input.longTermMemory ?? '').trim();
+  const sn = (input.sessionNotes ?? '').trim();
   return `你是 VS Code 程式開發助手 Agent，可存取的工作區資料夾: ${input.folderList}。${activeFileText}${openFilesText}${input.activeFileBlock ?? ''}${input.workspaceDigestBlock ?? ''}
 
 ${AGENT_EXECUTION_RULES}
@@ -226,6 +233,7 @@ ${AGENT_TOOLS_OVERVIEW}
 
 ${AGENT_ATLASSIAN_RULES}
 ${ltm ? `\n## 長期記憶\n${ltm}` : ''}
+${sn ? `\n## 上次 Session 記錄\n\n> 以下是你上次執行時自動儲存的筆記，請據此繼續未完成的工作。\n\n${sn}` : ''}
 
 請使用繁體中文回答，完成後告知使用者結果。`;
 }

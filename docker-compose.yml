@@ -58,5 +58,36 @@ services:
     profiles:
       - build                    # only runs when explicitly requested
 
+  # ── Tailscale VPN node ────────────────────────────────────────────────────
+  # Start:   docker compose --profile tailscale up -d tailscale
+  # Auth:    TS_AUTHKEY=tskey-auth-xxx docker compose --profile tailscale up -d tailscale
+  # Status:  docker compose exec tailscale tailscale status
+  # Logs:    docker compose logs -f tailscale
+  #
+  # --tun=userspace-networking lets the daemon run without /dev/net/tun or
+  # privileged mode; suitable for most cases.  Remove it and add the
+  # cap_add / devices blocks below if you need kernel-level routing.
+  tailscale:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.tailscale
+    container_name: tailscale-node
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:-}           # set on the host or in .env
+      - TS_HOSTNAME=${TS_HOSTNAME:-amiclaw-node}
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
+    volumes:
+      - tailscale-state:/var/lib/tailscale   # persist auth across restarts
+    restart: unless-stopped
+    profiles:
+      - tailscale
+    # Uncomment if you need kernel tun instead of userspace networking:
+    # cap_add:
+    #   - NET_ADMIN
+    #   - SYS_MODULE
+    # devices:
+    #   - /dev/net/tun:/dev/net/tun
+
 volumes:
   ollama-data:
+  tailscale-state:

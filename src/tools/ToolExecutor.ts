@@ -106,6 +106,8 @@ export class ToolExecutor {
       postToWebview: this._callbacks.postToWebview,
       isWaAgentMode: this._callbacks.isWaAgentMode,
       log: this._callbacks.log,
+      getAutoPilotServices: this._callbacks.getAutoPilotServices,
+      getRecentTranscript: this._callbacks.getRecentTranscript,
     });
   }
 
@@ -554,9 +556,9 @@ export class ToolExecutor {
     'open_file':          'read_file',
     'show_file':          'read_file',
     // 分區讀取別名
-    'grep_file':          'read_file_smart',
-    'grep_log':           'read_file_smart',
-    'read_log':           'read_file_smart',
+    'grep_file':          'grep_file',   // 直接指向新工具
+    'grep_log':           'grep_file',
+    'read_log':           'grep_file',
     'tail_file':          'read_file_smart',
     'head_file':          'read_file_smart',
     'search_file':        'read_file_smart',
@@ -653,29 +655,56 @@ export class ToolExecutor {
         try { fileStat = await vscode.workspace.fs.stat(vscode.Uri.file(fpath)); }
         catch { return `錯誤：找不到檔案 ${fpath}`; }
         const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+        const LOG_SMART_THRESHOLD = 64 * 1024; // 64 KB：超過此大小的 log 改走 error-first 策略
+        const ext = fpath.split('.').pop()?.toLowerCase() ?? '';
+        const isLog = ['log', 'txt', 'out', 'err', 'bld', 'build', 'trace'].includes(ext);
+        // 各式錯誤/警告關鍵字 pattern（涵蓋 EDKII build、GCC、Python、Node.js、一般系統 log）
+        const LOG_ERROR_PATTERN =
+          'error:|Error:|ERROR|warning:|Warning:|WARNING|fatal:|Fatal:|FATAL|' +
+          'fail:|FAIL|FAILED|BUILD FAILURE|BUILD ERROR|' +
+          'assert|Assert|ASSERT|exception|Exception|EXCEPTION|' +
+          'undefined reference|cannot find|unresolved|Unresolved|' +
+          'ld returned|undefined symbol|' +
+          'Traceback|SyntaxError|TypeError|ReferenceError|ImportError|ModuleNotFoundError|' +
+          'abort|Abort|ABORT|crash|Crash|panic|Panic|PANIC|' +
+          'segfault|Segmentation fault|signal [0-9]|' +
+          'No such file|Permission denied|Access denied|not found';
+
         if (fileStat.size > MAX_BYTES) {
-          // 自動降階到 read_file_smart
-          // Build log 策略：先取尾端 300 行（錯誤在尾端），再附帶全檔 error 關鍵字搜尋
-          const ext = fpath.split('.').pop()?.toLowerCase() ?? '';
-          const isLog = ['log', 'txt', 'out', 'err', 'bld'].includes(ext);
+          // 超大檔（> 5 MB）：直接用 read_file_smart 分兩段回傳
           const sizeMb = (fileStat.size / 1024 / 1024).toFixed(1);
           if (isLog) {
-            // 兩段回傳：尾端 300 行 + error 關鍵字行
             const tailResult  = await this.executeTool('read_file_smart', { path: args.path, tail: 300, max_kb: 96 });
             const errorResult = await this.executeTool('read_file_smart', {
               path: args.path,
-              pattern: 'error :|Error:|BUILD FAILURE|undefined reference|Unresolved|cannot find|fatal error',
-              context_lines: 0,
-              max_kb: 64,
+              pattern: LOG_ERROR_PATTERN,
+              context_lines: 5,
+              max_kb: 128,
             });
             return `⚠️ 檔案過大（${sizeMb} MB），自動分兩段回傳——\n\n` +
-              `【尾端 300 行（最終建置結果）】\n${tailResult}\n\n` +
-              `【全檔 error 關鍵字行】\n${errorResult}`;
+              `【全檔錯誤/警告點（含前後 5 行 context）】\n${errorResult}\n\n` +
+              `【尾端 300 行（最終執行結果）】\n${tailResult}`;
           } else {
             const headResult = await this.executeTool('read_file_smart', { path: args.path, head: 300, max_kb: 64 });
             return `⚠️ 檔案過大（${sizeMb} MB），自動回傳前 300 行：\n${headResult}`;
           }
         }
+
+        // 中型 log（64 KB ~ 5 MB）：先掃描錯誤點再補尾端，避免截斷遺漏關鍵訊息
+        if (isLog && fileStat.size > LOG_SMART_THRESHOLD) {
+          const sizeKb = (fileStat.size / 1024).toFixed(0);
+          const errorResult = await this.executeTool('read_file_smart', {
+            path: args.path,
+            pattern: LOG_ERROR_PATTERN,
+            context_lines: 5,
+            max_kb: 128,
+          });
+          const tailResult = await this.executeTool('read_file_smart', { path: args.path, tail: 100, max_kb: 64 });
+          return `📋 Log 分析模式（${sizeKb} KB）——先掃描各式錯誤點，再補尾端執行結果\n\n` +
+            `【錯誤 / 警告點（含前後 5 行 context）】\n${errorResult}\n\n` +
+            `【尾端 100 行（執行結果）】\n${tailResult}`;
+        }
+
         const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
         const text = Buffer.from(bytes).toString('utf8');
         const rfResult = text.length > 50000 ? text.slice(0, 50000) + '\n…（已截斷至 50KB）' : text;
@@ -812,6 +841,170 @@ export class ToolExecutor {
           return header + body;
         } catch (e) {
           return `read_file_smart 錯誤：${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
+      case 'grep_file': {
+        // 多關鍵字搜尋超大型檔案，逐行 streaming，不把整個檔案載入 buffer。
+        // 每個 keyword 獨立分組回傳，重疊 context 自動合併去重，達上限截斷各組。
+        const gfPath    = await resolvePathWithPriority(args.path as string);
+        const gfKws     = Array.isArray(args.keywords)
+          ? (args.keywords as unknown[]).map(String).filter(Boolean)
+          : [];
+        if (gfKws.length === 0) { return '錯誤：keywords 為空'; }
+        const gfCtx     = args.context_lines     ? Math.max(0, Number(args.context_lines))     : 3;
+        const gfMaxPerKw= args.max_matches_per_kw ? Math.max(1, Number(args.max_matches_per_kw)) : 30;
+        const gfMaxKb   = args.max_kb            ? Math.max(1, Math.min(512, Number(args.max_kb))) : 128;
+        const gfCaseSens= args.case_sensitive === true;
+        const gfMaxBytes= gfMaxKb * 1024;
+
+        try {
+          const nodefs   = require('fs') as typeof import('fs');
+          const readline = require('readline') as typeof import('readline');
+
+          let stat: import('fs').Stats;
+          try { stat = nodefs.statSync(gfPath); }
+          catch { return `錯誤：找不到檔案 ${gfPath}`; }
+          const fileSizeMb = (stat.size / 1024 / 1024).toFixed(1);
+
+          // 每個關鍵字建立獨立 regex 與匹配記錄
+          const gfFlag = gfCaseSens ? '' : 'i';
+          type KwGroup = {
+            kw: string;
+            re: RegExp;
+            matches: Array<{ lineNo: number; text: string; isCtx?: boolean }>;
+            totalHits: number;
+            capped: boolean;
+          };
+          const groups: KwGroup[] = gfKws.map(kw => ({
+            kw,
+            re: new RegExp(kw, gfFlag),
+            matches: [],
+            totalHits: 0,
+            capped: false,
+          }));
+
+          // ring buffer（前置 context）與後置 context 追蹤
+          const ring: string[] = [];
+          // pendingCtx[kwIdx] = Set of future line numbers to capture as context
+          const pendingCtx: Set<number>[] = groups.map(() => new Set<number>());
+          let totalFileLines = 0;
+
+          await new Promise<void>((resolve, reject) => {
+            const rl = readline.createInterface({
+              input: nodefs.createReadStream(gfPath, { encoding: 'utf8' }),
+              crlfDelay: Infinity,
+            });
+            let lineNo = 0;
+
+            rl.on('line', (line: string) => {
+              lineNo++;
+
+              for (let gi = 0; gi < groups.length; gi++) {
+                const g = groups[gi];
+
+                // 後置 context
+                if (pendingCtx[gi].has(lineNo)) {
+                  pendingCtx[gi].delete(lineNo);
+                  // 若此行也是 match，不重複加；等下面 match 邏輯加
+                  if (!g.re.test(line)) {
+                    if (!g.matches.find(m => m.lineNo === lineNo)) {
+                      g.matches.push({ lineNo, text: line, isCtx: true });
+                    }
+                  }
+                }
+
+                // 命中檢查
+                if (g.re.test(line)) {
+                  g.totalHits++;
+                  if (!g.capped) {
+                    if (g.totalHits <= gfMaxPerKw) {
+                      // 前置 context：從 ring buffer 補
+                      if (gfCtx > 0) {
+                        const ringStart = Math.max(0, ring.length - gfCtx);
+                        for (let ri = ringStart; ri < ring.length; ri++) {
+                          const ctxNo = lineNo - (ring.length - ri);
+                          if (ctxNo >= 1 && !g.matches.find(m => m.lineNo === ctxNo)) {
+                            g.matches.push({ lineNo: ctxNo, text: ring[ri], isCtx: true });
+                          }
+                        }
+                      }
+                      // 本行 match（先移除若已由後置 context 加過）
+                      const existing = g.matches.findIndex(m => m.lineNo === lineNo);
+                      if (existing !== -1) { g.matches.splice(existing, 1); }
+                      g.matches.push({ lineNo, text: line, isCtx: false });
+                      // 後置 context
+                      for (let j = 1; j <= gfCtx; j++) pendingCtx[gi].add(lineNo + j);
+                    } else {
+                      g.capped = true;
+                    }
+                  }
+                }
+              }
+
+              // 維護 ring buffer
+              ring.push(line);
+              if (ring.length > gfCtx + 1) ring.shift();
+            });
+
+            rl.on('close', () => { totalFileLines = lineNo; resolve(); });
+            rl.on('error', reject);
+          });
+
+          // 組裝輸出
+          const allHits = groups.reduce((s, g) => s + g.totalHits, 0);
+          const hdr = `📄 ${gfPath}  (${fileSizeMb} MB, ${totalFileLines.toLocaleString()} 行)\n` +
+            `🔍 Keywords: ${gfKws.map(k => `"${k}"`).join(', ')}  |  context=${gfCtx}  |  total hits: ${allHits}\n`;
+
+          const sections: string[] = [];
+          let outputBytes = hdr.length;
+
+          for (const g of groups) {
+            if (outputBytes >= gfMaxBytes) { sections.push(`…（已達 ${gfMaxKb}KB 上限）`); break; }
+
+            // 排序並去重（多個 keywords 可能標記同一行為 context）
+            const sorted = g.matches.sort((a, b) => a.lineNo - b.lineNo);
+            const deduped: typeof sorted = [];
+            for (const m of sorted) {
+              if (!deduped.length || deduped[deduped.length - 1].lineNo !== m.lineNo) {
+                deduped.push(m);
+              } else if (!m.isCtx) {
+                // 若已有同行 context，升格為 match
+                deduped[deduped.length - 1].isCtx = false;
+              }
+            }
+
+            const capNote = g.capped ? ` (顯示前 ${gfMaxPerKw}，共 ${g.totalHits} 處)` : ` (${g.totalHits} 處)`;
+            let section = `\n━━━ "${g.kw}" ${g.totalHits === 0 ? '— 無匹配' : capNote} ━━━\n`;
+
+            if (deduped.length === 0) {
+              section += '（無匹配行）\n';
+            } else {
+              // 分布摘要：列出 match 的 % 位置
+              const matchNos = deduped.filter(m => !m.isCtx).map(m => m.lineNo);
+              const distrib = matchNos.map(n => `${(n * 100 / totalFileLines).toFixed(1)}%`).join(', ');
+              if (matchNos.length > 0) { section += `   📍 分布位置：${distrib}\n`; }
+
+              let prevLineNo = -999;
+              for (const m of deduped) {
+                if (m.lineNo > prevLineNo + 1 && prevLineNo !== -999) {
+                  section += '   ——\n';
+                }
+                const pct = totalFileLines > 0 ? ` (${(m.lineNo * 100 / totalFileLines).toFixed(1)}%)` : '';
+                section += `${m.isCtx ? '  ' : '▶ '}${String(m.lineNo).padStart(6)}${pct}: ${m.text}\n`;
+                prevLineNo = m.lineNo;
+              }
+            }
+
+            if (outputBytes + section.length > gfMaxBytes) {
+              section = section.slice(0, gfMaxBytes - outputBytes) + '\n…（截斷）\n';
+            }
+            sections.push(section);
+            outputBytes += section.length;
+          }
+
+          return hdr + sections.join('');
+        } catch (e) {
+          return `grep_file 錯誤：${e instanceof Error ? e.message : String(e)}`;
         }
       }
       case 'read_files': {
@@ -1958,7 +2151,7 @@ export class ToolExecutor {
             this._callbacks.log(`organize_photos: ${path.basename(imgPath)} 回應非 JSON：${resp.slice(0, 120)}`);
             continue;
           }
-          const isMatch = parsed.match === true
+          const isMatch = parsed.match === true || parsed.match === 1
             || /^(true|yes|y|是|有|same)$/i.test(String(parsed.match ?? '').trim());
           let conf = typeof parsed.confidence === 'number'
             ? parsed.confidence : parseInt(String(parsed.confidence ?? ''), 10);

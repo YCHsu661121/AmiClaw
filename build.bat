@@ -71,7 +71,7 @@ IF NOT ERRORLEVEL 1 (
   echo Packaging VSIX...
   call docker run --rm -v "%HOSTROOT%:/workspace" -w /workspace node:20-slim sh -c "npm run package"
   IF ERRORLEVEL 1 GOTO fail
-  echo Local build (via Docker) finished. Output: %ROOT%dist
+  echo Local build ^(via Docker^) finished. Output: %ROOT%dist
   GOTO done
 ) ELSE (
   echo Docker not found, falling back to local npm

@@ -19,6 +19,7 @@ import { QueryEngine, QueryEngineServices } from './chat/QueryEngine';
 import * as memdir from './memdir/memdir';
 import { AgentExecutor } from './chat/AgentExecutor';
 import type { AgentExecutorServices } from './chat/AgentExecutor';
+import { loadSessionNotes, saveSessionNotes } from './services/SessionNotes';
 import { PanelLike, WebviewViewAdapter } from './panels/ChatPanelAdapter';
 import { setAutoPilotActive, setAutoPilotEnabledBySetting, isAutoPilotActive } from './autopilot';
 import { getCurrentContextDepth, invalidateWorkspaceDigestCache } from './context/WorkspaceDigest';
@@ -282,6 +283,25 @@ export class OllamaChatPanel {
       log: (msg) => OllamaChatPanel.log(msg),
       getActiveSessionId: () => this._activeSessionId,
       handleWhatsAppTool: (name, args) => this._wa.handleTool(name, args),
+      getAutoPilotServices: () => {
+        const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+        const urls = getOllamaUrls(cfg);
+        const baseUrl = urls[0] ?? 'http://localhost:11434';
+        const model = cfg.get<string>('autoPilotClassifierModel') ?? cfg.get<string>('model') ?? 'llama3';
+        return {
+          callModel: async (opts: { system: string; user: string }) => {
+            const prompt = `${opts.system}\n\n${opts.user}`;
+            const t0 = Date.now();
+            const r = await ollamaGenerate(baseUrl, model, prompt);
+            return { text: r.response, durationMs: Date.now() - t0 };
+          },
+          log: (msg: string) => OllamaChatPanel.log(`[AutoPilot] ${msg}`),
+        };
+      },
+      getRecentTranscript: () => this._chatHistory.slice(-10).map(m => ({
+        role: m.role as 'user' | 'assistant' | 'tool',
+        content: (m.content ?? '').slice(0, 800),
+      })),
     });
     // ── QueryEngine ────────────────────────────────────────────────────────────
     this._queryEngine = new QueryEngine(
@@ -337,6 +357,8 @@ export class OllamaChatPanel {
         clearAgentTodos: () => this._tools.clearAgentTodos(),
         recordAuditEntry: (tool, args, error) => this._tools.recordAuditEntry(tool, args, error),
         expandFileMentions: (p) => this._queryEngine.expandFileMentions(p),
+        getSessionNotes: () => loadSessionNotes(),
+        onSessionNotesUpdate: (notes) => saveSessionNotes(notes),
       },
       {
         getOllamaUrls,

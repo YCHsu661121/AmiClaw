@@ -64,6 +64,11 @@ export interface QueryEngineServices {
     onChunk: (chunk: string) => void,
     token: vscode.CancellationToken
   ) => Promise<string>;
+  copilotChatCallWithCts?: (
+    modelId: string,
+    messages: QueryEngineChatMessage[],
+    tools: unknown[]
+  ) => Promise<QueryEngineChatMessage>;
   estimateTokens: (text: string) => number;
   // Ask 模式工具支援（選用，未注入時 fallback 到純 generate）
   ollamaChatCallStream?: (
@@ -489,7 +494,17 @@ export class QueryEngine {
     for (let step = 0; step < MAX_STEPS; step++) {
       let response: QueryEngineChatMessage;
       try {
-        response = await this._services.ollamaChatCallStream!(baseUrl, model, messages, tools, onThinkChunk, onTextChunk, onStats);
+        if (isCopilotModel(model)) {
+          // Copilot 路徑：透過 VS Code Language Model API
+          const copilotId = stripProviderPrefix(model);
+          if (!this._services.copilotChatCallWithCts) {
+            throw new Error('copilotChatCallWithCts service not injected');
+          }
+          const copilotMsg = await this._services.copilotChatCallWithCts(copilotId, messages, tools);
+          response = { role: 'assistant', content: copilotMsg?.content ?? '', tool_calls: copilotMsg?.tool_calls };
+        } else {
+          response = await this._services.ollamaChatCallStream!(baseUrl, model, messages, tools, onThinkChunk, onTextChunk, onStats);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (/does not support tools/i.test(message)) {
