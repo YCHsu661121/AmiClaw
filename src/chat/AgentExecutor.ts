@@ -527,8 +527,9 @@ export class AgentExecutor {
     this._callbacks.postToWebview({ type: 'autoStatus', running: true });
 
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const model = modelOverride ?? cfg.get<string>('model') ?? '';
+    const urls = this._services.getOllamaUrls(cfg);
+    const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
+    const { url: baseUrl, model } = this._services.decodeOllamaModel(rawModel, urls);
 
     await this._callbacks.ensureModelReady(baseUrl, model);
 

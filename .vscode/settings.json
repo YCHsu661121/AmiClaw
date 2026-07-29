@@ -1,7 +1,7 @@
 {
     "amiAiClaw.urls": [
         "http://ai:11434",
-        "http://intelnode2:8000"
+        "http://intelnode2:11434"
     ],
     "amiAiClaw.model": "openai::http://intelnode2:8000||Qwen/Qwen3-0.6B",
     "amiAiClaw.thinkingLevel": "high",

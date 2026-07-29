@@ -626,8 +626,9 @@ export class QueryEngine {
 
   public async summarizeText(text: string, modelOverride?: string): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const model = modelOverride ?? cfg.get<string>('model') ?? '';
+    const urls = this._services.getOllamaUrls(cfg);
+    const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
+    const { url: baseUrl, model } = this._services.decodeOllamaModel(rawModel, urls);
     const prompt = `請以繁體中文，將下面內容濃縮成三條要點（每條 1 行），簡潔扼要：\n\n${text}`;
 
     try {
@@ -708,9 +709,10 @@ export class QueryEngine {
 
   public async testConnectionStatus(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
-    const baseUrl = cfg.get<string>('url') ?? 'http://localhost:11434';
-    const result = await this._services.ollamaCheckConnection(baseUrl);
-    this._callbacks.postToWebview({ type: 'connectionStatus', ok: result.ok, url: baseUrl, message: result.message });
+    const urls = this._services.getOllamaUrls(cfg);
+    const firstUrl = urls[0] ?? 'http://localhost:11434';
+    const result = await this._services.ollamaCheckConnection(firstUrl);
+    this._callbacks.postToWebview({ type: 'connectionStatus', ok: result.ok, url: firstUrl, message: result.message });
   }
 
   public async ensureModelReady(baseUrl: string, model: string): Promise<void> {

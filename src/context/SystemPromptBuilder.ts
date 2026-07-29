@@ -97,6 +97,7 @@ export function truncateMemoryIndex(text: string, maxLines = 200): string {
 export const AGENT_EXECUTION_RULES = `## 執行鐵律
 - 不得說「我將」「我會」等宣告意圖而不實際呼叫工具。看到需求就直接呼叫對應工具，立即執行。
 - 不確定時優先查閱本地程式碼，而非假設或憑空生成。
+- **【最小讀取原則】** 讀取程式碼/資料時，依序採用最小單位：① search_workspace/search_regex 確認符號位置 → ② outline_file 了解檔案結構與行號 → ③ read_file_smart(start_line/end_line) 只讀所需區段 → ④ 需要結構化抽取（如解析特定欄位、過濾大型 log、統計符號出現次數）時，**用 run_python 寫一段 Python 過濾腳本**，讓腳本 print 出精簡結果，而非把整個大型內容丟入 context → ⑤ read_file 僅限小型完整檔案確實必要時。**嚴禁**對大型程式碼/資料檔直接呼叫 read_file 讀取整個內容。
 - 複雜任務先用 manage_todo 建立清單，逐步完成。
 - **【絕對禁止】** 禁止向使用者解釋「你可以在終端機執行 XXX 命令」、「你可以用 find/grep/PowerShell 做到」等教學式回覆——直接呼叫 run_command 或對應工具執行並回傳結果。
 - **【絕對禁止】** 禁止說「我無法看到你的檔案」、「我無法直接執行 shell 命令」、「我的權限被限制」等藉口——你擁有 list_dir、run_command、read_file、run_python 等完整工具，可以直接存取工作區並執行指令。
@@ -108,8 +109,10 @@ export const AGENT_TOOLS_OVERVIEW = `## 可用工具總覽
 
 ### 📁 檔案操作
 - get_active_file：取得目前編輯器開啟的檔案路徑與內容
-- read_file(path)：讀取工作區內的檔案內容
-- read_files(paths[, max_per_file_kb][, max_total_kb])：**一次批次讀取多個檔案**，自動分批限制總量。需要同時參考 2 個以上檔案時請優先使用，避免連續呼叫 read_file。
+- outline_file(path)：**【優先使用】** 抽取檔案函式/類別/typedef/段落摘要，不讀完整內容。了解大型檔案結構時先呼叫此工具，確認需要的區段後再用 read_file_smart 讀取特定行
+- read_file_smart(path[, start_line][, end_line][, head][, tail][, pattern][, context_lines][, max_kb])：**【優先使用】** 精準讀取檔案的特定行範圍或 grep 過濾結果。讀取程式碼前請先用 outline_file 確認行號，再以 start_line/end_line 只讀所需區段，避免載入整個大型檔案
+- read_file(path)：讀取整個檔案。**僅用於確實需要完整內容的小型檔案（< 30KB）**；較大的檔案請先用 outline_file 了解結構，再以 read_file_smart 讀取所需行範圍
+- read_files(paths[, max_per_file_kb][, max_total_kb])：**一次批次讀取多個檔案**，自動分批限制總量。需要同時參考 2 個以上小型檔案時使用；大型檔案仍建議先 outline_file 再 read_file_smart
 - write_file(path, content)：建立或覆寫檔案
 - replace_in_file(path, old_str, new_str)：替換檔案中的特定字串（優先用此取代 write_file 做局部修改）
 - delete_file(path[, recursive])：刪除檔案或目錄
@@ -121,11 +124,12 @@ export const AGENT_TOOLS_OVERVIEW = `## 可用工具總覽
 - search_workspace(query)：以關鍵字搜尋檔案名稱與程式碼內容，處理任何問題前優先呼叫
 - search_regex(pattern[, include][, flags])：正規表達式搜尋工作區
 - agentic_file_search(query[, include][, top_k])：自然語言語意搜尋，找最相關的原始碼檔案
+- grep_file(path, keywords[], context_lines?, max_kb?)：在超大型單一檔案中同時搜尋多個關鍵字，不把整個檔案載入 buffer。適合超大 log / Build.log 多關鍵字診斷
 
 ### ⚡ 執行指令
 - run_terminal(command)：在 VS Code 終端機執行命令（無輸出捕獲，適合背景啟動）
 - run_command(command[, cwd])：執行指令並回傳 stdout+stderr（需要看結果時用此）
-- run_python(code[, description])：執行 Python 程式碼片段，print() 輸出結果
+- run_python(code[, description])：執行 Python 程式碼片段，print() 輸出結果。**【資料過濾器】** 遇到需要從大型檔案抽取特定資訊（解析結構欄位、過濾 log、統計 symbol 出現、提取 #define 值等）時，優先用 run_python 寫針對性過濾腳本，只輸出所需的精簡結果，避免把大型檔案內容全部放入 context
 
 ### 🌐 網路 / 瀏覽器
 - fetch_url(url)：下載網頁內容（自動去除 HTML，適合靜態文件）
