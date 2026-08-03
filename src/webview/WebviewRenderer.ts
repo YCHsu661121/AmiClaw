@@ -160,6 +160,32 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .agent-todo-text{flex:1;opacity:0.88;line-height:1.4;word-break:break-word}
       .agent-todo-item.at-done .agent-todo-text{text-decoration:line-through;opacity:0.32}
       .agent-todo-item.at-active .agent-todo-text{color:#4fc1ff;font-weight:600}
+      /* Shadow Staging Panel */
+      #shadowPanel{display:none;border-top:2px solid #c586c0;background:rgba(197,134,192,0.06);padding:8px 14px;box-sizing:border-box;width:100%}
+      .shadow-header{font-size:0.82em;font-weight:700;color:#c586c0;display:flex;align-items:center;gap:8px;margin-bottom:6px}
+      .shadow-status-badge{font-size:0.72em;padding:2px 8px;border-radius:10px;font-weight:700;border:1px solid currentColor}
+      .shadow-status-badge.staging{color:#f7cc65;border-color:rgba(247,204,101,0.5);background:rgba(247,204,101,0.1)}
+      .shadow-status-badge.verifying{color:#4fc1ff;border-color:rgba(79,193,255,0.5);background:rgba(79,193,255,0.1)}
+      .shadow-status-badge.ready_to_commit{color:#89d185;border-color:rgba(137,209,133,0.5);background:rgba(137,209,133,0.1)}
+      .shadow-status-badge.committed{color:#89d185}
+      .shadow-status-badge.rolled_back{color:#f14c4c}
+      .shadow-file-list{margin-bottom:8px;max-height:120px;overflow-y:auto}
+      .shadow-file-row{display:flex;align-items:center;gap:6px;padding:2px 0;font-size:0.78em;font-family:monospace}
+      .shadow-op-badge{font-size:0.68em;padding:1px 5px;border-radius:3px;font-weight:700;flex-shrink:0}
+      .shadow-op-badge.write{background:rgba(137,209,133,0.2);color:#89d185}
+      .shadow-op-badge.replace{background:rgba(247,204,101,0.2);color:#f7cc65}
+      .shadow-op-badge.insert{background:rgba(79,193,255,0.2);color:#4fc1ff}
+      .shadow-op-badge.delete{background:rgba(241,76,76,0.2);color:#f14c4c}
+      .shadow-op-badge.rename{background:rgba(206,145,120,0.2);color:#ce9178}
+      .shadow-filepath{flex:1;opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+      .shadow-filepath:hover{opacity:1;text-decoration:underline}
+      .shadow-verify-out{font-size:0.74em;font-family:monospace;background:rgba(0,0,0,0.15);border-radius:4px;padding:4px 8px;max-height:80px;overflow-y:auto;margin-bottom:8px;white-space:pre-wrap;word-break:break-all;display:none}
+      .shadow-actions{display:flex;gap:8px;flex-wrap:wrap}
+      .shadow-btn{font-size:0.78em;padding:4px 12px;border-radius:6px;border:1px solid;cursor:pointer;font-weight:600;background:none;color:inherit}
+      .shadow-btn.approve{color:#89d185;border-color:#89d185}.shadow-btn.approve:hover{background:rgba(137,209,133,0.15)}
+      .shadow-btn.reject{color:#f14c4c;border-color:#f14c4c}.shadow-btn.reject:hover{background:rgba(241,76,76,0.15)}
+      .shadow-btn.verify{color:#4fc1ff;border-color:#4fc1ff}.shadow-btn.verify:hover{background:rgba(79,193,255,0.15)}
+      .shadow-btn.inspect{color:#ce9178;border-color:#ce9178}.shadow-btn.inspect:hover{background:rgba(206,145,120,0.15)}
       /* 對話模式 */
       .debate-turn { margin:6px 0; border-radius:6px; overflow:hidden }
       .debate-turn-header { font-size:0.78em; font-weight:700; padding:3px 10px; display:flex; align-items:center; gap:5px }
@@ -341,6 +367,22 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       <div class="agent-todos-panel">
         <div class="agent-todos-header"><span id="agTodosTitle"></span><div class="agent-todos-progress-track"><div class="agent-todos-progress-fill" id="agTodosFill" style="width:0%"></div></div></div>
         <div id="agTodosList"></div>
+      </div>
+    </div>
+    <div id="shadowPanel">
+      <div class="shadow-header">
+        👻 影子暂存區
+        <span class="shadow-status-badge staging" id="shadowStatusBadge">staging</span>
+        <span style="flex:1"></span>
+        <span id="shadowFileCount" style="font-size:0.75em;opacity:0.65"></span>
+      </div>
+      <div class="shadow-file-list" id="shadowFileList"></div>
+      <div class="shadow-verify-out" id="shadowVerifyOut"></div>
+      <div class="shadow-actions">
+        <button class="shadow-btn verify" id="shadowVerifyBtn">🔍 驗證</button>
+        <button class="shadow-btn approve" id="shadowApproveBtn">✅ Approve &amp; Commit</button>
+        <button class="shadow-btn reject" id="shadowRejectBtn">❌ Reject &amp; Rollback</button>
+        <button class="shadow-btn inspect" id="shadowInspectBtn">🔎 Inspect</button>
       </div>
     </div>
     <div id="bottomBar">
@@ -905,6 +947,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             if (statusBar && typeof msg.text === 'string') { statusBar.textContent = msg.text; }
           }
           else if (msg.type === 'agentTodoUpdate') { renderAgentTodos(msg.todos); }
+          else if (msg.type === 'shadowStateUpdate') { renderShadowPanel(msg.state); }
           else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm, msg.diff); }
           else if (msg.type === 'fileModified') {
             _fileMods.unshift({ filePath: msg.filePath, op: msg.op, ts: msg.ts || Date.now() });
@@ -2379,6 +2422,55 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           row.appendChild(icon); row.appendChild(text); list2.appendChild(row);
         });
       }
+
+      // ── Shadow Staging Panel ─────────────────────────────────────────────────
+      function renderShadowPanel(state) {
+        var panel = document.getElementById('shadowPanel'); if (!panel) return;
+        if (!state || state.status === 'idle') { panel.style.display = 'none'; return; }
+        panel.style.display = '';
+        var badge = document.getElementById('shadowStatusBadge');
+        if (badge) { badge.textContent = state.status; badge.className = 'shadow-status-badge ' + state.status; }
+        var cnt = document.getElementById('shadowFileCount');
+        if (cnt) cnt.textContent = state.files.length + ' \u500b\u6a94\u6848\u66ab\u5b58';
+        var list = document.getElementById('shadowFileList'); if (!list) return;
+        list.innerHTML = '';
+        (state.files || []).forEach(function(f) {
+          var row = document.createElement('div'); row.className = 'shadow-file-row';
+          var opBadge = document.createElement('span');
+          opBadge.className = 'shadow-op-badge ' + (f.op || 'write');
+          opBadge.textContent = f.op || 'write';
+          var fp = document.createElement('span'); fp.className = 'shadow-filepath';
+          var basename = f.original ? f.original.replace(/\\\\/g, '/').split('/').pop() : f.original;
+          fp.textContent = basename; fp.title = f.original;
+          fp.addEventListener('click', function() {
+            vscode.postMessage({ type: 'shadowInspectFile', original: f.original, shadow: f.shadow });
+          });
+          row.appendChild(opBadge); row.appendChild(fp);
+          list.appendChild(row);
+        });
+        var verifyOut = document.getElementById('shadowVerifyOut');
+        if (verifyOut) {
+          if (state.verifyOutput) { verifyOut.style.display = ''; verifyOut.textContent = state.verifyOutput; }
+          else { verifyOut.style.display = 'none'; }
+        }
+        // \u6309\u9215\u53ef\u7528\u72c0\u614b
+        var approveBtn = document.getElementById('shadowApproveBtn');
+        var verifyBtn = document.getElementById('shadowVerifyBtn');
+        if (approveBtn) approveBtn.disabled = state.status !== 'ready_to_commit';
+        if (verifyBtn) verifyBtn.disabled = state.status === 'verifying' || state.files.length === 0;
+      }
+
+      // Shadow \u6309\u9215\u4e8b\u4ef6
+      (function() {
+        function _shadowBtn(id, msgType) {
+          var el = document.getElementById(id);
+          if (el) el.addEventListener('click', function() { vscode.postMessage({ type: msgType }); });
+        }
+        _shadowBtn('shadowVerifyBtn',  'shadowVerify');
+        _shadowBtn('shadowApproveBtn', 'shadowApprove');
+        _shadowBtn('shadowRejectBtn',  'shadowReject');
+        _shadowBtn('shadowInspectBtn', 'shadowInspect');
+      })();
 
       function startTeamRound(id, round) {
         var m = _teamNodes[id]; if (!m) return;

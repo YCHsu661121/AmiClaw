@@ -13,4 +13,6 @@ export interface ToolExecutorCallbacks {
   getAutoPilotServices?: () => import('./ToolPolicies').AutoPilotClassifierServicesShim;
   /** 最近的 agent transcript（供 AutoPilot classifier 判斷 user intent）*/
   getRecentTranscript?: () => Array<{ role: 'user' | 'assistant' | 'tool'; content: string }>;
+  /** 取得 SandboxManager 實例（供外部元件審核影子變更）*/
+  getSandboxManager?: () => import('./SandboxManager').SandboxManager;
 }

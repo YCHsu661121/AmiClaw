@@ -4,7 +4,7 @@
   "description": "AMI-AiClaw - Local Ollama AI assistant for code generation, Agent automation, and multi-model collaboration.",
   "author": "Y.C. Hsu",
   "license": "MIT",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "localdev",
   "icon": "AMI-AiClaw.png",
   "engines": { "vscode": "^1.90.0" },

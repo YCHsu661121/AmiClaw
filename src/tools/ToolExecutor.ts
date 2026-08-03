@@ -24,6 +24,7 @@ import { AtlassianProvider } from './providers/AtlassianProvider';
 import { NetworkProvider } from './providers/NetworkProvider';
 import { IntegrationProvider } from './providers/IntegrationProvider';
 import { DevToolsProvider } from './providers/DevToolsProvider';
+import { SandboxManager, SHADOW_WRITE_TOOLS } from './SandboxManager';
 
 // 對外保留型別重新匯出，避免改動 consumer
 export type { AuditEntry } from './ToolAuditLog';
@@ -115,9 +116,11 @@ export class ToolExecutor {
   // Provider registry: 各 domain 工具逐步遷入， dispatch map 由工具名對映 provider
   private _providerMap = new Map<string, IToolProvider>();
   private _vscodeProvider = new VscodeProvider();
+  private _sandbox: SandboxManager;
 
   public constructor(private readonly _callbacks: ToolExecutorCallbacks) {
     this._audit = new ToolAuditLog(this._callbacks.getExtensionContext());
+    this._sandbox = new SandboxManager(this._callbacks.postToWebview, this._callbacks.log);
     this._policy = new ToolPolicies({
       postToWebview: this._callbacks.postToWebview,
       isWaAgentMode: this._callbacks.isWaAgentMode,
@@ -171,6 +174,11 @@ export class ToolExecutor {
   /** 供影子督促人格取得未結案待辦項目 */
   public getAgentTodos(): { id: number; text: string; done: boolean }[] {
     return this._vscodeProvider.getTodos();
+  }
+
+  /** 影子工作區管理器（永遠只有一個實例，由 ToolExecutor 持有） */
+  public getSandboxManager(): SandboxManager {
+    return this._sandbox;
   }
 
   public getAuditLog(): AuditEntry[] {
@@ -676,6 +684,38 @@ export class ToolExecutor {
       // fallback：回傳原始 resolvePath 結果（讓呼叫端的 stat 報「找不到」）
       return candidate;
     };
+
+    // Shadow 路由分流：若 args.mode==='shadow' 或影子模式已啟動，將寫入類工具導入暗存區
+    const _isShadowCall = (args as Record<string,unknown>)['mode'] === 'shadow';
+    const _isSandboxActive = this._sandbox.isActive();
+    if ((_isShadowCall || _isSandboxActive) && SHADOW_WRITE_TOOLS.has(name)) {
+      if (!this._sandbox.isActive()) {
+        this._sandbox.initShadow(Date.now().toString(36));
+      }
+      const shadowArgs = this._sandbox.remapArgs(name, args);
+      const provider = this._providerMap.get(name);
+      if (provider) {
+        const ctx: ToolExecutionContext = {
+          callbacks: this._callbacks,
+          cache: this._cache,
+          audit: this._audit,
+          wsRoot,
+          folders,
+          requestPermission: (cat, desc, tool, diff) => this.requestPermission(cat, desc, tool ?? '', diff),
+          resolvePath,
+          resolvePathSmart: resolvePathWithPriority,
+          executeTool: (n, a) => this.executeTool(n, a),
+          handleWhatsApp: (n, a) => this._callbacks.handleWhatsAppTool(n, a),
+        };
+        return provider.execute(name, shadowArgs, ctx);
+      }
+    }
+    // 影子號令： sandbox_init / sandbox_verify / sandbox_commit / sandbox_rollback
+    if (name === 'sandbox_init') { this._sandbox.initShadow(args.session_id as string || Date.now().toString(36)); return '✅ 影子工作區已初始化，後續寫入類操作將進入暫存區等待審核'; }
+    if (name === 'sandbox_verify') { const r = await this._sandbox.verify(); return r.output || (r.passed ? '✅ 驗證通過' : '❌ 驗證失敗'); }
+    if (name === 'sandbox_commit') { const files = await this._sandbox.commit(); return `✅ 已提交 ${files.length} 個檔案至實際工作區\n${files.join('\n')}`; }
+    if (name === 'sandbox_rollback') { this._sandbox.rollback(); return '🗑️ 已回滚影子工作區，真實工作區未改動。'; }
+    if (name === 'sandbox_status') { const s = this._sandbox.getState(); return JSON.stringify({ status: s.status, files: s.files.length, shadowDir: s.shadowDir, verifyPassed: s.verifyPassed }, null, 2); }
 
     // Provider dispatch：已遷移的工具走 provider 路徑，其餘繼續走原始 switch
     const _provider = this._providerMap.get(name);
