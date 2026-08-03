@@ -13,7 +13,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -p . -w",
-    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/ami-ai-claw.vsix",
+    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/amiclaw.vsix",
     "check:unused": "knip",
     "health": "node scripts/health-check.js",
     "test": "npm run compile && node --test src/webview/WebviewRenderer.test.js",
