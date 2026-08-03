@@ -76,6 +76,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       #prompt:focus{border-color:var(--vscode-focusBorder,#007fd4)}
       #sendBtn{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;border-radius:8px;padding:7px 13px;cursor:pointer;font-size:16px;line-height:1;align-self:flex-end;flex-shrink:0}
       #sendBtn:disabled{opacity:0.4;cursor:default}
+/* TEST_MODIFICATION: Added active scale effect */
+#sendBtn:active{transform:scale(0.95);transition:transform 0.1s}
       #statusBar{font-size:11px;opacity:0.75;padding:1px 4px;text-align:center;min-height:14px}
       #contextBar{display:flex;align-items:center;gap:5px;padding:1px 4px;font-size:10px;opacity:0.6;height:12px}
       #contextBar .ctx-label{white-space:nowrap;letter-spacing:0.03em}
@@ -951,15 +953,27 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             if (statusBar && typeof msg.text === 'string') { statusBar.textContent = msg.text; }
           }
           else if (msg.type === 'agentTodoUpdate') { renderAgentTodos(msg.todos); }
-          else if (msg.type === 'shadowStateUpdate') { renderShadowPanel(msg.state); }
+          else if (msg.type === 'shadowStateUpdate') {
+            _shadowSessionActive = (msg.state && msg.state.status !== 'idle' && msg.state.status !== 'committed' && msg.state.status !== 'rolled_back');
+            renderShadowPanel(msg.state);
+          }
           else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm, msg.diff); }
           else if (msg.type === 'fileModified') {
             _fileMods.unshift({ filePath: msg.filePath, op: msg.op, ts: msg.ts || Date.now() });
             if (_fileMods.length > 100) { _fileMods.pop(); }
             renderFileMods();
-            // 若 panel 尚未顯示，在 fileModBtn 上顯示小標記
             if (fileModBtn && !fileModPanel.classList.contains('visible')) {
               fileModBtn.classList.add('active');
+            }
+            // 無 shadow session 時，用普通寫檔檔案更新 compact bar
+            if (!_shadowSessionActive) {
+              renderShadowPanel({
+                status: 'staging',
+                shadowDir: '',
+                files: _fileMods.map(function(m) {
+                  return { original: m.filePath, shadow: m.filePath, op: m.op || 'write', verified: true };
+                })
+              });
             }
           }
           else if (msg.type === 'waQrCode') {
@@ -2482,14 +2496,26 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           if (detail) detail.className = 'shadow-detail' + (_shadowExpanded ? ' open' : '');
           if (arrow)  arrow.className  = 'shadow-expand-arrow' + (_shadowExpanded ? ' open' : '');
         });
-        // 按鈕事件
-        function _shadowBtn(id, msgType) {
+        // 按鈕事件：shadow session 時發送 sandbox 指令；普通 fileModified 通知時只清除 bar
+        function _shadowBtn(id, shadowMsgType, regularAction) {
           var el = document.getElementById(id);
-          if (el) el.addEventListener('click', function(e) { e.stopPropagation(); vscode.postMessage({ type: msgType }); });
+          if (!el) return;
+          el.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (_shadowSessionActive) {
+              vscode.postMessage({ type: shadowMsgType });
+            } else if (regularAction === 'clear') {
+              _fileMods = [];
+              renderFileMods();
+              var panel = document.getElementById('shadowPanel');
+              if (panel) panel.style.display = 'none';
+              if (fileModBtn) fileModBtn.classList.remove('active');
+            }
+          });
         }
-        _shadowBtn('shadowVerifyBtn',  'shadowVerify');
-        _shadowBtn('shadowApproveBtn', 'shadowApprove');
-        _shadowBtn('shadowRejectBtn',  'shadowReject');
+        _shadowBtn('shadowVerifyBtn',  'shadowVerify',  '');
+        _shadowBtn('shadowApproveBtn', 'shadowApprove', 'clear');
+        _shadowBtn('shadowRejectBtn',  'shadowReject',  'clear');
       })();
 
       function startTeamRound(id, round) {
@@ -3511,6 +3537,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
 
       // ── 修改記錄 Listbox ─────────────────────────────────────────────────────────
       var _fileMods = [];
+      var _shadowSessionActive = false; // true 表示有真實的 SandboxManager session 在作業
       var fileModPanel = document.getElementById('fileModPanel');
       var fileModBtn = document.getElementById('fileModBtn');
       if (fileModBtn) {
