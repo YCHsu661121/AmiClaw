@@ -19,6 +19,11 @@ import { JenkinsProvider } from './providers/JenkinsProvider';
 import { SearchProvider } from './providers/SearchProvider';
 import { ProcessProvider } from './providers/ProcessProvider';
 import { VscodeProvider } from './providers/VscodeProvider';
+import { FileSystemProvider } from './providers/FileSystemProvider';
+import { AtlassianProvider } from './providers/AtlassianProvider';
+import { NetworkProvider } from './providers/NetworkProvider';
+import { IntegrationProvider } from './providers/IntegrationProvider';
+import { DevToolsProvider } from './providers/DevToolsProvider';
 
 // 對外保留型別重新匯出，避免改動 consumer
 export type { AuditEntry } from './ToolAuditLog';
@@ -127,6 +132,11 @@ export class ToolExecutor {
       new SearchProvider(),
       new ProcessProvider(),
       this._vscodeProvider,
+      new FileSystemProvider(),
+      new AtlassianProvider(),
+      new NetworkProvider(),
+      new IntegrationProvider(),
+      new DevToolsProvider(),
     ] as IToolProvider[]) {
       for (const tool of provider.tools) {
         this._providerMap.set(tool, provider);
@@ -674,7 +684,13 @@ export class ToolExecutor {
         callbacks: this._callbacks,
         cache: this._cache,
         audit: this._audit,
+        wsRoot,
+        folders,
         requestPermission: (cat, desc, tool, diff) => this.requestPermission(cat, desc, tool ?? '', diff),
+        resolvePath,
+        resolvePathSmart: resolvePathWithPriority,
+        executeTool: (n, a) => this.executeTool(n, a),
+        handleWhatsApp: (n, a) => this._callbacks.handleWhatsAppTool(n, a),
       };
       return _provider.execute(name, args, _ctx);
     }
