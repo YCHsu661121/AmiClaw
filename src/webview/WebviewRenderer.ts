@@ -969,15 +969,20 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             if (fileModBtn && !fileModPanel.classList.contains('visible')) {
               fileModBtn.classList.add('active');
             }
-            // 無 shadow session 時，用普通寫檔檔案更新 compact bar
+            // 無 shadow session 時，用普通寫檔檔案更新 compact bar 並自動展開 fileModPanel
             if (!_shadowSessionActive) {
               renderShadowPanel({
                 status: 'staging',
                 shadowDir: '',
                 files: _fileMods.map(function(m) {
-                  return { original: m.filePath, shadow: m.filePath, op: m.op || 'write', verified: true };
+                  return { original: m.filePath, shadow: m.shadow || m.filePath, op: m.op || 'write', verified: true };
                 })
               });
+              // 自動彈出 fileModPanel
+              if (fileModPanel && !fileModPanel.classList.contains('visible')) {
+                fileModPanel.classList.add('visible');
+                if (fileModBtn) fileModBtn.classList.add('active');
+              }
             }
           }
           else if (msg.type === 'waQrCode') {
@@ -2503,16 +2508,20 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         if (verifyBtn) verifyBtn.disabled = state.status === 'verifying' || files.length === 0;
       }
 
-      // Shadow bar 展開/收合
+      // Shadow bar 展開/收合 → 改為開關 fileModPanel
       (function() {
         var bar = document.getElementById('shadowBar');
         if (bar) bar.addEventListener('click', function(e) {
-          if (e.target.closest && e.target.closest('button')) return; // 按鈕不觸發展開
-          _shadowExpanded = !_shadowExpanded;
+          if (e.target.closest && e.target.closest('button')) return;
+          // 點擊收合列即開關 fileModPanel
+          if (!fileModPanel) return;
+          var vis = fileModPanel.classList.toggle('visible');
+          if (fileModBtn) fileModBtn.classList.toggle('active', vis);
+          // 影子区展開/收合不再用內嵌 detail
           var detail = document.getElementById('shadowDetail');
           var arrow  = document.getElementById('shadowArrow');
-          if (detail) detail.className = 'shadow-detail' + (_shadowExpanded ? ' open' : '');
-          if (arrow)  arrow.className  = 'shadow-expand-arrow' + (_shadowExpanded ? ' open' : '');
+          if (detail) detail.style.display = 'none';
+          if (arrow)  arrow.className = 'shadow-expand-arrow' + (vis ? ' open' : '');
         });
         // 按鈕事件：shadow session 時發送 sandbox 指令；普通 fileModified 通知時只清除 bar
         function _shadowBtn(id, shadowMsgType, regularAction) {
@@ -2528,6 +2537,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               var panel = document.getElementById('shadowPanel');
               if (panel) panel.style.display = 'none';
               if (fileModBtn) fileModBtn.classList.remove('active');
+              if (fileModPanel) fileModPanel.classList.remove('visible');
             }
           });
         }
@@ -3601,41 +3611,61 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           updateBatchBar();
           return;
         }
-        // 移除已不存在的 selected index
         for (var _si of Array.from(_fileModSelected)) { if (_si >= _fileMods.length) _fileModSelected.delete(_si); }
-        list.innerHTML = _fileMods.map(function(m, i) {
+        list.innerHTML = '';
+        _fileMods.forEach(function(m, i) {
           var fname = (m.filePath || '?').replace(/\\\\/g, '/').split('/').pop();
           var t = new Date(m.ts || Date.now()).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
           var opLabel = { write: '\u5beb\u5165', replace: '\u66ff\u63db', insert: '\u63d2\u5165', delete: '\u522a\u9664', rename: '\u6539\u540d' }[m.op] || (m.op || '?');
           var isSel = _fileModSelected.has(i);
-          return '<div class="filemod-item' + (isSel ? ' selected' : '') + '" data-idx="' + i + '" title="' + (m.filePath || '') + '">' +
-            '<input type="checkbox" class="filemod-cb" data-idx="' + i + '"' + (isSel ? ' checked' : '') + ' title="\u9078\u53d6" onclick="event.stopPropagation()">' +
-            '<span class="filemod-op ' + (m.op || '') + '">' + opLabel + '</span>' +
-            '<span class="filemod-name">' + fname + '</span>' +
-            '<span class="filemod-time">' + t + '</span></div>';
-        }).join('');
-        list.querySelectorAll('.filemod-item').forEach(function(el) {
-          var cb = el.querySelector('.filemod-cb');
-          if (cb) cb.addEventListener('change', function(e) {
+          var el = document.createElement('div');
+          el.className = 'filemod-item' + (isSel ? ' selected' : '');
+          el.dataset.idx = String(i); el.title = m.filePath || '';
+          var cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'filemod-cb';
+          cb.setAttribute('data-idx', String(i)); if (isSel) cb.checked = true; cb.title = '\u9078\u53d6';
+          cb.addEventListener('click', function(e) { e.stopPropagation(); });
+          cb.addEventListener('change', function(e) {
             e.stopPropagation();
             var idx = parseInt(cb.getAttribute('data-idx') || '0');
             if (cb.checked) { _fileModSelected.add(idx); } else { _fileModSelected.delete(idx); }
             updateBatchBar();
           });
+          var opSpan = document.createElement('span'); opSpan.className = 'filemod-op ' + (m.op || ''); opSpan.textContent = opLabel;
+          var nameSpan = document.createElement('span'); nameSpan.className = 'filemod-name'; nameSpan.textContent = fname;
+          var timeSpan = document.createElement('span'); timeSpan.className = 'filemod-time'; timeSpan.textContent = t;
+          // 動作按鈕（hover 時顯示，同 code block 風格）
+          var acts = document.createElement('div'); acts.className = 'shadow-file-acts';
+          if (m.shadow && m.shadow !== m.filePath) {
+            // shadow 模式：套用到檔案
+            var applyBtn = document.createElement('button'); applyBtn.className = 'shadow-file-btn'; applyBtn.textContent = '\uD83D\uDCCB \u5957\u7528\u5230\u6a94\u6848';
+            applyBtn.addEventListener('click', function(e) { e.stopPropagation(); vscode.postMessage({ type: 'shadowApplyFile', original: m.filePath, shadow: m.shadow }); });
+            acts.appendChild(applyBtn);
+          }
+          var diffBtn = document.createElement('button'); diffBtn.className = 'shadow-file-btn'; diffBtn.textContent = '\uD83D\uDD0D \u6BD4\u5C0D';
+          diffBtn.title = '\u8207 git HEAD \u6BD4\u5C0D';
+          diffBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (m.shadow && m.shadow !== m.filePath) {
+              vscode.postMessage({ type: 'shadowInspectFile', original: m.filePath, shadow: m.shadow });
+            } else {
+              vscode.postMessage({ type: 'diffWithGit', filePath: m.filePath });
+            }
+          });
+          acts.appendChild(diffBtn);
+          el.appendChild(cb); el.appendChild(opSpan); el.appendChild(nameSpan); el.appendChild(timeSpan); el.appendChild(acts);
           el.addEventListener('click', function(e) {
-            if (e.target === cb) return;
-            var idx = parseInt(el.getAttribute('data-idx') || '0');
-            // Shift 點擊：範圍選取
+            if (e.target === cb || e.target.closest && e.target.closest('.shadow-file-acts')) return;
+            var idx = parseInt(el.dataset.idx || '0');
             if (e.shiftKey && _fileModSelected.size > 0) {
-              var last = Math.max(...Array.from(_fileModSelected));
+              var last = Math.max.apply(null, Array.from(_fileModSelected));
               var lo = Math.min(idx, last), hi = Math.max(idx, last);
               for (var _ri = lo; _ri <= hi; _ri++) _fileModSelected.add(_ri);
               updateBatchBar(); return;
             }
-            // 普通點擊：開啟檔案
             var mod = _fileMods[idx];
             if (mod && mod.filePath) vscode.postMessage({ type: 'openFile', filePath: mod.filePath });
           });
+          list.appendChild(el);
         });
         updateBatchBar();
       }
