@@ -2451,7 +2451,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           opBadge.className = 'shadow-op-badge ' + (f.op || 'write');
           opBadge.textContent = f.op || 'write';
           var fp = document.createElement('span'); fp.className = 'shadow-filepath';
-          var basename = f.original ? f.original.replace(/\\/g, '/').split('/').pop() : f.original;
+          var basename = f.original ? f.original.split('/').pop().split('\\\\').pop() : f.original;
           fp.textContent = basename; fp.title = f.original;
           fp.addEventListener('click', function(e) {
             e.stopPropagation();
