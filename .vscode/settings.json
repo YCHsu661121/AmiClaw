@@ -5,7 +5,7 @@
     ],
     "amiAiClaw.model": "openai::http://intelnode2:8000||Qwen/Qwen3-0.6B",
     "amiAiClaw.thinkingLevel": "high",
-    "amiAiClaw.contextDepth": "full",
+    "amiAiClaw.contextDepth": "file",
     "amiAiClaw.visionModel": "llama3.2-vision",
     "amiAiClaw.autoPilotEnabled": true,
     "amiAiClaw.agentAutoApproveWrite": false

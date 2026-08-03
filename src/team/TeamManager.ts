@@ -5,6 +5,7 @@ import { TEAM_COLORS, TEAM_COLORS_MANAGER, isOllamaModel, getWorkerDisplay, type
 import { scanWorkspaceForTeam, buildBatchedInitHistory, buildCopilotBatchCtx } from './TeamWorkspaceScanner';
 import { teamContextTimestamp, appendTeamContext } from './TeamContextStore';
 import { teamCallModel, type TeamCallModelDeps } from './TeamCallModel';
+import { CODE_ANALYSIS_METHOD } from '../context/SystemPromptBuilder';
 
 interface TeamToolDefinition {
   function: { name: string };
@@ -509,6 +510,22 @@ export class TeamManager {
     const urls = this._services.getOllamaUrls(cfg);
     const COLORS = TEAM_COLORS;
     const getDisplay = (m: string) => getWorkerDisplay(m, urls, (id, u) => this._services.decodeOllamaModel(id, u));
+    const _rolesCfg = cfg.get<Array<{key:string;label:string;emoji:string}>>('teamRoles', []);
+    const _rolePrefix = (idx: number) => { const k = roles?.[idx]; const r = k ? _rolesCfg.find(c => c.key === k) : undefined; return r ? `${r.emoji} ${r.label} ` : ''; };
+
+    // 決定主管：優先 'manager' 角色 → Copilot 模型 → index 0
+    const managerIdx = (() => {
+      const mgrRoleIdx = roles ? roles.findIndex(r => r === 'manager') : -1;
+      if (mgrRoleIdx >= 0 && mgrRoleIdx < allModels.length) return mgrRoleIdx;
+      const cpIdx = allModels.findIndex(m => m.startsWith('copilot::'));
+      if (cpIdx >= 0) return cpIdx;
+      return 0;
+    })();
+    const managerModel = allModels[managerIdx];
+    const workerModels = allModels.filter((_, i) => i !== managerIdx);
+    // 若只有一個模型，它同時擔任主管與唯一 worker
+    const effectiveWorkers = workerModels.length > 0 ? workerModels : allModels;
+    const managerDisplay = _rolePrefix(managerIdx) + getDisplay(managerModel);
 
     this._panel.webview.postMessage({ type: 'debateStart',
       labelA: getDisplay(allModels[0]), labelB: getDisplay(allModels[1] ?? allModels[0]),
@@ -523,42 +540,143 @@ export class TeamManager {
     const _teamsCtxContent = _scan.teamsCtxContent;
     this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `✅ 掃描完成：找到 ${_scan.allRelPaths.length} 個檔案，分 ${_scan.batches.length} 批讀取 ${_scan.readCount} 個內容（${Math.round(_scan.totalBytes/1024)}KB）\n` });
 
-    const _batchedInitHist: TeamHistoryEntry[] = buildBatchedInitHistory(_scan, '請提出問題。', '已閱讀工作區資訊。請提出問題。');
-    _batchedInitHist.push({ role: 'user', content: prompt });
+    const _batchedInitHist: TeamHistoryEntry[] = buildBatchedInitHistory(_scan, '請提出任務。', '已閱讀工作區資訊。');
     const _copilotBatchCtx = buildCopilotBatchCtx(_scan);
-    const _promptWithCtx = _copilotBatchCtx ? `${_copilotBatchCtx}\n\n---\n\n${prompt}` : prompt;
 
-    const roundsLimit = isFinite(maxRounds) ? maxRounds : 4;
+    const roundsLimit = isFinite(maxRounds) ? Math.max(1, maxRounds) : 2;
     const summaryLines: string[] = [];
 
-    const histories: Map<string, TeamHistoryEntry[]> = new Map();
-    for (const m of allModels) { histories.set(m, [..._batchedInitHist]); }
+    // --- Phase 1: 主管分析問題架構、制定目標、分配任務 ---
+    interface DiscAssignment { workerIndex: number; task: string; focus?: string; }
+    interface DiscPlan { goal: string; analysis: string; assignments: DiscAssignment[]; }
+    let plan: DiscPlan = {
+      goal: prompt, analysis: '',
+      assignments: effectiveWorkers.map((_, i) => ({ workerIndex: i, task: prompt }))
+    };
+
+    const workerNames = effectiveWorkers.map((m, i) => {
+      const origIdx = allModels.indexOf(m);
+      return `成員${i}（${_rolePrefix(origIdx)}${getDisplay(m)}）`;
+    }).join('、');
+
+    const buildPlanPrompt = (wsCtx: string) =>
+      `你是團隊協調主管。請先分析題目架構、制定整體目標，並為以下成員分配不重疊的具體工作。\n可用成員：${workerNames}\n\n${CODE_ANALYSIS_METHOD}\n\n${wsCtx ? wsCtx + '\n\n' : ''}【題目】\n${prompt}\n\n請依上述六階段分析法拆解，讓每位成員負責不同階段或不同模組。只回傳 JSON（不含說明文字），格式：\n{"goal":"整體目標","analysis":"問題分析","assignments":[{"workerIndex":0,"task":"具體工作","focus":"關注重點"},...]}\nworkerIndex 從 0 到 ${effectiveWorkers.length - 1}，共 ${effectiveWorkers.length} 位成員。`;
+
+    const mgrSpeakerKey = String(managerIdx);
+    this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: mgrSpeakerKey, round: -1, label: `📋 ${managerDisplay}（主管規劃）`, color: TEAM_COLORS_MANAGER[0] });
+
+    let managerPlanText = '';
+    try {
+      if (managerModel.startsWith('copilot::')) {
+        const family = managerModel.slice('copilot::'.length);
+        managerPlanText = await this.copilotStream(family, buildPlanPrompt(_copilotBatchCtx),
+          (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: mgrSpeakerKey, chunk: c }); });
+      } else {
+        const { url, model: mName } = this._services.decodeOllamaModel(managerModel, urls);
+        const mgrHist: TeamManagerChatMessage[] = [
+          { role: 'system', content: '你是團隊主管，負責分析問題架構、制定目標、為成員分配工作。' },
+          ..._batchedInitHist.map(h => ({ role: h.role as 'user'|'assistant', content: h.content })),
+          { role: 'user', content: buildPlanPrompt('') }
+        ];
+        managerPlanText = await this._services.ollamaChatStream(url, mName, mgrHist,
+          (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: mgrSpeakerKey, chunk: c }); },
+          undefined,
+          (tokens) => { this._callbacks.trackUsage(mName, tokens); });
+      }
+      const jsonMatch = managerPlanText.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, null];
+      const jsonStr = (jsonMatch[1] ?? managerPlanText).trim();
+      const parsed = JSON.parse(jsonStr) as DiscPlan;
+      if (parsed.assignments && Array.isArray(parsed.assignments) && parsed.assignments.length > 0) {
+        plan = { goal: parsed.goal || prompt, analysis: parsed.analysis || '', assignments: parsed.assignments };
+      }
+    } catch { /* use default plan */ }
+
+    this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: mgrSpeakerKey });
+    summaryLines.push(`【主管規劃】目標：${plan.goal}${plan.analysis ? '\n分析：' + plan.analysis : ''}`);
+
+    if (this._teamCancel) {
+      this._panel.webview.postMessage({ type: 'debateEnd', consensus: false });
+      this._panel.webview.postMessage({ type: 'teamEnd', agentFollows: false });
+      return;
+    }
+
+    // 規劃完成後產生待辦事項畫面
+    const workerDisplays = effectiveWorkers.map(m => _rolePrefix(allModels.indexOf(m)) + getDisplay(m));
+    const todoTasks: string[] = [`📋 ${managerDisplay} 主管規劃分工`];
+    for (let r = 0; r < roundsLimit; r++) {
+      for (let wi = 0; wi < effectiveWorkers.length; wi++) {
+        const a = plan.assignments.find(x => x.workerIndex === wi);
+        const taskShort = a?.task ? a.task.slice(0, 40) + (a.task.length > 40 ? '…' : '') : '工作';
+        todoTasks.push(`⚡ 第${r + 1}輪 ${workerDisplays[wi]}：${taskShort}`);
+      }
+      if (r < roundsLimit - 1) { todoTasks.push(`🔍 ${managerDisplay} 督促（第${r + 1}輪後）`); }
+    }
+    todoTasks.push('📊 綜合結論');
+    this._panel.webview.postMessage({ type: 'teamTodoList', tasks: todoTasks });
+    this._panel.webview.postMessage({ type: 'teamTodoDone', idx: 0 }); // 規劃已完成
+    let todoIdx = 1;
+
+    // --- Phase 2: 各成員平行執行（多輪） + 主管督促 ---
+    const workerHistories: Map<string, TeamManagerChatMessage[]> = new Map(
+      effectiveWorkers.map(m => [m, [
+        ..._batchedInitHist.map(h => ({ role: h.role as 'user'|'assistant', content: h.content }))
+      ]])
+    );
+    // 督促用的主管歷史（只含目標與各輪成果，不重複 workspace）
+    const supHist: TeamManagerChatMessage[] = [
+      { role: 'system', content: `你是團隊主管，負責督促成員完成目標。整體目標：${plan.goal}` }
+    ];
+    const roundResults: string[][] = [];
+    let mgrFeedback = '';
 
     for (let round = 0; round < roundsLimit && !this._teamCancel; round++) {
-      const roundResponses: { mi: number; display: string; response: string }[] = [];
-      for (let mi = 0; mi < allModels.length && !this._teamCancel; mi++) {
-        const model = allModels[mi];
-        const color = COLORS[mi % COLORS.length];
-        const display = getDisplay(model);
-        const speakerKey = String(mi);
-        const _discRolePrefix = (() => { const k = roles?.[mi]; const r = k ? cfg.get<Array<{key:string;label:string;emoji:string}>>('teamRoles', []).find(c => c.key === k) : undefined; return r ? `${r.emoji} ${r.label} ` : ''; })();
-        this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: speakerKey, round, label: _discRolePrefix + display, color });
+      const roundResponses: string[] = new Array(effectiveWorkers.length).fill('');
+      const roundTodoBase = todoIdx;
 
-        const hist = histories.get(model)!;
+      // 同時展示本輪所有 worker 的待辦項目
+      for (let wi = 0; wi < effectiveWorkers.length; wi++) {
+        this._panel.webview.postMessage({ type: 'teamTodoStart', idx: roundTodoBase + wi, worker: workerDisplays[wi] });
+      }
+      todoIdx += effectiveWorkers.length;
+
+      await Promise.all(effectiveWorkers.map(async (model, wi) => {
+        const origIdx = allModels.indexOf(model);
+        const color = COLORS[origIdx % COLORS.length];
+        const display = workerDisplays[wi];
+        const speakerKey = String(origIdx);
+        this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: speakerKey, round, label: display, color });
+
+        const assigned = plan.assignments.find(a => a.workerIndex === wi)
+          ?? plan.assignments[wi % Math.max(1, plan.assignments.length)]
+          ?? { workerIndex: wi, task: prompt };
+
+        let userMsg: string;
+        if (round === 0) {
+          userMsg = `【主管制定的整體目標】\n${plan.goal}${plan.analysis ? '\n\n【問題分析】\n' + plan.analysis : ''}\n\n【你的具體任務】\n${assigned.task}${assigned.focus ? '\n\n【關注重點】\n' + assigned.focus : ''}`;
+        } else {
+          const prevRound = roundResults[round - 1];
+          const othersCtx = prevRound
+            .map((r, i) => i !== wi ? `【${workerDisplays[i]}】\n${r}` : null)
+            .filter(Boolean).join('\n\n---\n\n');
+          userMsg = `${mgrFeedback ? '【主管督促意見】\n' + mgrFeedback + '\n\n' : ''}${othersCtx ? '以下是其他成員上一輪的工作成果：\n\n' + othersCtx + '\n\n請根據主管意見與其他成員的成果，補充或深化你的任務。' : '請進一步補充說明。'}`;
+        }
+
+        const hist = workerHistories.get(model)!;
+        hist.push({ role: 'user', content: userMsg });
         let response = '';
         try {
           if (model.startsWith('copilot::')) {
             const family = model.slice('copilot::'.length);
-            response = await this.copilotStream(family, _promptWithCtx,
+            const cpMsg = round === 0 ? `${_copilotBatchCtx}\n\n---\n\n${userMsg}` : userMsg;
+            response = await this.copilotStream(family, cpMsg,
               (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); });
           } else {
             const { url, model: mName } = this._services.decodeOllamaModel(model, urls);
-            const _roleNote = roles?.[mi] ? TeamManager.buildRoleSystemNote(roles[mi]) + ' ' : '';
+            const _roleNote = roles?.[origIdx] ? TeamManager.buildRoleSystemNote(roles[origIdx]) + '\n\n' : '';
             const messages: TeamManagerChatMessage[] = [
-              { role: 'system', content: `你是 ${display}，正在和其他 AI 討論以下問題。${_roleNote}你可以參考工作區檔案內容進行分析。每次回答請根據前幾輪的對話內容延伸，不要重複，請提出新觀點或補充說明。` },
-              ...hist.map(h => ({ role: h.role as 'user'|'assistant', content: h.content }))
+              { role: 'system', content: `你是 ${display}，正在參與團隊協作。主管已分析問題並分配任務，請專注完成你的工作。${_roleNote}\n\n${CODE_ANALYSIS_METHOD}` },
+              ...hist
             ];
-            if (messages[messages.length - 1].role !== 'user') messages.push({ role: 'user', content: '請繼續。' });
             response = await this._services.ollamaChatStream(url, mName, messages,
               (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: c }); },
               undefined,
@@ -569,27 +687,48 @@ export class TeamManager {
           this._panel.webview.postMessage({ type: 'debateChunk', speaker: speakerKey, chunk: response });
         }
         this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: speakerKey });
+        this._panel.webview.postMessage({ type: 'teamTodoDone', idx: roundTodoBase + wi });
         hist.push({ role: 'assistant', content: response });
-        roundResponses.push({ mi, display, response });
-        summaryLines.push(`【${display} 第${round+1}輪】\n${response}`);
-      }
-      if (!this._teamCancel) {
-        for (let mi = 0; mi < allModels.length; mi++) {
-          const hist = histories.get(allModels[mi])!;
-          const others = roundResponses.filter(r => r.mi !== mi);
-          if (others.length > 0) {
-            const crossContext = others.map(o => `【${o.display}】：\n${o.response}`).join('\n\n---\n\n');
-            hist.push({ role: 'user', content: `以下是其他成員在第 ${round + 1} 輪的觀點：\n\n${crossContext}\n\n請回應或補充上述觀點，提出你的反駁或延伸論點。` });
+        roundResponses[wi] = response;
+        summaryLines.push(`【${display} 第${round + 1}輪】\n${response}`);
+      }));
+
+      roundResults.push([...roundResponses]);
+
+      // 主管督促（非最後一輪）
+      if (round < roundsLimit - 1 && !this._teamCancel) {
+        const supTodoIdx = todoIdx++;
+        this._panel.webview.postMessage({ type: 'teamTodoStart', idx: supTodoIdx, worker: `🔍 ${managerDisplay} 督促` });
+        this._panel.webview.postMessage({ type: 'debateTurnStart', speaker: mgrSpeakerKey, round: round + 100, label: `🔍 ${managerDisplay}（督促）`, color: TEAM_COLORS_MANAGER[0] });
+        const supPrompt = `第 ${round + 1} 輪成員成果如下：\n\n${roundResults[round].map((r, i) => `【${workerDisplays[i]}】\n${r}`).join('\n\n---\n\n')}\n\n請評估各成員的完成度，指出不足之處，並提供第 ${round + 2} 輪的具體指導方針。針對每位成員給出明確指示。`;
+        supHist.push({ role: 'user', content: supPrompt });
+        mgrFeedback = '';
+        try {
+          if (managerModel.startsWith('copilot::')) {
+            const family = managerModel.slice('copilot::'.length);
+            mgrFeedback = await this.copilotStream(family, `整體目標：${plan.goal}\n\n${supPrompt}`,
+              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: mgrSpeakerKey, chunk: c }); });
           } else {
-            hist.push({ role: 'user', content: '請進一步補充說明。' });
+            const { url, model: mName } = this._services.decodeOllamaModel(managerModel, urls);
+            mgrFeedback = await this._services.ollamaChatStream(url, mName, supHist,
+              (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'debateChunk', speaker: mgrSpeakerKey, chunk: c }); },
+              undefined,
+              (tokens) => { this._callbacks.trackUsage(mName, tokens); });
           }
-        }
+        } catch { /* continue without feedback */ }
+        if (mgrFeedback) { supHist.push({ role: 'assistant', content: mgrFeedback }); }
+        this._panel.webview.postMessage({ type: 'debateTurnEnd', speaker: mgrSpeakerKey });
+        this._panel.webview.postMessage({ type: 'teamTodoDone', idx: supTodoIdx });
+        if (mgrFeedback) { summaryLines.push(`【主管第${round + 1}輪督促】\n${mgrFeedback}`); }
       }
     }
 
+    // --- Phase 3: 綜合結論 ---
     if (!this._teamCancel && summaryLines.length > 0) {
+      const synthTodoIdx = todoIdx++;
+      this._panel.webview.postMessage({ type: 'teamTodoStart', idx: synthTodoIdx, worker: '📊 綜合結論' });
       const synthModel = TeamManager.pickThinkingModel(allModels.filter(m => isOllamaModel(m))) || allModels[0];
-      const synthPrompt = `【原始問題】\n${prompt}\n\n【各成員觀點】\n${summaryLines.join('\n\n---\n\n')}\n\n請整合所有觀點，給出完整的綜合結論：`;
+      const synthPrompt = `【原始問題】\n${prompt}\n\n【主管規劃目標】\n${plan.goal}\n\n【各成員工作成果】\n${summaryLines.join('\n\n---\n\n')}\n\n請整合主管目標與所有成員成果，給出完整的綜合結論：`;
       this._panel.webview.postMessage({ type: 'teamSynthStart' });
       let synthResult = '';
       try {
@@ -602,6 +741,7 @@ export class TeamManager {
             (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: c }); });
         }
       } catch { /* ignore */ }
+      this._panel.webview.postMessage({ type: 'teamTodoDone', idx: synthTodoIdx });
       if (synthResult) {
         this._chatHistory.push({ role: 'assistant', content: synthResult });
         this._chatHistories[this._activeSessionId] = this._chatHistory;
@@ -636,6 +776,13 @@ export class TeamManager {
     const _rolePrefix = (idx: number) => { const r = _roleCfg(idx); return r ? `${r.emoji} ${r.label} ` : '💬 '; };
     const _roleNote   = (idx: number) => { const r = _roleCfg(idx); return r?.systemPrompt ? r.systemPrompt + '\n\n' : (roles?.[idx] ? TeamManager.buildRoleSystemNote(roles[idx]) + '\n\n' : ''); };
 
+    // 討論前先掃描工作區，讓所有成員基於實際程式碼討論
+    this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: '🔍 正在掃描工作區原始碼與 teamscontext.md…\n' });
+    const _scan = await scanWorkspaceForTeam();
+    this._panel.webview.postMessage({ type: 'teamSynthChunk', chunk: `✅ 掃描完成：找到 ${_scan.allRelPaths.length} 個檔案，分 ${_scan.batches.length} 批讀取 ${_scan.readCount} 個內容（${Math.round(_scan.totalBytes/1024)}KB）\n` });
+    const _initHist: TeamManagerChatMessage[] = buildBatchedInitHistory(_scan, '已閱讀工作區，請基於程式碼參與討論。', '已閱讀工作區資訊。').map(h => ({ role: h.role as 'user'|'assistant', content: h.content }));
+    const _copilotBatchCtx = buildCopilotBatchCtx(_scan);
+
     const ROUNDS = 2;
     const tasks: string[] = [];
     for (let r = 0; r < ROUNDS; r++) {
@@ -649,7 +796,7 @@ export class TeamManager {
     }
     this._panel.webview.postMessage({ type: 'teamTodoList', tasks });
 
-    const memberHistory: TeamManagerChatMessage[][] = allModels.map(() => []);
+    const memberHistory: TeamManagerChatMessage[][] = allModels.map(() => [..._initHist]);
     const discussionLog: { roleLabel: string; text: string }[] = [];
 
     let todoIdx = 0;
@@ -669,7 +816,7 @@ export class TeamManager {
 
         let userMsg: string;
         if (round === 0) {
-          userMsg = `${_roleNote(mi)}你是「${roleLabel}」，正在和團隊一起討論以下主題。\n請從你的職責與觀點出發，提出你的看法、疑問或建議。\n\n【討論主題】\n${prompt}${prevContext}`;
+          userMsg = `${_roleNote(mi)}你是「${roleLabel}」，正在和團隊一起討論以下主題。\n請基於上方已提供的工作區實際程式碼，從你的職責與觀點出發，提出你的看法、疑問或建議（請引用具體檔案/函式）。\n\n【討論主題】\n${prompt}${prevContext}`;
         } else {
           userMsg = `你是「${roleLabel}」，請根據以上討論，進一步回應、補充或挑戰前面成員的觀點，深化討論。`;
         }
@@ -680,7 +827,8 @@ export class TeamManager {
         try {
           const messages = memberHistory[mi];
           if (model.startsWith('copilot::')) {
-            reply = await this.copilotStream(model.slice('copilot::'.length), userMsg,
+            const cpMsg = round === 0 && _copilotBatchCtx ? `${_copilotBatchCtx}\n\n---\n\n${userMsg}` : userMsg;
+            reply = await this.copilotStream(model.slice('copilot::'.length), cpMsg,
               (c) => { if (!this._teamCancel) this._panel.webview.postMessage({ type: 'teamResponseChunk', id, chunk: c }); });
           } else {
             const { url, model: mName } = this._services.decodeOllamaModel(model, urls);

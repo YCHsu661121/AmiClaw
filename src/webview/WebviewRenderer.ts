@@ -151,6 +151,15 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .team-todo-item.t-done .team-todo-task { text-decoration:line-through; opacity:0.42 }
       .team-todo-item.t-running .team-todo-task { color:#4fc1ff }
       .team-todo-worker { font-size:0.72em; opacity:0.5; margin-left:3px; font-style:italic; white-space:nowrap }
+      .agent-todos-panel{background:rgba(128,128,128,0.06);border:1px solid rgba(247,204,101,0.3);border-radius:0;padding:8px 14px;width:100%;box-sizing:border-box;border-left:none;border-right:none;border-top:1px solid rgba(247,204,101,0.3);border-bottom:1px solid rgba(128,128,128,0.15)}
+      .agent-todos-header{font-size:0.8em;font-weight:700;color:#f7cc65;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+      .agent-todos-progress-track{flex:1;height:3px;background:rgba(128,128,128,0.2);border-radius:2px;min-width:40px}
+      .agent-todos-progress-fill{height:100%;background:#f7cc65;border-radius:2px;transition:width 0.4s}
+      .agent-todo-item{display:flex;align-items:flex-start;gap:7px;padding:3px 0;font-size:0.82em;line-height:1.5}
+      .agent-todo-icon{width:16px;text-align:center;flex-shrink:0}
+      .agent-todo-text{flex:1;opacity:0.88;line-height:1.4;word-break:break-word}
+      .agent-todo-item.at-done .agent-todo-text{text-decoration:line-through;opacity:0.32}
+      .agent-todo-item.at-active .agent-todo-text{color:#4fc1ff;font-weight:600}
       /* 對話模式 */
       .debate-turn { margin:6px 0; border-radius:6px; overflow:hidden }
       .debate-turn-header { font-size:0.78em; font-weight:700; padding:3px 10px; display:flex; align-items:center; gap:5px }
@@ -328,6 +337,12 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
   </head>
   <body data-provider="ollama">
     <div id="chat"></div>
+    <div id="agentTodosPanel" style="display:none">
+      <div class="agent-todos-panel">
+        <div class="agent-todos-header"><span id="agTodosTitle"></span><div class="agent-todos-progress-track"><div class="agent-todos-progress-fill" id="agTodosFill" style="width:0%"></div></div></div>
+        <div id="agTodosList"></div>
+      </div>
+    </div>
     <div id="bottomBar">
       <div id="topBar">
         <div class="toolbar-group" aria-label="聊天管理">
@@ -886,9 +901,10 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
           else if (msg.type === 'agentStepProgress') {
-            // \u8f15\u91cf\u7d1a\u9032\u5ea6\u8a0a\u606f\uff1a\u76f4\u63a5\u66f4\u65b0\u72c0\u614b\u5217\uff0c\u4e0d\u5efa\u7acb\u65b0\u6c23\u6ce1
+            // 輕量級進度訊息：直接更新狀態列，不建立新氣泡
             if (statusBar && typeof msg.text === 'string') { statusBar.textContent = msg.text; }
           }
+          else if (msg.type === 'agentTodoUpdate') { renderAgentTodos(msg.todos); }
           else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm, msg.diff); }
           else if (msg.type === 'fileModified') {
             _fileMods.unshift({ filePath: msg.filePath, op: msg.op, ts: msg.ts || Date.now() });
@@ -1076,6 +1092,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       const _teamNodes = {}; // id -> { node, bubble, thinkNode, responseNode, charCount, thinkStart, thinkTimer }
       var _todosPanel = null;
       var _todoChecked = 0;
+      var _agentTodosPanel = null;
       let _synthNode = null;
       let _orchestratorNode = null;
       let _orchestratorModel = '';
@@ -1134,7 +1151,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       }
 
       function resetTransientNodes() {
-        _streamNode = null; _agentStepNode = null; _pendingBubble = null;
+        _streamNode = null; _agentStepNode = null; _pendingBubble = null; _agentTodosPanel = null;
         _synthNode = null; _orchestratorNode = null; _orchestratorModel = '';
         Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; });
         Object.keys(_debateNodes).forEach(function(k){ delete _debateNodes[k]; });
@@ -1512,7 +1529,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       });
 
       document.getElementById('clear').addEventListener('click', function() {
-        chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
+        chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null; _agentTodosPanel = null;
         Object.keys(_teamNodes).forEach(function(k){ delete _teamNodes[k]; }); _synthNode = null; _orchestratorNode = null; _orchestratorModel = '';
         saveActiveSessionSnapshot();
         vscode.postMessage({ type: 'clearHistory', sessionId: _activeChatSessionId });
@@ -2335,6 +2352,32 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           var total = _todosPanel ? _todosPanel.querySelectorAll('.team-todo-item').length : 0;
           var ttl2 = document.getElementById('todosTitle'); if (ttl2) ttl2.textContent = '\u4efb\u52d9\u6e05\u55ae (' + _todoChecked + '/' + total + ')';
         }
+      }
+
+      function renderAgentTodos(todos) {
+        var panel = document.getElementById('agentTodosPanel');
+        if (!panel) return;
+        if (!todos || todos.length === 0) { panel.style.display = 'none'; return; }
+        panel.style.display = '';
+        var done = todos.filter(function(t) { return t.done; }).length;
+        var ttl2 = document.getElementById('agTodosTitle');
+        if (ttl2) ttl2.textContent = '\uD83D\uDCCB \u4efb\u52d9\u6e05\u55ae (' + done + '/' + todos.length + ')';
+        var fill2 = document.getElementById('agTodosFill');
+        if (fill2) fill2.style.width = (todos.length > 0 ? Math.round(done / todos.length * 100) : 0) + '%';
+        var list2 = document.getElementById('agTodosList'); if (!list2) return;
+        list2.innerHTML = '';
+        var firstPendingFound = false;
+        todos.forEach(function(t) {
+          var row = document.createElement('div');
+          var isRunning = !t.done && !firstPendingFound;
+          if (!t.done) firstPendingFound = true;
+          row.className = 'agent-todo-item' + (t.done ? ' at-done' : isRunning ? ' at-active' : '');
+          var icon = document.createElement('span'); icon.className = 'agent-todo-icon';
+          icon.textContent = t.done ? '\u2705' : isRunning ? '\u23f3' : '\uD83D\uDCCB';
+          var text = document.createElement('span'); text.className = 'agent-todo-text';
+          text.textContent = t.text;
+          row.appendChild(icon); row.appendChild(text); list2.appendChild(row);
+        });
       }
 
       function startTeamRound(id, round) {

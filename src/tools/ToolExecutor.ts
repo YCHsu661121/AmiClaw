@@ -13,6 +13,12 @@ import { ToolCache } from './ToolCache';
 import { AuditEntry, ToolAuditLog, summarizeToolArgsForAudit } from './ToolAuditLog';
 import { ToolPermissionDiff, ToolPolicies } from './ToolPolicies';
 import type { ToolExecutorCallbacks } from './ToolTypes';
+import type { IToolProvider, ToolExecutionContext } from './providers/IToolProvider';
+import { GitProvider } from './providers/GitProvider';
+import { JenkinsProvider } from './providers/JenkinsProvider';
+import { SearchProvider } from './providers/SearchProvider';
+import { ProcessProvider } from './providers/ProcessProvider';
+import { VscodeProvider } from './providers/VscodeProvider';
 
 // 對外保留型別重新匯出，避免改動 consumer
 export type { AuditEntry } from './ToolAuditLog';
@@ -95,10 +101,15 @@ export class ToolExecutor {
   private _cache = new ToolCache(30_000);
   private _audit: ToolAuditLog;
   private _policy: ToolPolicies;
+  /** @deprecated 狀態已移至 VscodeProvider，保留此字段僅為空列表供舊代碼對比 */
   private _agentTodos: { id: number; text: string; done: boolean }[] = [];
   private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
   private _rovoDevCache: { url: string; token: string; expiry: number } | undefined = undefined;
   private _rovoDevNullUntil = 0;
+
+  // Provider registry: 各 domain 工具逐步遷入， dispatch map 由工具名對映 provider
+  private _providerMap = new Map<string, IToolProvider>();
+  private _vscodeProvider = new VscodeProvider();
 
   public constructor(private readonly _callbacks: ToolExecutorCallbacks) {
     this._audit = new ToolAuditLog(this._callbacks.getExtensionContext());
@@ -109,6 +120,18 @@ export class ToolExecutor {
       getAutoPilotServices: this._callbacks.getAutoPilotServices,
       getRecentTranscript: this._callbacks.getRecentTranscript,
     });
+    // 將已提取的 Provider 註冊到 dispatch map
+    for (const provider of [
+      new GitProvider(),
+      new JenkinsProvider(),
+      new SearchProvider(),
+      new ProcessProvider(),
+      this._vscodeProvider,
+    ] as IToolProvider[]) {
+      for (const tool of provider.tools) {
+        this._providerMap.set(tool, provider);
+      }
+    }
   }
 
   public requestPermission(category: string, description: string, toolName = '', diff?: ToolPermissionDiff): Promise<boolean> {
@@ -132,7 +155,12 @@ export class ToolExecutor {
   }
 
   public clearAgentTodos(): void {
-    this._agentTodos = [];
+    this._vscodeProvider.clearTodos();
+  }
+
+  /** 供影子督促人格取得未結案待辦項目 */
+  public getAgentTodos(): { id: number; text: string; done: boolean }[] {
+    return this._vscodeProvider.getTodos();
   }
 
   public getAuditLog(): AuditEntry[] {
@@ -638,6 +666,18 @@ export class ToolExecutor {
       // fallback：回傳原始 resolvePath 結果（讓呼叫端的 stat 報「找不到」）
       return candidate;
     };
+
+    // Provider dispatch：已遷移的工具走 provider 路徑，其餘繼續走原始 switch
+    const _provider = this._providerMap.get(name);
+    if (_provider) {
+      const _ctx: ToolExecutionContext = {
+        callbacks: this._callbacks,
+        cache: this._cache,
+        audit: this._audit,
+        requestPermission: (cat, desc, tool, diff) => this.requestPermission(cat, desc, tool ?? '', diff),
+      };
+      return _provider.execute(name, args, _ctx);
+    }
 
     switch (name) {
       case 'get_active_file': {
@@ -1547,15 +1587,18 @@ export class ToolExecutor {
           const text = args.text as string;
           if (!text) { return '請提供 todo 內容 (text 參數)'; }
           this._agentTodos.push({ id: this._agentTodos.length + 1, text, done: false });
+          this._callbacks.postToWebview({ type: 'agentTodoUpdate', todos: [...this._agentTodos] });
           return `已新增 Todo #${this._agentTodos.length}: ${text}`;
         } else if (action === 'done') {
           const id = Number(args.id);
           const item = this._agentTodos.find(t => t.id === id);
           if (!item) { return `找不到 Todo #${id}`; }
           item.done = true;
+          this._callbacks.postToWebview({ type: 'agentTodoUpdate', todos: [...this._agentTodos] });
           return `✅ Todo #${id} 已完成: ${item.text}`;
         } else if (action === 'clear') {
           this._agentTodos = [];
+          this._callbacks.postToWebview({ type: 'agentTodoUpdate', todos: [] });
           return 'Todo 清單已清空';
         } else {
           if (this._agentTodos.length === 0) { return 'Todo 清單是空的，請先用 add 新增任務'; }

@@ -31,6 +31,70 @@ import {
   type AutoPilotTranscriptMessage,
 } from './AutoPilotClassifier';
 import type { AutoPilotPromptRules } from './AutoPilotPrompt';
+import * as path from 'path';
+
+// 會寫入檔案的工具集合
+const WRITE_TOOLS = new Set([
+  'write_file', 'replace_in_file', 'insert_in_file', 'replace_all_in_file',
+  'batch_replace', 'rename_file', 'copy_file', 'todo_write', 'memory_write', 'delete_file',
+]);
+
+// 高風險指令 pattern（run_command 用）
+const HIGH_RISK_CMD = [
+  /rm\s+-[rRf]+[rRf]+/i,       // rm -rf
+  /Remove-Item.*-Recurse.*-Force/i,
+  /\|\s*bash/i,                 // curl|bash
+  /iwr[^|]*\|\s*iex/i,          // iwr | iex
+  /\bsudo\b/, /\brunas\b/,
+  /\bnpx\s+--yes\b/i,
+  /\bgit\s+push.*--force\b/i,
+];
+
+// 高風險路徑 (shell RC / 排程)
+const HIGH_RISK_PATHS = [
+  '.bashrc', '.zshrc', '.profile', 'Profile.ps1', '.bash_profile',
+  'crontab', '.crontab', 'systemd', 'launchd', 'authorized_keys',
+];
+
+/**
+ * 影子規則檢查：不呼叫 LLM，純規則判斷是否自動放行。
+ * only ask when: 會寫 workspace 外 OR 高風險操作
+ */
+export function shadowRuleCheck(
+  toolName: string,
+  toolArgs: Record<string, unknown>,
+  workspaceFolders: string[],
+): 'allow' | 'ask' {
+  // 純讀工具直接放行
+  if (isSafeAutoPilotTool(toolName)) return 'allow';
+
+  // run_command: 檢查高風險 pattern
+  if (toolName === 'run_command' || toolName === 'run_terminal') {
+    const cmd = String(toolArgs.command ?? '');
+    if (HIGH_RISK_CMD.some(re => re.test(cmd))) return 'ask';
+    return 'allow';
+  }
+
+  // 寫入模型工具：檢查路徑
+  if (WRITE_TOOLS.has(toolName)) {
+    const filePath = String(toolArgs.path ?? toolArgs.file ?? '');
+    if (filePath) {
+      // 高風險路徑（shell RC 等）
+      const base = path.basename(filePath);
+      if (HIGH_RISK_PATHS.some(h => base === h || filePath.includes(h))) return 'ask';
+      // workspace 外寫入
+      if (workspaceFolders.length > 0) {
+        const normalised = path.resolve(filePath).replace(/\\/g, '/');
+        const inside = workspaceFolders.some(ws => normalised.startsWith(path.resolve(ws).replace(/\\/g, '/')));
+        if (!inside) return 'ask';
+      }
+    }
+    return 'allow';
+  }
+
+  // 其他工具（包含 run_python, git_commit, lint_fix, manage_todo 等）一律放行
+  return 'allow';
+}
 
 export type AutoPilotDecision =
   | { kind: 'pass-through' }
@@ -45,6 +109,7 @@ export interface AutoPilotDecideArgs {
   toolDisplay: string;
   recentTranscript: AutoPilotTranscriptMessage[];
   rules?: AutoPilotPromptRules;
+  workspaceFolders?: string[];
   services: AutoPilotClassifierServices;
   signal?: AbortSignal;
 }
@@ -71,7 +136,17 @@ export async function decideAutoPilotAction(args: AutoPilotDecideArgs): Promise<
     return { kind: 'allow', reason: 'safe-tool allowlist', source: 'safe-allowlist' };
   }
 
-  // 5. 呼叫 classifier
+  // 5. 影子規則檢查（不呼叫 LLM，繪過大多數情況）
+  const shadowVerdict = shadowRuleCheck(args.toolName, args.toolArgs, args.workspaceFolders ?? []);
+  if (shadowVerdict === 'allow') {
+    recordAutoPilotSuccess();
+    return { kind: 'allow', reason: 'shadow-rules: within workspace, non-high-risk', source: 'safe-allowlist' };
+  }
+  if (shadowVerdict === 'ask') {
+    return { kind: 'fallback-ask', reason: 'shadow-rules: high-risk action or write outside workspace' };
+  }
+
+  // 6. 剩餘邊界情況才和叫 LLM classifier
   const classifier = await classifyAutoPilotAction({
     toolName: args.toolName,
     toolArgs: args.toolArgs,

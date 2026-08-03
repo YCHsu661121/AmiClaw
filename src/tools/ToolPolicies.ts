@@ -75,12 +75,14 @@ export class ToolPolicies {
     if (isAutoPilotActive() && this._cb.getAutoPilotServices) {
       const services = this._cb.getAutoPilotServices();
       const transcript = this._cb.getRecentTranscript?.() ?? [];
+      const wsFolders = (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
       try {
         const decision = await decideAutoPilotAction({
           toolName,
           toolArgs: {},             // category-level；詳細 args 由 ToolExecutor 升級點傳入
           toolDisplay: description,
           recentTranscript: transcript,
+          workspaceFolders: wsFolders,
           services,
         });
         if (decision.kind === 'allow') {
