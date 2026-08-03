@@ -191,6 +191,10 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .shadow-op-badge.rename{background:rgba(206,145,120,0.2);color:#ce9178}
       .shadow-filepath{flex:1;opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .shadow-filepath:hover{opacity:1;text-decoration:underline}
+      .shadow-file-acts{display:none;gap:3px;margin-left:4px;flex-shrink:0}
+      .shadow-file-row:hover .shadow-file-acts{display:flex}
+      .shadow-file-btn{font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(128,128,128,0.12);border:1px solid rgba(128,128,128,0.25);cursor:pointer;color:inherit;opacity:0.8;line-height:1.5;white-space:nowrap}
+      .shadow-file-btn:hover{opacity:1;background:rgba(128,128,128,0.22)}
       .shadow-verify-out{font-size:11px;font-family:monospace;background:rgba(0,0,0,0.12);padding:4px 12px;max-height:80px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;display:none;border-top:1px solid rgba(128,128,128,0.1)}
       /* 對話模式 */
       .debate-turn { margin:6px 0; border-radius:6px; overflow:hidden }
@@ -2471,7 +2475,21 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             e.stopPropagation();
             vscode.postMessage({ type: 'shadowInspectFile', original: f.original, shadow: f.shadow });
           });
-          row.appendChild(opBadge); row.appendChild(fp);
+          // 套用到檔案 / 複製 按鈕（同 code block 風格）
+          var acts = document.createElement('div'); acts.className = 'shadow-file-acts';
+          var applyBtn = document.createElement('button'); applyBtn.className = 'shadow-file-btn'; applyBtn.textContent = '\uD83D\uDCCB \u5957\u7528\u5230\u6a94\u6848';
+          applyBtn.title = '\u5c07\u6b64\u5f71\u5b50\u8b8a\u66f4\u5beb\u5165\u771f\u5be6\u6a94\u6848';
+          applyBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'shadowApplyFile', original: f.original, shadow: f.shadow });
+          });
+          var diffBtn = document.createElement('button'); diffBtn.className = 'shadow-file-btn'; diffBtn.textContent = '\uD83D\uDD0D \u6BD4\u5C0D';
+          diffBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'shadowInspectFile', original: f.original, shadow: f.shadow });
+          });
+          acts.appendChild(applyBtn); acts.appendChild(diffBtn);
+          row.appendChild(opBadge); row.appendChild(fp); row.appendChild(acts);
           list.appendChild(row);
         });
         var verifyOut = document.getElementById('shadowVerifyOut');

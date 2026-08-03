@@ -572,6 +572,24 @@ export class OllamaChatPanel {
             }
             break;
           }
+          case 'shadowApplyFile': {
+            // 將指定影子檔寫回真實路徑（單一檔案級別套用）
+            const origPath   = message.original as string;
+            const shadowPath = message.shadow   as string;
+            if (origPath && shadowPath) {
+              const fs = require('fs') as typeof import('fs');
+              const srcUri = vscode.Uri.file(shadowPath);
+              const dstUri = vscode.Uri.file(origPath);
+              try {
+                const bytes = await vscode.workspace.fs.readFile(srcUri);
+                await vscode.workspace.fs.writeFile(dstUri, bytes);
+                vscode.window.showInformationMessage(`✅ 已套用變更至: ${origPath.split(/[\\/]/).pop()}`);
+              } catch (e) {
+                vscode.window.showErrorMessage(`套用失敗: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            }
+            break;
+          }
           case 'shadowVerify': {
             const sandbox = this._tools.getSandboxManager();
             const result  = await sandbox.verify();
