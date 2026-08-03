@@ -101,6 +101,12 @@
       }
       ,
       {
+        "command": "amiAiClaw.uefiCodeReview",
+        "title": "AMI-AiClaw: UEFI Code Review",
+        "icon": "$(shield)"
+      }
+      ,
+      {
         "command": "amiAiClaw.debugWriteMemory",
         "title": "AMI-AiClaw: Debug Write MEMORY.md"
       }
@@ -137,6 +143,11 @@
         "command": "amiAiClaw.jira",
         "key": "ctrl+shift+j",
         "mac": "cmd+shift+j"
+      },
+      {
+        "command": "amiAiClaw.uefiCodeReview",
+        "key": "ctrl+shift+u",
+        "mac": "cmd+shift+u"
       }
     ],
     "menus": {

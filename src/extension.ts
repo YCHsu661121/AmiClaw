@@ -369,6 +369,90 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // UEFI Code Review 快速指令
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.uefiCodeReview', async () => {
+      type ReviewInput = { label: string; description: string; id: string };
+      const inputs: ReviewInput[] = [
+        { label: '$(git-commit)  特定 Commit', description: '輸入 Commit SHA', id: 'commit' },
+        { label: '$(git-pull-request)  Staged Changes', description: 'git add 後尚未 commit', id: 'staged' },
+        { label: '$(diff)  Unstaged Changes', description: '工作區未 stage 的修改', id: 'unstaged' },
+        { label: '$(git-branch)  Diff Range', description: '例：HEAD~3..HEAD', id: 'range' },
+        { label: '$(file-code)  Patch 檔案', description: '指定 .patch 檔案路徑', id: 'patch' },
+        { label: '$(file)  指定檔案', description: '指定一個或多個原始檔', id: 'files' },
+        { label: '$(folder)  Folder Diff (ORG vs MOD)', description: '比較兩個資料夾', id: 'folder' },
+      ];
+
+      const picked = await vscode.window.showQuickPick(inputs, {
+        title: 'UEFI Code Review — 選擇輸入來源',
+        placeHolder: '選擇要 review 的內容…',
+        matchOnDescription: true,
+      });
+      if (!picked) { return; }
+
+      let target = '';
+      switch (picked.id) {
+        case 'commit': {
+          const sha = await vscode.window.showInputBox({ prompt: '輸入 Commit SHA', placeHolder: '例：527d65b0' });
+          if (!sha) { return; }
+          target = `the changes introduced in this commit ID: ${sha.trim()}`;
+          break;
+        }
+        case 'staged':    target = 'the staged changes'; break;
+        case 'unstaged':  target = 'the unstaged changes'; break;
+        case 'range': {
+          const range = await vscode.window.showInputBox({ prompt: '輸入 diff range', placeHolder: '例：HEAD~3..HEAD', value: 'HEAD~1..HEAD' });
+          if (!range) { return; }
+          target = `the changes in the diff range ${range.trim()}`;
+          break;
+        }
+        case 'patch': {
+          const uris = await vscode.window.showOpenDialog({ filters: { 'Patch files': ['patch', 'diff'] }, canSelectMany: false, title: '選擇 patch 檔案' });
+          if (!uris || uris.length === 0) { return; }
+          target = `this ${uris[0].fsPath}`;
+          break;
+        }
+        case 'files': {
+          const f = await vscode.window.showInputBox({ prompt: '輸入檔案路徑（以空格分隔）', placeHolder: '例：AmiModulePkg/Usb/Pei/UsbPei.c' });
+          if (!f) { return; }
+          target = f.trim();
+          break;
+        }
+        case 'folder': {
+          const mod = await vscode.window.showInputBox({ prompt: '修改後資料夾路徑 (MOD)', placeHolder: '例：MyFeature/MOD' });
+          if (!mod) { return; }
+          const org = await vscode.window.showInputBox({ prompt: '原始資料夾路徑 (ORG)', placeHolder: '例：MyFeature/ORG' });
+          if (!org) { return; }
+          target = `by taking the diff between the ${mod.trim()} and ${org.trim()} folders`;
+          break;
+        }
+        default: return;
+      }
+
+      // SourceTag
+      const tagOptions = [
+        { label: 'AptioV (預設)', description: 'AMI Aptio V UEFI BIOS', id: 'AptioV' },
+        { label: 'AptioV + Unittesting', description: 'AptioV 含 Unit Test', id: 'AptioV, Unittesting' },
+        { label: 'AptioPE', description: '純 UEFI/EDK2，無 AMI 建置系統', id: 'AptioPE' },
+        { label: 'AMI Porting Changes Only', description: '只看 AMI porting 部分', id: '' },
+      ];
+      const tagPick = await vscode.window.showQuickPick(tagOptions, { title: 'SourceTag', placeHolder: '選擇 review 規則集…' });
+      if (!tagPick) { return; }
+
+      // Jira ID（可選）
+      const jiraId = await vscode.window.showInputBox({ prompt: 'Jira ID（可留空）', placeHolder: '例：AOC-1234' }) ?? '';
+
+      // 組合 prompt
+      const sourceTagLine = tagPick.id ? `\nSourceTag: ${tagPick.id}` : '';
+      const jiraLine = jiraId.trim() ? `\nJira Id: ${jiraId.trim()}` : '';
+      const amiPortingLine = tagPick.id === '' ? ' AMI porting changes only' : '';
+      const prompt = `Perform a code review of ${target}${amiPortingLine}.${sourceTagLine}${jiraLine}`;
+
+      // externalAgentSend 會在 webview 側先呼叫 setInteractionMode('agent')，確保從 Team 切回 Agent
+      openAndSend(context, { type: 'externalAgentSend', prompt });
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('amiAiClaw.debugWriteMemory', async () => {
       const example = `# Demo MEMORY\n\nThis is a demo memory written at ${new Date().toISOString()}\n`;
