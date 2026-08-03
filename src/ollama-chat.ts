@@ -561,6 +561,41 @@ export class OllamaChatPanel {
             }
             break;
           }
+          case 'shadowInspectFile': {
+            const orig   = message.original as string;
+            const shadow = message.shadow   as string;
+            if (orig && shadow) {
+              await vscode.commands.executeCommand('vscode.diff',
+                vscode.Uri.file(orig), vscode.Uri.file(shadow),
+                `${orig.split(/[\\/]/).pop()} (原始) ↔ (影子變更)`
+              );
+            }
+            break;
+          }
+          case 'shadowVerify': {
+            const sandbox = this._tools.getSandboxManager();
+            const result  = await sandbox.verify();
+            this._panel?.webview.postMessage({ type: 'agentStepProgress', text: result.passed ? '✅ 影子驗證通過' : `❌ 驗證失敗：${result.errors.length} 個錯誤` });
+            break;
+          }
+          case 'shadowApprove': {
+            const sandbox = this._tools.getSandboxManager();
+            const files   = await sandbox.commit();
+            this._panel?.webview.postMessage({ type: 'agentStepProgress', text: `✅ 已提交 ${files.length} 個檔案至工作區` });
+            break;
+          }
+          case 'shadowReject': {
+            this._tools.getSandboxManager().rollback();
+            this._panel?.webview.postMessage({ type: 'agentStepProgress', text: '🗑️ 影子變更已回滾，工作區未修動' });
+            break;
+          }
+          case 'shadowInspect': {
+            const state = this._tools.getSandboxManager().getState();
+            if (state.shadowDir) {
+              await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(state.shadowDir), { forceNewWindow: false });
+            }
+            break;
+          }
           case 'permissionResponse': {
             if (this._tools.hasPendingPermission()) {
               if (message.always) { this._tools.addAlwaysAllow(message.category as string); }
