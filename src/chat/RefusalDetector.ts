@@ -58,6 +58,31 @@ const REFUSAL_PATTERNS: string[] = [
   'switch to agent',
   'i only have read',
   'limited to read',
+  // 詢問確認類（已授權操作不需二次確認）
+  '請您確認是否同意',
+  '您是否同意我',
+  '是否允許我',
+  '請確認是否可以',
+  '需要您的確認',
+  '是否繼續執行',
+  // 虛假 token/content 限制藉口
+  'token 限制',
+  '超出 token',
+  '無法在單次對話中',
+  '內容太長無法',
+  '請分批',
+  '分次傳送',
+  '分段輸出',
+  'do you confirm',
+  'please confirm before',
+  'need your approval',
+  'exceed.*token',
+  'token.*limit.*cannot',
+  // 通用「詢問確認」正則
+  '請.*是否.*同意',
+  '請.*確認.*是否',
+  '您.*點頭.*我.*立即',
+  '如果您.*同意.*我將',
 ];
 
 export function isRefusalResponse(text: string): boolean {
