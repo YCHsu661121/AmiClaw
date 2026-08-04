@@ -1467,6 +1467,7 @@ export interface ChatMessage {
   tool_calls?: Array<{ id?: string; function: { name: string; arguments: Record<string, unknown> | string } }>;
   tool_call_id?: string;
   images?: string[];
+  truncated?: boolean; // finish_reason/done_reason === 'length'
 }
 
 interface WebviewModelOption {
@@ -1743,6 +1744,7 @@ export function ollamaChatCallStream(
       let accContent = '';
       let accThinking = '';
       let finalToolCalls: unknown[] | undefined;
+      let wasTruncated = false;
       const req = protocol.request(options, (res) => {
         if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
           let errBody = '';
@@ -1774,6 +1776,7 @@ export function ollamaChatCallStream(
                 }
               }
               if (json.done) {
+                if ((json.done_reason as string | undefined) === 'length') wasTruncated = true;
                 const ec = json.eval_count as number | undefined;
                 const ed = json.eval_duration as number | undefined;
                 if (onStats && ec && ed && ed > 0) onStats(ec, ec / (ed / 1e9));
@@ -1786,13 +1789,12 @@ export function ollamaChatCallStream(
           if (finalToolCalls && finalToolCalls.length > 0) {
             resolve({ role: 'assistant', content: accContent || null, tool_calls: finalToolCalls as ChatMessage['tool_calls'] });
           } else {
-            // Extract <think> from content if no dedicated thinking field
             let content = accContent;
             if (!accThinking && content) {
               const m = content.match(/^<think>([\s\S]*?)<\/think>\s*/);
               if (m) { if (onThinkChunk) onThinkChunk(m[1].trim()); content = content.slice(m[0].length); }
             }
-            resolve({ role: 'assistant', content: content || null, thinking: accThinking || undefined });
+            resolve({ role: 'assistant', content: content || null, thinking: accThinking || undefined, truncated: wasTruncated || undefined });
           }
         });
       });
@@ -1856,6 +1858,7 @@ function openaiCompatChatCallStream(
 
         let lineBuffer = '';
         let accContent = '';
+        let wasTruncated = false;
         // tool_calls 是增量合併結構（index-based）
         const toolCallBuilders: Map<number, { id: string; name: string; args: string }> = new Map();
         let promptTokens = 0; let completionTokens = 0; const startMs = Date.now();
@@ -1911,6 +1914,7 @@ function openaiCompatChatCallStream(
                   }>;
                   usage?: { prompt_tokens?: number; completion_tokens?: number };
                 };
+                if (chunk.choices?.[0]?.finish_reason === 'length') wasTruncated = true;
                 const delta = chunk.choices?.[0]?.delta;
                 if (delta?.content) { accContent += delta.content; if (onTextChunk) onTextChunk(delta.content); }
                 if (delta?.tool_calls) {
@@ -1946,7 +1950,7 @@ function openaiCompatChatCallStream(
                 }));
               resolve({ role: 'assistant', content: accContent || null, tool_calls });
             } else {
-              resolve({ role: 'assistant', content: accContent || null });
+              resolve({ role: 'assistant', content: accContent || null, truncated: wasTruncated || undefined });
             }
           });
           res.on('error', (e: Error) => reject(e));

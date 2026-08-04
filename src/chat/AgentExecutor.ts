@@ -20,6 +20,7 @@ export interface AgentExecutorChatMessage {
   tool_calls?: Array<{ id?: string; function: { name: string; arguments: Record<string, unknown> | string } }>;
   tool_call_id?: string;
   images?: string[];
+  truncated?: boolean;
 }
 
 export interface AgentExecutorCallbacks {
@@ -507,6 +508,14 @@ export class AgentExecutor {
             role: 'user',
             content: `上一輪你思考了 ${thinkSec} 秒才給出回答。請更快作出決斷，總筐引用了足夠資訊即可立即輸出結論。`,
           });
+        }
+
+        // ── 截斷偵測：finish_reason/done_reason=length，自動續寫 ──
+        if (response.truncated && text.trim() && step < 8) {
+          this._callbacks.log(`AgentExecutor: 偵測到截斷回覆（step=${step}），注入續寫指令`);
+          this._callbacks.postToWebview({ type: 'agentStepProgress', text: '✂️ 回覆被截斷，自動續寫…' });
+          this._agentMessages.push({ role: 'user', content: '你的回覆被 token 上限截斷了，請從剛才的中斷處繼續輸出，不要重複已說過的內容。' });
+          continue;
         }
 
         // ── 拒絕/謙遜偵測：模型說「無法執行」但應直接呼叫工具時，自動注入強制指令重試 ──
