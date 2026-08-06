@@ -103,6 +103,25 @@ function computeUnifiedDiff(
   return lines.join('\n');
 }
 
+// ─── Diff stats helper ───────────────────────────────────────────────────────
+function computeDiffStatsAndPatch(
+  before: string, after: string, filePath: string, maxPatchBytes = 6000
+): { linesAdded: number; linesRemoved: number; patch: string } {
+  const aLines = before.split(/\r?\n/);
+  const bLines = after.split(/\r?\n/);
+  // 大檔案略過全 diff（LCS O(m*n) 太慢），只回傳行數差
+  if (aLines.length + bLines.length > 4000) {
+    return { linesAdded: Math.max(0, bLines.length - aLines.length), linesRemoved: Math.max(0, aLines.length - bLines.length), patch: '' };
+  }
+  const baseName = path.basename(filePath);
+  let patch = computeUnifiedDiff(aLines, bLines, baseName, baseName, 3);
+  if (patch.length > maxPatchBytes) { patch = patch.slice(0, maxPatchBytes) + '\n…（截斷）'; }
+  const pLines = patch.split('\n');
+  const linesAdded = pLines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length;
+  const linesRemoved = pLines.filter(l => l.startsWith('-') && !l.startsWith('---')).length;
+  return { linesAdded, linesRemoved, patch };
+}
+
 export class ToolExecutor {
   private _cache = new ToolCache(30_000);
   private _audit: ToolAuditLog;
@@ -1167,7 +1186,8 @@ export class ToolExecutor {
         if (!allowed) { return '使用者已拒絕寫入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
         this._cache.delete(`rf:${fpath}`);
-        this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now() });
+        const wfStats = computeDiffStatsAndPatch(wfDiff.before, wfDiff.after, fpath);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now(), ...wfStats });
         return `已寫入 ${fpath}（${content.length} 字元）`;
       }
       case 'replace_in_file': {
@@ -1182,7 +1202,8 @@ export class ToolExecutor {
         if (!allowed) { return '使用者已拒絕編輯操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.replace(oldStr, newStr), 'utf8'));
         this._cache.delete(`rf:${fpath}`);
-        this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'replace', ts: Date.now() });
+        const rifStats = computeDiffStatsAndPatch(rifDiff.before, rifDiff.after, fpath);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'replace', ts: Date.now(), ...rifStats });
         return `已更新 ${fpath}`;
       }
       case 'insert_in_file': {
@@ -1212,7 +1233,8 @@ export class ToolExecutor {
         if (!ifAllowed) { return '使用者已拒絕插入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(newContent, 'utf8'));
         this._cache.delete(`rf:${fpath}`);
-        this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'insert', ts: Date.now() });
+        const ifStats = computeDiffStatsAndPatch(ifDiff.before, ifDiff.after, fpath);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'insert', ts: Date.now(), ...ifStats });
         return `已在 ${fpath} 第 ${lineNum} 行後插入 ${insertLines.length} 行`;
       }
       case 'glob': {
@@ -1412,7 +1434,8 @@ export class ToolExecutor {
           const updated = original.split(raOld).join(raNew);
           await vscode.workspace.fs.writeFile(vscode.Uri.file(raPath), Buffer.from(updated, 'utf8'));
           this._cache.delete(`rf:${raPath}`);
-          this._callbacks.postToWebview({ type: 'fileModified', filePath: raPath, op: 'replace', ts: Date.now() });
+          const raStats = computeDiffStatsAndPatch(original, updated, raPath);
+          this._callbacks.postToWebview({ type: 'fileModified', filePath: raPath, op: 'replace', ts: Date.now(), ...raStats });
           return `已取代 ${count} 處於 ${raPath}`;
         } catch (e) { return `replace_all_in_file 錯誤: ${e}`; }
       }
@@ -1441,7 +1464,8 @@ export class ToolExecutor {
             if (updated !== original) {
               await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
               this._cache.delete(`rf:${uri.fsPath}`);
-              this._callbacks.postToWebview({ type: 'fileModified', filePath: uri.fsPath, op: 'replace', ts: Date.now() });
+              const brStats = computeDiffStatsAndPatch(original, updated, uri.fsPath);
+              this._callbacks.postToWebview({ type: 'fileModified', filePath: uri.fsPath, op: 'replace', ts: Date.now(), ...brStats });
               const count = (original.match(new RegExp(brPattern, brFlags)) || []).length;
               brResults.push(`  ${path.relative(wsRoot, uri.fsPath).replace(/\\/g,'/')}  (${count} 處)`);
               brTotalFiles++;

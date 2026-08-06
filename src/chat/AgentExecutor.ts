@@ -180,7 +180,8 @@ export class AgentExecutor {
     userPrompt: string,
     modelOverride?: string,
     recordToShortTerm = true,
-    waTriggered = false
+    waTriggered = false,
+    shadowModelOverride?: string,
   ): Promise<void> {
     if (this._agentRunning) {
       vscode.window.showInformationMessage('Agent 已在執行中');
@@ -203,6 +204,17 @@ export class AgentExecutor {
       ? { url: urls[0], model: normalizedModel }
       : this._services.decodeOllamaModel(normalizedModel, urls);
     const isOpenAICompat = model.startsWith('openai::');
+
+    // 影子督促人格模型（未指定時沿用主人格）
+    let shadowModel = model, shadowBaseUrl = baseUrl, shadowIsOpenAICompat = isOpenAICompat;
+    if (shadowModelOverride) {
+      const rawS = shadowModelOverride.startsWith('copilot/') ? `copilot::${shadowModelOverride.slice('copilot/'.length)}` : shadowModelOverride;
+      const resolvedS = rawS.startsWith('copilot::') ? { url: urls[0], model: rawS } : this._services.decodeOllamaModel(rawS, urls);
+      shadowModel = resolvedS.model;
+      shadowBaseUrl = resolvedS.url;
+      shadowIsOpenAICompat = shadowModel.startsWith('openai::');
+      this._callbacks.log(`handleAgent: shadowModel="${shadowModel}" url="${shadowBaseUrl}"`);
+    }
 
     if (!model) {
       this._callbacks.postToWebview({
@@ -575,7 +587,7 @@ export class AgentExecutor {
           || _pendingTodos.length > 0);
         if (shadowEnabled && shadowWorthy && this._shadowInterventions < AgentExecutor.SHADOW_MAX && !this._agentCancel) {
           this._callbacks.postToWebview({ type: 'agentStepProgress', text: '🕵️ 影子督促：檢查分析完整性…' });
-          const verdict = await this._runShadowSupervisor(expandedPrompt, finalText, model, baseUrl, isOpenAICompat, _pendingTodos);
+          const verdict = await this._runShadowSupervisor(expandedPrompt, finalText, shadowModel, shadowBaseUrl, shadowIsOpenAICompat, _pendingTodos);
           if (verdict && !verdict.complete) {
             this._shadowInterventions++;
             this._callbacks.log(`[ShadowSupervisor] 第 ${this._shadowInterventions} 次督促 — 缺口：${verdict.missing}`);

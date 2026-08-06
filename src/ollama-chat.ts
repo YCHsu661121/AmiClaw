@@ -512,7 +512,7 @@ export class OllamaChatPanel {
             break;
           case 'agentSend':
             this.switchChatSession(message.sessionId);
-            await this._agentExecutor.handleAgent(message.prompt, message.model);
+            await this._agentExecutor.handleAgent(message.prompt, message.model, true, false, message.shadowModel as string | undefined);
             break;
           case 'agentStop':
             this._agentExecutor.cancelAgent();

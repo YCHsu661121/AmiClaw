@@ -32,7 +32,12 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       pre{background:rgba(0,0,0,0.08);padding:8px;border-radius:4px;white-space:pre-wrap;margin:4px 0;font-size:0.88em}
       .bubble button{font-size:11px;padding:2px 7px;margin:3px 3px 0 0;cursor:pointer;border-radius:4px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.25);color:inherit}
       #bottomBar{border-top:1px solid rgba(128,128,128,0.15);background:var(--vscode-editor-background);padding:6px 8px;display:flex;flex-direction:column;gap:4px}
-      #topBar{display:flex;align-items:center;gap:6px;padding:0 2px 2px;flex-wrap:wrap;row-gap:6px}
+      #topBar{display:flex;flex-direction:column;gap:0;padding:0}
+      #topBarPrimary{display:flex;align-items:center;gap:5px;padding:0 2px 3px;flex-wrap:nowrap;overflow:hidden}
+      #topBarAdvanced{display:none;flex-wrap:wrap;gap:4px;padding:4px 2px 2px;border-top:1px solid rgba(128,128,128,0.12)}
+      #topBarAdvanced.open{display:flex}
+      #topBarToggle{font-size:11px;padding:2px 6px;border-radius:3px;background:rgba(128,128,128,0.1);border:1px solid rgba(128,128,128,0.2);cursor:pointer;color:inherit;opacity:0.65;flex-shrink:0;line-height:1.5;white-space:nowrap}
+      #topBarToggle:hover,#topBarToggle.open{opacity:1;background:rgba(128,128,128,0.2)}
       .toolbar-group{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 6px;border:1px solid rgba(128,128,128,0.16);border-radius:8px;background:rgba(128,128,128,0.05)}
       .toolbar-spacer{flex:1 1 auto}
       #chatSessionSelect{max-width:170px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
@@ -65,8 +70,17 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .filemod-op.insert{background:rgba(206,145,120,0.2);color:#ce9178}
       .filemod-op.delete{background:rgba(241,76,76,0.2);color:#f14c4c}
       .filemod-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.9}
+      .filemod-stat{font-size:10px;font-family:monospace;flex-shrink:0;white-space:nowrap}
+      .filemod-stat .st-add{color:#4ec994}
+      .filemod-stat .st-del{color:#f14c4c}
       .filemod-time{font-size:10px;opacity:0.5;flex-shrink:0}
       .filemod-empty{padding:8px;font-size:11px;opacity:0.5;text-align:center}
+      .filemod-diff-wrap{display:none;padding:0 4px 4px}
+      .filemod-diff-wrap.open{display:block}
+      .filemod-diff-pre{margin:0;padding:4px 6px;font-size:10px;font-family:monospace;background:rgba(0,0,0,0.18);border-radius:3px;overflow-x:auto;max-height:220px;overflow-y:auto;white-space:pre}
+      .diff-add{color:#4ec994}
+      .diff-del{color:#f14c4c}
+      .diff-hunk{color:#4fc1ff;opacity:0.8}
       .provider-badge{display:inline-flex;align-items:center;gap:4px;min-height:22px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid rgba(128,128,128,0.25);background:rgba(128,128,128,0.1);white-space:nowrap}
       [data-provider="ollama"] .provider-badge,[data-provider="ollama"].provider-badge,.provider-label[data-provider="ollama"]{color:#4fc1ff}
       [data-provider="copilot"] .provider-badge,[data-provider="copilot"].provider-badge,.provider-label[data-provider="copilot"]{color:#f7cc65}
@@ -397,59 +411,67 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
     </div>
     <div id="bottomBar">
       <div id="topBar">
-        <div class="toolbar-group" aria-label="聊天管理">
-          <select id="chatSessionSelect" aria-label="選擇聊天"></select>
+        <div id="topBarPrimary">
+          <select id="chatSessionSelect" aria-label="選擇聊天" style="max-width:130px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px"></select>
           <button class="icon-btn" id="newChat" title="新增聊天" aria-label="新增聊天">➕</button>
-          <button class="icon-btn" id="renameChat" title="設定聊天標題" aria-label="設定聊天標題">&#x1F3F7;&#xFE0F;</button>
-          <button class="icon-btn" id="exportChat" title="匯出對話" aria-label="匯出對話">&#x1F4E4;</button>
-          <button class="icon-btn" id="importChat" title="匯入對話" aria-label="匯入對話">&#x1F4E5;</button>
-          <button class="icon-btn" id="searchChatBtn" title="搜尋所有對話" aria-label="搜尋所有對話">&#x1F50D;</button>
-        </div>
-        <div class="toolbar-group" aria-label="模型與供應商">
-          <span id="providerBadge" class="provider-badge" data-provider="ollama" title="目前供應商">Ollama</span>
-          <select id="modelSelect" aria-label="選擇模型">${optionsHtml}</select>
-          <span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
-          <button class="icon-btn" id="refreshModels" title="重整模型 / 測試連線" aria-label="重整模型 / 測試連線">🔄</button>
-          <button class="icon-btn" id="manageModels" title="管理 Ollama 模型（新增 / 刪除）" aria-label="管理 Ollama 模型">⚙️</button>
-        </div>
-        <div class="toolbar-group" aria-label="聊天模式">
-          <button class="icon-btn" id="pickFile" title="附加檔案" aria-label="附加檔案">📎</button>
-          <button class="icon-btn" id="toggleStream" title="切換串流模式" aria-label="切換串流模式">⚡</button>
+          <select id="modelSelect" aria-label="選擇模型" style="flex:1;min-width:120px;max-width:220px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px">${optionsHtml}</select>
           <select id="modeSelect" aria-label="互動模式" title="互動模式" style="font-size:12px;padding:3px 6px;border-radius:4px">
-            <option value="ask">💬 Ask 模式</option>
-            <option value="agent" selected>🤖 Agent 模式</option>
-            <option value="team">👥 團隊討論</option>
-            <option value="compare">🆚 模型比較</option>
-            <option value="debate">⚔️ 對話/辯論</option>
-          </select>
-          <select id="thinkLevelSelect" aria-label="思考等級" title="思考等級：off 強制關閉、low/medium/high 啟用思考（thinking 模型生效，等級差異留待 Ollama API 支援）" style="font-size:12px;padding:3px 6px;border-radius:4px">
-            <option value="off">🚫 不思考</option>
-            <option value="low">💭 低</option>
-            <option value="medium" selected>🧠 中</option>
-            <option value="high">🌌 高</option>
-          </select>
-          <select id="contextDepthSelect" aria-label="深度解析" title="深度解析（注入到 system prompt）：file = 只附帶作用中檔案；outline = 加上工作區結構摘要（檔案樹 + 重要檔 outline）；full = 把整個工作區原始碼倒進 context（受 deepAnalysisMaxKb 容量上限保護）" style="font-size:12px;padding:3px 6px;border-radius:4px">
-            <option value="file" selected>📄 一般</option>
-            <option value="outline">🗂️ 摘要</option>
-            <option value="full">🔬 全讀</option>
+            <option value="ask">💬 Ask</option>
+            <option value="agent" selected>🤖 Agent</option>
+            <option value="team">👥 Team</option>
+            <option value="compare">🆚 Compare</option>
+            <option value="debate">⚔️ Debate</option>
           </select>
           <button class="icon-btn" id="stopAgent" title="停止目前執行中的 Agent / Team / Debate" aria-label="停止執行">⏹</button>
-        </div>
-        <div class="toolbar-group" aria-label="工具與面板">
-          <button class="icon-btn" id="memBtn" title="記憶管理" aria-label="記憶管理">🧠</button>
-          <button class="icon-btn" id="statsBtn" title="使用統計 / 效能分析" aria-label="使用統計 / 效能分析">📊</button>
-          <select id="permModeSelect" aria-label="權限模式" title="工具呼叫的批准模式：手動 / AutoPilot 自動判斷 / 全自動批准" style="font-size:12px;padding:3px 6px;border-radius:4px">
-            <option value="manual" selected>✋ 手動確認</option>
-            <option value="autopilot">🛡️ AutoPilot</option>
-            <option value="yolo">🚀 全自動</option>
-          </select>
-          <button class="icon-btn" id="fileModBtn" title="顯示/隱藏修改記錄清單" aria-label="修改記錄">📋</button>
-          <button class="icon-btn" id="organizePhotosBtn" title="整理照片（辨識人物 / 行為並分類）" aria-label="整理照片">🖼️</button>
           <button class="icon-btn" id="clear" title="清除對話" aria-label="清除對話">🗑</button>
-          <button class="icon-btn" id="debugBtn" title="Debug Console" aria-label="Debug Console" style="font-size:12px;">🐛</button>
+          <button id="topBarToggle" title="進階選項（聊天管理、思考等級、工具面板）">⚙ ▾</button>
+          <span class="toolbar-spacer"></span>
+          <span id="connStatus" style="font-size:11px;opacity:0.8;flex-shrink:0">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
         </div>
-        <span class="toolbar-spacer"></span>
-        <span id="connStatus" style="font-size:11px;opacity:0.8">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
+        <div id="topBarAdvanced">
+          <div class="toolbar-group" aria-label="聊天管理">
+            <button class="icon-btn" id="renameChat" title="設定聊天標題" aria-label="設定聊天標題">&#x1F3F7;&#xFE0F;</button>
+            <button class="icon-btn" id="exportChat" title="匯出對話" aria-label="匯出對話">&#x1F4E4;</button>
+            <button class="icon-btn" id="importChat" title="匯入對話" aria-label="匯入對話">&#x1F4E5;</button>
+            <button class="icon-btn" id="searchChatBtn" title="搜尋所有對話" aria-label="搜尋所有對話">&#x1F50D;</button>
+          </div>
+          <div class="toolbar-group" aria-label="模型與供應商">
+            <span id="providerBadge" class="provider-badge" data-provider="ollama" title="目前供應商">Ollama</span>
+            <span id="modelMultiplier" style="font-size:11px;opacity:0.65;padding:0 3px;white-space:nowrap"></span>
+            <button class="icon-btn" id="refreshModels" title="重整模型 / 測試連線" aria-label="重整模型 / 測試連線">🔄</button>
+            <button class="icon-btn" id="manageModels" title="管理 Ollama 模型（新增 / 刪除）" aria-label="管理 Ollama 模型">⚙️</button>
+          </div>
+          <div class="toolbar-group" aria-label="附加與思考">
+            <button class="icon-btn" id="pickFile" title="附加檔案" aria-label="附加檔案">📎</button>
+            <button class="icon-btn" id="toggleStream" title="切換串流模式" aria-label="切換串流模式">⚡</button>
+            <select id="thinkLevelSelect" aria-label="思考等級" title="思考等級：off 強制關閉、low/medium/high 啟用思考（thinking 模型生效，等級差異留待 Ollama API 支援）" style="font-size:12px;padding:3px 6px;border-radius:4px">
+              <option value="off">🚫 不思考</option>
+              <option value="low">💭 低</option>
+              <option value="medium" selected>🧠 中</option>
+              <option value="high">🌌 高</option>
+            </select>
+            <select id="contextDepthSelect" aria-label="深度解析" title="深度解析（注入到 system prompt）：file = 只附帶作用中檔案；outline = 加上工作區結構摘要（檔案樹 + 重要檔 outline）；full = 把整個工作區原始碼倒進 context（受 deepAnalysisMaxKb 容量上限保護）" style="font-size:12px;padding:3px 6px;border-radius:4px">
+              <option value="file" selected>📄 一般</option>
+              <option value="outline">🗂️ 摘要</option>
+              <option value="full">🔬 全讀</option>
+            </select>
+            <select id="shadowModelSelect" aria-label="影子督促模型" title="影子督促人格使用的模型（留空 = 同主人格）" style="font-size:12px;padding:3px 6px;border-radius:4px;max-width:140px">
+              <option value="">🕵️ 同主人格</option>
+            </select>
+          </div>
+          <div class="toolbar-group" aria-label="工具與面板">
+            <button class="icon-btn" id="memBtn" title="記憶管理" aria-label="記憶管理">🧠</button>
+            <button class="icon-btn" id="statsBtn" title="使用統計 / 效能分析" aria-label="使用統計 / 效能分析">📊</button>
+            <select id="permModeSelect" aria-label="權限模式" title="工具呼叫的批准模式：手動 / AutoPilot 自動判斷 / 全自動批准" style="font-size:12px;padding:3px 6px;border-radius:4px">
+              <option value="manual" selected>✋ 手動確認</option>
+              <option value="autopilot">🛡️ AutoPilot</option>
+              <option value="yolo">🚀 全自動</option>
+            </select>
+            <button class="icon-btn" id="fileModBtn" title="顯示/隱藏修改記錄清單" aria-label="修改記錄">📋</button>
+            <button class="icon-btn" id="organizePhotosBtn" title="整理照片（辨識人物 / 行為並分類）" aria-label="整理照片">🖼️</button>
+            <button class="icon-btn" id="debugBtn" title="Debug Console" aria-label="Debug Console" style="font-size:12px;">🐛</button>
+          </div>
+        </div>
       </div>
       <div id="attachedFiles"></div>
       <div id="chatSearchBar">
@@ -963,7 +985,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           }
           else if (msg.type === 'permissionRequest') { showPermissionBar(msg.category, msg.description, msg.forceConfirm, msg.diff); }
           else if (msg.type === 'fileModified') {
-            _fileMods.unshift({ filePath: msg.filePath, op: msg.op, ts: msg.ts || Date.now() });
+            _fileMods.unshift({ filePath: msg.filePath, op: msg.op, ts: msg.ts || Date.now(), linesAdded: msg.linesAdded, linesRemoved: msg.linesRemoved, patch: msg.patch || '' });
             if (_fileMods.length > 100) { _fileMods.pop(); }
             renderFileMods();
             if (fileModBtn && !fileModPanel.classList.contains('visible')) {
@@ -1308,6 +1330,19 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       if (newChatBtn) newChatBtn.addEventListener('click', function() { createNewSession(); });
       if (renameChatBtn) renameChatBtn.addEventListener('click', function() { renameActiveSession(); });
 
+      // 進階選項列展開/折疊
+      var topBarToggle = document.getElementById('topBarToggle');
+      var topBarAdvanced = document.getElementById('topBarAdvanced');
+      if (topBarToggle && topBarAdvanced) {
+        try { if (localStorage.getItem('amiClaw_topBarOpen') === '1') { topBarAdvanced.classList.add('open'); topBarToggle.classList.add('open'); topBarToggle.textContent = '⚙ ▴'; } } catch(e) {}
+        topBarToggle.addEventListener('click', function() {
+          var open = topBarAdvanced.classList.toggle('open');
+          topBarToggle.classList.toggle('open', open);
+          topBarToggle.textContent = open ? '⚙ ▴' : '⚙ ▾';
+          try { localStorage.setItem('amiClaw_topBarOpen', open ? '1' : '0'); } catch(e) {}
+        });
+      }
+
       // \u532f\u51fa\u5c0d\u8a71
       var exportChatBtn = document.getElementById('exportChat');
       if (exportChatBtn) exportChatBtn.addEventListener('click', function() {
@@ -1476,7 +1511,9 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             return;
         }
         var _imgs = attachedImages.map(function(d){ return d.replace(/^data:[^;]+;base64,/, ''); });
-        vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId, images: _imgs.length ? _imgs : undefined });
+        var _shadowMSel = document.getElementById('shadowModelSelect');
+        var _shadowM = _shadowMSel ? _shadowMSel.value : '';
+        vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId, shadowModel: _shadowM || undefined, images: _imgs.length ? _imgs : undefined });
         prompt.value = ''; resizePrompt(); clearFiles();
         setSendEnabled(false);
         appendLoadingBubble();
@@ -2930,6 +2967,23 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           modelSelect.appendChild(grp);
         });
         if (!modelSelect.value && hasAny) { var firstOpt = modelSelect.querySelector('option'); if (firstOpt) modelSelect.value = firstOpt.value; }
+        // 同步影子督促模型選單（保留目前選擇）
+        var shadowModelSelect = document.getElementById('shadowModelSelect');
+        if (shadowModelSelect) {
+          var prevShadow = shadowModelSelect.value;
+          shadowModelSelect.innerHTML = '<option value="">\uD83D\uDD75\uFE0F \u540c\u4e3b\u4eba\u683c</option>';
+          providerOrder.forEach(function(groupKey) {
+            var sGrp = document.createElement('optgroup'); sGrp.label = groupKey;
+            providerGroups[groupKey].forEach(function(model) {
+              var sOpt = document.createElement('option'); sOpt.value = model.id;
+              sOpt.textContent = model.label + (model.multiplier ? '  ' + model.multiplier : '');
+              if (model.id === prevShadow) sOpt.selected = true;
+              sGrp.appendChild(sOpt);
+            });
+            shadowModelSelect.appendChild(sGrp);
+          });
+          if (prevShadow && shadowModelSelect.value !== prevShadow) shadowModelSelect.value = '';
+        }
         // 更新倍數標籤
         (function() {
           var selOpt = modelSelect.options[modelSelect.selectedIndex];
@@ -3613,11 +3667,15 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         }
         for (var _si of Array.from(_fileModSelected)) { if (_si >= _fileMods.length) _fileModSelected.delete(_si); }
         list.innerHTML = '';
+        function escHtmlFM(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
         _fileMods.forEach(function(m, i) {
           var fname = (m.filePath || '?').replace(/\\\\/g, '/').split('/').pop();
           var t = new Date(m.ts || Date.now()).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
           var opLabel = { write: '\u5beb\u5165', replace: '\u66ff\u63db', insert: '\u63d2\u5165', delete: '\u522a\u9664', rename: '\u6539\u540d' }[m.op] || (m.op || '?');
           var isSel = _fileModSelected.has(i);
+          // 外層包裝（row + diff wrap）
+          var wrap = document.createElement('div');
+          wrap.dataset.wrapIdx = String(i);
           var el = document.createElement('div');
           el.className = 'filemod-item' + (isSel ? ' selected' : '');
           el.dataset.idx = String(i); el.title = m.filePath || '';
@@ -3632,11 +3690,18 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           });
           var opSpan = document.createElement('span'); opSpan.className = 'filemod-op ' + (m.op || ''); opSpan.textContent = opLabel;
           var nameSpan = document.createElement('span'); nameSpan.className = 'filemod-name'; nameSpan.textContent = fname;
+          // +N / -M stat
+          var hasStat = (m.linesAdded > 0 || m.linesRemoved > 0);
+          var statSpan = document.createElement('span'); statSpan.className = 'filemod-stat';
+          if (hasStat) {
+            if (m.linesAdded > 0) { var a = document.createElement('span'); a.className = 'st-add'; a.textContent = '+' + m.linesAdded; statSpan.appendChild(a); }
+            if (m.linesAdded > 0 && m.linesRemoved > 0) { statSpan.appendChild(document.createTextNode('\\u2009/\\u2009')); }
+            if (m.linesRemoved > 0) { var d = document.createElement('span'); d.className = 'st-del'; d.textContent = '-' + m.linesRemoved; statSpan.appendChild(d); }
+          }
           var timeSpan = document.createElement('span'); timeSpan.className = 'filemod-time'; timeSpan.textContent = t;
-          // 動作按鈕（hover 時顯示，同 code block 風格）
+          // 動作按鈕
           var acts = document.createElement('div'); acts.className = 'shadow-file-acts';
           if (m.shadow && m.shadow !== m.filePath) {
-            // shadow 模式：套用到檔案
             var applyBtn = document.createElement('button'); applyBtn.className = 'shadow-file-btn'; applyBtn.textContent = '\uD83D\uDCCB \u5957\u7528\u5230\u6a94\u6848';
             applyBtn.addEventListener('click', function(e) { e.stopPropagation(); vscode.postMessage({ type: 'shadowApplyFile', original: m.filePath, shadow: m.shadow }); });
             acts.appendChild(applyBtn);
@@ -3652,7 +3717,19 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             }
           });
           acts.appendChild(diffBtn);
-          el.appendChild(cb); el.appendChild(opSpan); el.appendChild(nameSpan); el.appendChild(timeSpan); el.appendChild(acts);
+          el.appendChild(cb); el.appendChild(opSpan); el.appendChild(nameSpan); el.appendChild(statSpan); el.appendChild(timeSpan); el.appendChild(acts);
+          // inline diff 展開區
+          var diffWrap = document.createElement('div'); diffWrap.className = 'filemod-diff-wrap';
+          if (m.patch) {
+            var pre = document.createElement('pre'); pre.className = 'filemod-diff-pre';
+            pre.innerHTML = m.patch.split('\\n').map(function(line) {
+              if (line.startsWith('+') && !line.startsWith('+++')) return '<span class="diff-add">' + escHtmlFM(line) + '</span>';
+              if (line.startsWith('-') && !line.startsWith('---')) return '<span class="diff-del">' + escHtmlFM(line) + '</span>';
+              if (line.startsWith('@@')) return '<span class="diff-hunk">' + escHtmlFM(line) + '</span>';
+              return escHtmlFM(line);
+            }).join('\\n');
+            diffWrap.appendChild(pre);
+          }
           el.addEventListener('click', function(e) {
             if (e.target === cb || e.target.closest && e.target.closest('.shadow-file-acts')) return;
             var idx = parseInt(el.dataset.idx || '0');
@@ -3663,9 +3740,14 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               updateBatchBar(); return;
             }
             var mod = _fileMods[idx];
-            if (mod && mod.filePath) vscode.postMessage({ type: 'openFile', filePath: mod.filePath });
+            if (mod && mod.patch) {
+              diffWrap.classList.toggle('open');
+            } else if (mod && mod.filePath) {
+              vscode.postMessage({ type: 'openFile', filePath: mod.filePath });
+            }
           });
-          list.appendChild(el);
+          wrap.appendChild(el); wrap.appendChild(diffWrap);
+          list.appendChild(wrap);
         });
         updateBatchBar();
       }
