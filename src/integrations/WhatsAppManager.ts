@@ -788,19 +788,35 @@ export class WhatsAppManager {
 
       case 'whatsapp_status': {
         const waAuthDir2 = path.join(this._context.globalStorageUri.fsPath, 'wa-auth');
-        const hasCredsFile = fs.existsSync(path.join(waAuthDir2, 'wa-auth', 'creds.json')) ||
-                             fs.existsSync(path.join(waAuthDir2, 'creds.json'));
+        // 修正路徑檢查：優先檢查 creds.json（新版），相容舊版 wa-auth/creds.json
+        const hasCredsFile = fs.existsSync(path.join(waAuthDir2, 'creds.json')) ||
+                             fs.existsSync(path.join(waAuthDir2, 'wa-auth', 'creds.json'));
         const savedPhone2 = this._context.globalState.get<string>('amiAiClaw.waPhone', '');
-        const sockAlive = !!this._waSock;
+        const apiToken = this._context.globalState.get<string>('amiAiClaw.waToken', '');
+
+        let statusIcon: string;
+        let statusText: string;
+        if (this._waConnected) {
+          statusIcon = '\u2705';
+          statusText = 'QR Code 模式 (已連線)';
+        } else if (hasCredsFile || apiToken) {
+          statusIcon = '\u2699\ufe0f';
+          statusText = 'Token API 模式 (已配置憑證)';
+        } else {
+          statusIcon = '\u274c';
+          statusText = '未連線 (無可用憑證)';
+        }
+
         const lines = [
-          `_waConnected  : ${this._waConnected}`,
-          `_waConnecting : ${this._waConnecting}`,
-          `_waSock alive : ${sockAlive}`,
-          `creds.json    : ${hasCredsFile}`,
-          `saved phone   : ${savedPhone2 || '(無)'}`,
-          `agentRunning  : ${this._cb.isAgentRunning()}`,
+          `\u{1F4CA} WhatsApp Status`,
+          `  \u{1F517} 連線狀態 : ${statusIcon} ${statusText}`,
+          `  \u{1F4BE} 憑證資訊 : ${(hasCredsFile || apiToken) ? '\u2705已儲存' : '\u274c無'}`,
+          `  \u{1F4DE} 電話號碼 : ${savedPhone2 || '(未設定)'}`,
+          `  \u{1F916} agent    : ${this._cb.isAgentRunning()}`,
         ];
-        return '📊 WhatsApp 狀態\n' + lines.join('\n');
+        return lines.join('\n');
+      }
+
       }
 
       case 'whatsapp_disconnect': {

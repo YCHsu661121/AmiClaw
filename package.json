@@ -199,6 +199,17 @@
             "default": "llama3",
             "description": "Ollama model name"
           },
+          "amiAiClaw.openaiCompatApiKey": {
+            "type": "string",
+            "default": "",
+            "description": "OpenAI-compatible 伺服器（LM Studio、vLLM 等）的 API Key，對應 Authorization: Bearer <key>。留空表示不帶認證。"
+          },
+          "amiAiClaw.openaiUrls": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "OpenAI-compatible 伺服器 URL 列表（LM Studio、vLLM 等），重整模型時會以 openaiCompatApiKey 查詢 /v1/models。例如 [\"http://intelnode2:1234\"]。"
+          },
           "amiAiClaw.models": {
             "type": "array",
             "items": { "type": "string" },
@@ -252,6 +263,12 @@
             "type": "boolean",
             "default": true,
             "description": "Agent 模式影子督促人格（Monitor）：主人格產出最終答案時，喚醒一個影子 agent 依六階段分析法審查是否真正完成，未完成則注入督促指令要求繼續（最多 3 次）。思考過程不顯示於對話，僅在除錯日誌可追蹤；失敗時自動降級為單人格。"
+          },
+          "amiAiClaw.shadowTriggerKeywords": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["分析", "審查", "review", "analyze", "讀取", "檢查", "debug", "refactor", "重構", "架構", "程式", "code", "找", "問題", "修正", "實作"],
+            "description": "影子督促人格觸發詞：任務 prompt 含任一詞時，主人格回覆後喚醒影子審查。可透過面板「附加與思考」群組即時編輯。"
           },
           "amiAiClaw.autoPilotEnabled": {
             "type": "boolean",

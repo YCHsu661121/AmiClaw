@@ -42,6 +42,23 @@ function computeUnifiedDiff(aLines: string[], bLines: string[], fileA: string, f
   return lines.join('\n');
 }
 
+function computeDiffStatsAndPatch(
+  before: string, after: string, filePath: string, maxPatchBytes = 6000
+): { linesAdded: number; linesRemoved: number; patch: string } {
+  const aLines = before.split(/\r?\n/);
+  const bLines = after.split(/\r?\n/);
+  if (aLines.length + bLines.length > 4000) {
+    return { linesAdded: Math.max(0, bLines.length - aLines.length), linesRemoved: Math.max(0, aLines.length - bLines.length), patch: '' };
+  }
+  const baseName = path.basename(filePath);
+  let patch = computeUnifiedDiff(aLines, bLines, baseName, baseName, 3);
+  if (patch.length > maxPatchBytes) { patch = patch.slice(0, maxPatchBytes) + '\n…（截斷）'; }
+  const pLines = patch.split('\n');
+  const linesAdded = pLines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length;
+  const linesRemoved = pLines.filter(l => l.startsWith('-') && !l.startsWith('---')).length;
+  return { linesAdded, linesRemoved, patch };
+}
+
 const FS_TOOLS = new Set([
   'get_active_file','read_file','read_file_smart','grep_file','read_files',
   'write_file','replace_in_file','insert_in_file','replace_all_in_file','batch_replace',
@@ -298,7 +315,8 @@ export class FileSystemProvider implements IToolProvider {
     if (!await ctx.requestPermission('write', `寫入檔案: ${path.basename(fpath)}（${content.length} 字元）`, 'write_file', diff)) return '使用者已拒絕寫入操作';
     await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
     ctx.cache.delete(`rf:${fpath}`);
-    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now() });
+    const wfStats = computeDiffStatsAndPatch(before, content, fpath);
+    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now(), ...wfStats });
     return `已寫入 ${fpath}（${content.length} 字元）`;
   }
 
@@ -313,7 +331,8 @@ export class FileSystemProvider implements IToolProvider {
     if (!await ctx.requestPermission('write', `編輯檔案: ${path.basename(fpath)}`, 'replace_in_file', diff)) return '使用者已拒絕編輯操作';
     await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(after, 'utf8'));
     ctx.cache.delete(`rf:${fpath}`);
-    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'replace', ts: Date.now() });
+    const rifStats = computeDiffStatsAndPatch(original, after, fpath);
+    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'replace', ts: Date.now(), ...rifStats });
     return `已更新 ${fpath}`;
   }
 
@@ -334,7 +353,8 @@ export class FileSystemProvider implements IToolProvider {
     if (!await ctx.requestPermission('write', `插入檔案: ${path.basename(fpath)} 第 ${lineNum} 行後（${insertLines.length} 行）`, 'insert_in_file', diff)) return '使用者已拒絕插入操作';
     await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(newContent, 'utf8'));
     ctx.cache.delete(`rf:${fpath}`);
-    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'insert', ts: Date.now() });
+    const ifStats = computeDiffStatsAndPatch(original, newContent, fpath);
+    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'insert', ts: Date.now(), ...ifStats });
     return `已在 ${fpath} 第 ${lineNum} 行後插入 ${insertLines.length} 行`;
   }
 
@@ -347,9 +367,11 @@ export class FileSystemProvider implements IToolProvider {
     const original = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(fpath))).toString('utf8');
     if (!original.includes(oldStr)) return `找不到字串: "${oldStr.slice(0,60)}" 於 ${fpath}`;
     const count = original.split(oldStr).length - 1;
-    await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.split(oldStr).join(newStr), 'utf8'));
+    const raUpdated = original.split(oldStr).join(newStr);
+    await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(raUpdated, 'utf8'));
     ctx.cache.delete(`rf:${fpath}`);
-    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'replace', ts: Date.now() });
+    const raStats = computeDiffStatsAndPatch(original, raUpdated, fpath);
+    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'replace', ts: Date.now(), ...raStats });
     return `已取代 ${count} 處於 ${fpath}`;
   }
 
@@ -370,7 +392,8 @@ export class FileSystemProvider implements IToolProvider {
         if (updated !== original) {
           await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
           ctx.cache.delete(`rf:${uri.fsPath}`);
-          ctx.callbacks.postToWebview({ type: 'fileModified', filePath: uri.fsPath, op: 'replace', ts: Date.now() });
+          const brStats = computeDiffStatsAndPatch(original, updated, uri.fsPath);
+          ctx.callbacks.postToWebview({ type: 'fileModified', filePath: uri.fsPath, op: 'replace', ts: Date.now(), ...brStats });
           results.push(`  ${path.relative(ctx.wsRoot, uri.fsPath).replace(/\\/g,'/')}  (${(original.match(new RegExp(brPattern, brFlags)) || []).length} 處)`);
           total++;
         }
@@ -426,7 +449,8 @@ export class FileSystemProvider implements IToolProvider {
     else return `無需更改 ${fpath}`;
     await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(updated, 'utf8'));
     ctx.cache.delete(`rf:${fpath}`);
-    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now() });
+    const twStats = computeDiffStatsAndPatch(text, updated, fpath);
+    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now(), ...twStats });
     return `已更新 ${fpath}: ${target}`;
   }
 
@@ -453,7 +477,8 @@ export class FileSystemProvider implements IToolProvider {
     }
     await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(updated, 'utf8'));
     ctx.cache.delete(`rf:${fpath}`);
-    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now() });
+    const mwStats = computeDiffStatsAndPatch(text, updated, fpath);
+    ctx.callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now(), ...mwStats });
     return `已更新記憶：${fpath}（${action}）`;
   }
 

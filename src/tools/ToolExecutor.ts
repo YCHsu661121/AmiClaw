@@ -126,6 +126,19 @@ export class ToolExecutor {
   private _cache = new ToolCache(30_000);
   private _audit: ToolAuditLog;
   private _policy: ToolPolicies;
+  private static _toolOutput: vscode.OutputChannel | undefined;
+  private static _out(): vscode.OutputChannel {
+    if (!ToolExecutor._toolOutput) ToolExecutor._toolOutput = vscode.window.createOutputChannel('AmiClaw');
+    return ToolExecutor._toolOutput;
+  }
+  private static _showOutput(label: string, cmd: string, result: string): void {
+    const ch = ToolExecutor._out();
+    const ts = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+    ch.appendLine(`[${ts}] ${label}: ${cmd.slice(0, 120)}`);
+    ch.appendLine(result.slice(0, 4000));
+    ch.appendLine('');
+    ch.show(true);
+  }
   /** @deprecated 狀態已移至 VscodeProvider，保留此字段僅為空列表供舊代碼對比 */
   private _agentTodos: { id: number; text: string; done: boolean }[] = [];
   private _atlasJiraCred: { baseApiUrl: string; accessToken: string; expiry: number } | null = null;
@@ -1320,7 +1333,8 @@ export class ToolExecutor {
         }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(twFpath), Buffer.from(updated, 'utf8'));
         this._cache.delete(`rf:${twFpath}`);
-        this._callbacks.postToWebview({ type: 'fileModified', filePath: twFpath, op: 'write', ts: Date.now() });
+        const twStats = computeDiffStatsAndPatch(twText, updated, twFpath);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: twFpath, op: 'write', ts: Date.now(), ...twStats });
         return `已更新 ${twFpath}: ${target}`;
       }
       case 'memory_read': {
@@ -1366,7 +1380,8 @@ export class ToolExecutor {
         }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(mwFpath), Buffer.from(mwUpdated, 'utf8'));
         this._cache.delete(`rf:${mwFpath}`);
-        this._callbacks.postToWebview({ type: 'fileModified', filePath: mwFpath, op: 'write', ts: Date.now() });
+        const mwStats = computeDiffStatsAndPatch(mwText, mwUpdated, mwFpath);
+        this._callbacks.postToWebview({ type: 'fileModified', filePath: mwFpath, op: 'write', ts: Date.now(), ...mwStats });
         return `已更新記憶：${mwFpath}（${mwAction}）`;
       }
       case 'rename_file': {
@@ -1605,7 +1620,9 @@ export class ToolExecutor {
         const rcCfg = vscode.workspace.getConfiguration('amiAiClaw');
         if (rcCfg.get<boolean>('sandboxUseDocker', false)) {
           const rcImg = rcCfg.get<string>('sandboxDockerImage', 'ubuntu:24.04');
-          return await runDockerShell(cmd, rcImg, 35000);
+          const dockerOut = await runDockerShell(cmd, rcImg, 35000);
+          ToolExecutor._showOutput('run_command', cmd, dockerOut);
+          return dockerOut;
         }
         return new Promise<string>((resolve) => {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1617,7 +1634,9 @@ export class ToolExecutor {
             : true;
           exec(cmd, { cwd, timeout: 30000, shell: shellOpt as unknown as string }, (_err, stdout, stderr) => {
             const out = (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
-            resolve(out.trim().slice(0, 8000) || '(無輸出)');
+            const result = out.trim().slice(0, 8000) || '(無輸出)';
+            ToolExecutor._showOutput('run_command', cmd, result);
+            resolve(result);
           });
         });
       }
@@ -2157,7 +2176,10 @@ export class ToolExecutor {
                 // Exit code non-zero is ok if there's output; only retry on ENOENT
                 if (_err && (_err as NodeJS.ErrnoException).code === 'ENOENT') { tryNext(); return; }
                 const out = (stdout || '') + (stderr ? (stdout ? '\n[stderr]\n' : '[stderr]\n') + stderr : '');
-                resolve((out.trim() || '（無輸出）').slice(0, 8000));
+                const result = (out.trim() || '（無輸出）').slice(0, 8000);
+                const desc = (args.description as string || pyCode.split('\n')[0]).slice(0, 80);
+                ToolExecutor._showOutput('run_python', desc, result);
+                resolve(result);
               });
             };
             tryNext();

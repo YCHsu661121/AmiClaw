@@ -18,7 +18,7 @@ import { DebateEngine } from './debate/DebateEngine';
 import { QueryEngine, QueryEngineServices } from './chat/QueryEngine';
 import * as memdir from './memdir/memdir';
 import { AgentExecutor } from './chat/AgentExecutor';
-import type { AgentExecutorServices } from './chat/AgentExecutor';
+import type { AgentExecutorServices, AgentExecutorChatMessage } from './chat/AgentExecutor';
 import { loadSessionNotes, saveSessionNotes } from './services/SessionNotes';
 import { PanelLike, WebviewViewAdapter } from './panels/ChatPanelAdapter';
 import { setAutoPilotActive, setAutoPilotEnabledBySetting, isAutoPilotActive } from './autopilot';
@@ -62,6 +62,7 @@ export class OllamaChatPanel {
   // 短期對話自動持久化相關
   private _chatDirty = false;
   private _persistTimer: NodeJS.Timeout | null = null;
+  private _agentPersistTimer: NodeJS.Timeout | null = null;
   // ── 工作檔對話記錄模式 ────────────────────────────────────────────────────────
   private _todoModePrompt: string | undefined;   // 非 undefined 表示目前在 todo 模式
   private _todoAccumulator = '';                  // 累積 agentChunk / assistant 文字
@@ -104,7 +105,7 @@ export class OllamaChatPanel {
     OllamaChatPanel.getDiagnosticChannel().show(preserveFocus);
   }
 
-  private static log(msg: string): void {
+  static log(msg: string): void {
     if (!vscode.workspace.getConfiguration('amiAiClaw').get<boolean>('enableDebugLog', false)) { return; }
     if (!OllamaChatPanel._log) {
       OllamaChatPanel._log = vscode.window.createOutputChannel('AMI-AiClaw');
@@ -172,13 +173,35 @@ export class OllamaChatPanel {
       const copy: Record<string, ChatMessage[]> = {};
       for (const [sid, arr] of Object.entries(this._chatHistories)) {
         const msgs = Array.isArray(arr) ? arr.slice(-this._maxMessagesPerSession) : [];
-        // 將每則訊息裁切以避免巨量儲存
         copy[sid] = msgs.map(m => ({ role: m.role, content: (m.content ?? '').slice(0, 10000) }));
       }
-      await this._context.globalState.update('amiAiClaw.chatHistories', copy);
+      // 改用 workspaceState 实現工作區隔離
+      await this._context.workspaceState.update('amiAiClaw.chatHistories', copy);
       this._chatDirty = false;
     } catch (e) {
       OllamaChatPanel.log('persistChatHistories error: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  private scheduleAgentPersist(): void {
+    if (this._agentPersistTimer) { clearTimeout(this._agentPersistTimer); }
+    this._agentPersistTimer = setTimeout(() => { void this.persistAgentMessages(); }, 2000);
+  }
+
+  private async persistAgentMessages(): Promise<void> {
+    try {
+      const msgs = this._agentExecutor.getAgentMessagesBySession();
+      const copy: Record<string, { role: string; content: string | null }[]> = {};
+      for (const [sid, arr] of Object.entries(msgs)) {
+        if (!Array.isArray(arr) || arr.length === 0) continue;
+        // 只儲存最近 60 則，且不包含工具呼叫結果（避免儲存過大）
+        copy[sid] = arr.slice(-60)
+          .filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
+          .map(m => ({ role: m.role, content: (m.content ?? '').slice(0, 8000) }));
+      }
+      await this._context.workspaceState.update('amiAiClaw.agentMessages', copy);
+    } catch (e) {
+      OllamaChatPanel.log('persistAgentMessages error: ' + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -242,12 +265,15 @@ export class OllamaChatPanel {
     copilotModels: { id: string; name: string; multiplier: string }[]
   ): WebviewModelOption[] {
     return [
-      ...ollamaModels.map((model) => ({
-        id: model.id,
-        label: model.label,
-        provider: 'ollama',
-        providerLabel: 'Ollama',
-      })),
+      ...ollamaModels.map((model) => {
+        const isOai = model.id.startsWith('openai::');
+        return {
+          id: model.id,
+          label: model.label,
+          provider: isOai ? 'openai' : 'ollama',
+          providerLabel: isOai ? 'OpenAI Compatible' : 'Ollama',
+        };
+      }),
       ...copilotModels.map((model) => ({
         id: `copilot::${model.id}`,
         label: model.name,
@@ -286,14 +312,15 @@ export class OllamaChatPanel {
       getAutoPilotServices: () => {
         const cfg = vscode.workspace.getConfiguration('amiAiClaw');
         const urls = getOllamaUrls(cfg);
-        const baseUrl = urls[0] ?? 'http://localhost:11434';
-        const model = cfg.get<string>('autoPilotClassifierModel') ?? cfg.get<string>('model') ?? 'llama3';
+        const configuredModel = cfg.get<string>('autoPilotClassifierModel') ?? cfg.get<string>('model') ?? 'llama3';
+        const { url: baseUrl, model } = decodeOllamaModel(configuredModel, urls);
         return {
           callModel: async (opts: { system: string; user: string }) => {
-            const prompt = `${opts.system}\n\n${opts.user}`;
             const t0 = Date.now();
-            const r = await ollamaGenerate(baseUrl, model, prompt);
-            return { text: r.response, durationMs: Date.now() - t0 };
+            const text = model.startsWith('openai::')
+              ? (await openaiCompatChatCallStream(baseUrl, model.slice('openai::'.length), [{ role: 'system', content: opts.system }, { role: 'user', content: opts.user }], [])).content ?? ''
+              : (await ollamaGenerate(baseUrl, model, `${opts.system}\n\n${opts.user}`)).response;
+            return { text, durationMs: Date.now() - t0 };
           },
           log: (msg: string) => OllamaChatPanel.log(`[AutoPilot] ${msg}`),
         };
@@ -321,13 +348,16 @@ export class OllamaChatPanel {
         encodeOllamaModelId,
         ollamaDisplayLabel,
         ollamaListModels,
+        fetchOpenAiCompatModels,
         ollamaGetContextLength,
         ollamaWarmupModel,
         ollamaUnloadModel,
         ollamaListRunningModels,
+        ollamaGetRunningModels,
         ollamaCheckConnection,
         ollamaGenerate,
         ollamaGenerateStream,
+        openaiCompatChatCallStream: openaiCompatChatCallStream as QueryEngineServices['openaiCompatChatCallStream'],
         getCopilotMultiplier,
         getCopilotMultiplierById,
         copilotStreamText,
@@ -338,6 +368,7 @@ export class OllamaChatPanel {
         formatToolTitle,
         filterSensitiveInfo,
         agentTools: AGENT_TOOLS,
+        clearModelCtxCache,
       }
     );
     // ── AgentExecutor ──────────────────────────────────────────────────────────
@@ -425,8 +456,11 @@ export class OllamaChatPanel {
     });
     // 載入持久化的使用量統計
     this._usageStats = context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }>>('amiAiClaw.usageStats') ?? {};
-    // 載入先前序列化的短期對話（如有）並在稍後包成 proxy
-    const persistedChats = context.globalState.get<Record<string, ChatMessage[]>>('amiAiClaw.chatHistories') ?? undefined;
+    // 載入先前序列化的短期對話（优先從 workspaceState 讀，後已寫入用 workspaceState）
+    const persistedChats =
+      this._context.workspaceState.get<Record<string, ChatMessage[]>>('amiAiClaw.chatHistories') ??
+      this._context.globalState.get<Record<string, ChatMessage[]>>('amiAiClaw.chatHistories') ??
+      undefined;
     if (persistedChats) {
       this._chatHistories = persistedChats as Record<string, ChatMessage[]>;
     }
@@ -450,6 +484,15 @@ export class OllamaChatPanel {
       const stripped = existingLtm.replace(/\[atlassian-v\d+\][\s\S]*?(?=\n\n\[|$)/g, '').trim();
       const seeded = stripped ? stripped + '\n\n' + atlassianSeed : atlassianSeed;
       context.globalState.update('amiAiClaw.longTermMemory', seeded);
+    }
+
+    // 載入先前序列化的 Agent 對話記錄
+    const persistedAgent = this._context.workspaceState.get<Record<string, { role: string; content: string | null }[]>>('amiAiClaw.agentMessages');
+    if (persistedAgent && Object.keys(persistedAgent).length > 0) {
+      for (const [sid, msgs] of Object.entries(persistedAgent)) {
+        this._agentExecutor.setAgentMessagesForSession(sid, msgs as AgentExecutorChatMessage[]);
+      }
+      OllamaChatPanel.log(`Restored agentMessages for ${Object.keys(persistedAgent).length} sessions`);
     }
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
@@ -498,6 +541,7 @@ export class OllamaChatPanel {
               // 啟動時同步設定到 module-level 狀態，確保 webview UI 與後端一致
               setAutoPilotEnabledBySetting(autoPilotCfg);
               setAutoPilotActive(autoPilotCfg);
+              const defaultKws = ['分析','審查','review','analyze','讀取','檢查','debug','refactor','重構','架構','程式','code','找','問題','修正','實作'];
               this._panel.webview.postMessage({
                 type: 'initialState',
                 providerInfo: this.buildProviderInfo(),
@@ -506,6 +550,7 @@ export class OllamaChatPanel {
                 autoApproveWrite: autoApproveCfg,
                 thinkLevel: getCurrentThinkingLevel(),
                 contextDepth: getCurrentContextDepth(),
+                shadowTriggerKeywords: cfg.get<string[]>('shadowTriggerKeywords', defaultKws),
               });
             }
             await this._queryEngine.fetchModelsFromServer();
@@ -513,6 +558,7 @@ export class OllamaChatPanel {
           case 'agentSend':
             this.switchChatSession(message.sessionId);
             await this._agentExecutor.handleAgent(message.prompt, message.model, true, false, message.shadowModel as string | undefined);
+            this.scheduleAgentPersist();
             break;
           case 'agentStop':
             this._agentExecutor.cancelAgent();
@@ -543,6 +589,11 @@ export class OllamaChatPanel {
             // 切換深度層級會讓既有 digest 失效，立即清掉快取
             invalidateWorkspaceDigestCache();
             this._panel.webview.postMessage({ type: 'contextDepthState', depth });
+            break;
+          }
+          case 'updateShadowKeywords': {
+            const kws = Array.isArray(message.keywords) ? (message.keywords as string[]).map(k => String(k).trim()).filter(k => k.length > 0) : [];
+            await vscode.workspace.getConfiguration('amiAiClaw').update('shadowTriggerKeywords', kws, vscode.ConfigurationTarget.Workspace);
             break;
           }
           case 'openFile': {
@@ -706,6 +757,13 @@ export class OllamaChatPanel {
             this._chatHistories[this._activeSessionId] = this._chatHistory;
             this._panel.webview.postMessage({ type: 'historyCount', count: 0, sessionId: this._activeSessionId });
             break;
+          case 'deleteSession': {
+            const delSid = this.resolveSessionId(message.sessionId);
+            this._agentExecutor.clearSessionMessages(delSid);
+            delete this._chatHistories[delSid];
+            this.schedulePersistChatHistories();
+            break;
+          }
           case 'memoryGet': {
             this.switchChatSession(message.sessionId);
             const cfg2 = vscode.workspace.getConfiguration('amiAiClaw');
@@ -950,6 +1008,23 @@ export class OllamaChatPanel {
           const emsg = e instanceof Error ? e.message : String(e);
           if (!connOk) { connMsg = emsg; connUrl = url; }
           OllamaChatPanel.log('Model fetch error from ' + url + ': ' + emsg);
+        }
+      }
+      // 掃描 OpenAI-compatible 伺服器（LM Studio、vLLM 等）
+      const openaiUrls: string[] = cfg.get<string[]>('openaiUrls') ?? [];
+      const oaiKey = cfg.get<string>('openaiCompatApiKey', '');
+      for (const oaiUrl of openaiUrls) {
+        try {
+          const oaiModels = await fetchOpenAiCompatModels(oaiUrl, oaiKey);
+          for (const m of oaiModels) {
+            const sep = m.indexOf('||');
+            const cleanLabel = sep !== -1 ? m.slice(sep + 2) : m.replace(/^openai::/, '');
+            liveModels.push({ id: m, label: cleanLabel });
+          }
+          if (!connOk) { connOk = true; connMsg = 'OK'; connUrl = oaiUrl; }
+          OllamaChatPanel.log('OpenAI-compat models from ' + oaiUrl + ': ' + oaiModels.join(', '));
+        } catch (e) {
+          OllamaChatPanel.log('OpenAI-compat fetch error from ' + oaiUrl + ': ' + (e instanceof Error ? e.message : String(e)));
         }
       }
       let copilotModels0: { id: string; name: string; multiplier: string }[] = [];
@@ -1276,6 +1351,9 @@ ${historyText}
         try {
           newLtm = await copilotStreamText(model.slice('copilot::'.length), [vscode.LanguageModelChatMessage.User(consolidatePrompt)], (chunk) => { this._panel.webview.postMessage({ type: 'consolidateChunk', chunk }); }, cts.token);
         } finally { cts.dispose(); }
+      } else if (model.startsWith('openai::')) {
+        const res = await openaiCompatChatCallStream(baseUrl, model.slice('openai::'.length), [{ role: 'user', content: consolidatePrompt }], [], (chunk) => { this._panel.webview.postMessage({ type: 'consolidateChunk', chunk }); });
+        newLtm = res.content ?? '';
       } else {
         newLtm = await ollamaGenerateStream(baseUrl, model, consolidatePrompt, (chunk) => { this._panel.webview.postMessage({ type: 'consolidateChunk', chunk }); });
       }
@@ -1302,6 +1380,9 @@ ${historyText}
                   cts2.token
                 );
               } finally { cts2.dispose(); }
+            } else if (model.startsWith('openai::')) {
+              const res2 = await openaiCompatChatCallStream(baseUrl, model.slice('openai::'.length), [{ role: 'user', content: fullPrompt }], []);
+              raw = res2.content ?? '';
             } else {
               raw = await ollamaGenerateStream(baseUrl, model, fullPrompt, () => { /* silent */ });
             }
@@ -1522,6 +1603,9 @@ export function estimateTokens(text: string): number {
 const _modelCtxCache = new Map<string, { len: number; ts: number }>();
 const MODEL_CTX_TTL = 5 * 60 * 1000;
 
+/** 清除 context length 快取，讓下次查詢重新向伺服器取值。重整模型時呼叫。 */
+export function clearModelCtxCache(): void { _modelCtxCache.clear(); }
+
 /** 向 Ollama `/api/show` 或 vLLM/OpenAI-compat `/v1/models/{id}` 查詢模型實際 context window 大小（tokens）。
  *  - Ollama：解析 `model_info.*.context_length`（0.3+）或 `parameters` 段落的 `num_ctx`
  *  - vLLM / OpenAI-compat：解析 `GET /v1/models/{model_id}` 回應中的 `max_model_len`
@@ -1539,30 +1623,58 @@ function ollamaGetContextLength(baseUrl: string, model: string): Promise<number>
   if (isOpenAiCompat) {
     return new Promise<number>((resolve) => {
       try {
-        const encodedId = encodeURIComponent(rawModel);
-        const url = new URL(`/v1/models/${encodedId}`, baseUrl);
-        const protocol = url.protocol === 'https:' ? https : http;
-        const req = protocol.request({
-          hostname: url.hostname,
-          port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
-          path: url.pathname,
+        // LM Studio 內部 API：/api/v0/models 回傳 max_context_length
+        const lmsUrl = new URL('/api/v0/models', baseUrl);
+        const protocol = lmsUrl.protocol === 'https:' ? https : http;
+        const _oaiKey = vscode.workspace.getConfiguration('amiAiClaw').get<string>('openaiCompatApiKey', '');
+        const lmsReq = protocol.request({
+          hostname: lmsUrl.hostname,
+          port: lmsUrl.port ? parseInt(lmsUrl.port, 10) : (lmsUrl.protocol === 'https:' ? 443 : 80),
+          path: lmsUrl.pathname,
           method: 'GET',
+          headers: { 'Accept': 'application/json', ...(_oaiKey ? { 'Authorization': 'Bearer ' + _oaiKey } : {}) },
         }, (res) => {
           let data = '';
           res.on('data', (chunk: Buffer) => { data += chunk; });
           res.on('end', () => {
-            try {
-              const json = JSON.parse(data);
-              // vLLM: max_model_len；其他 OpenAI-compat 伺服器可能也有此欄位
-              const len = Number(json.max_model_len ?? 0);
-              if (len > 0) { _modelCtxCache.set(cacheKey, { len, ts: Date.now() }); }
-              resolve(len > 0 ? len : 0);
-            } catch { resolve(0); }
+            if (res.statusCode === 200) {
+              try {
+                const json = JSON.parse(data);
+                const models: Array<{ id?: string; max_context_length?: number }> = json.data ?? json;
+                const entry = Array.isArray(models) ? models.find(m => m.id === rawModel) : null;
+                const len = Number(entry?.max_context_length ?? 0);
+                if (len > 0) { _modelCtxCache.set(cacheKey, { len, ts: Date.now() }); resolve(len); return; }
+              } catch { /* fall through to vLLM path */ }
+            }
+            // vLLM fallback：GET /v1/models/{model_id}
+            const encodedId = encodeURIComponent(rawModel);
+            const url = new URL(`/v1/models/${encodedId}`, baseUrl);
+            const req2 = protocol.request({
+              hostname: url.hostname,
+              port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
+              path: url.pathname,
+              method: 'GET',
+              headers: { ...(_oaiKey ? { 'Authorization': 'Bearer ' + _oaiKey } : {}) },
+            }, (res2) => {
+              let d2 = '';
+              res2.on('data', (c: Buffer) => { d2 += c; });
+              res2.on('end', () => {
+                try {
+                  const j2 = JSON.parse(d2);
+                  const len2 = Number(j2.max_model_len ?? 0);
+                  if (len2 > 0) { _modelCtxCache.set(cacheKey, { len: len2, ts: Date.now() }); }
+                  resolve(len2 > 0 ? len2 : 0);
+                } catch { resolve(0); }
+              });
+            });
+            req2.on('error', () => resolve(0));
+            req2.setTimeout(3000, () => { req2.destroy(); resolve(0); });
+            req2.end();
           });
         });
-        req.on('error', () => resolve(0));
-        req.setTimeout(5000, () => { req.destroy(); resolve(0); });
-        req.end();
+        lmsReq.on('error', () => resolve(0));
+        lmsReq.setTimeout(5000, () => { lmsReq.destroy(); resolve(0); });
+        lmsReq.end();
       } catch { resolve(0); }
     });
   }
@@ -1645,6 +1757,36 @@ function ollamaUnloadModel(baseUrl: string, model: string): Promise<void> {
       req.setTimeout(30000, () => { req.destroy(); resolve(); });
       req.write(body); req.end();
     } catch { resolve(); }
+  });
+}
+
+/** GET /api/ps → 傳回目前 Ollama 正在執行的模型及其 VRAM 用量（bytes）。*/
+function ollamaGetRunningModels(baseUrl: string): Promise<{ name: string; size_vram: number }[]> {
+  return new Promise(resolve => {
+    try {
+      const url = new URL('/api/ps', baseUrl);
+      const protocol = url.protocol === 'https:' ? https : http;
+      const req = protocol.request({
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),
+        path: url.pathname, method: 'GET',
+      }, res => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            const models = ((json.models ?? []) as { name: string; size_vram?: number }[])
+              .map(m => ({ name: m.name, size_vram: m.size_vram ?? 0 }));
+            resolve(models);
+          } catch { resolve([]); }
+        });
+        res.on('error', () => resolve([]));
+      });
+      req.on('error', () => resolve([]));
+      req.setTimeout(5000, () => { req.destroy(); resolve([]); });
+      req.end();
+    } catch { resolve([]); }
   });
 }
 
@@ -1812,8 +1954,10 @@ export function ollamaChatCallStream(
 function openaiCompatChatCallStream(
   baseUrl: string, model: string, messages: ChatMessage[], tools: unknown[],
   onTextChunk?: (chunk: string) => void,
-  onStats?: (tokens: number, tps: number) => void
+  onStats?: (tokens: number, tps: number) => void,
+  onThinkChunk?: (chunk: string) => void
 ): Promise<ChatMessage> {
+  OllamaChatPanel.log(`[openaiCompat] call url=${baseUrl} model=${model} msgs=${messages.length} tools=${tools.length}`);
   return new Promise((resolve, reject) => {
     try {
       const url = new URL('/v1/chat/completions', baseUrl);
@@ -1855,6 +1999,8 @@ function openaiCompatChatCallStream(
           path: url.pathname, method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Accept': 'text/event-stream' },
         };
+        const _oaiKey = vscode.workspace.getConfiguration('amiAiClaw').get<string>('openaiCompatApiKey', '');
+        if (_oaiKey) { (options.headers as Record<string, string>)['Authorization'] = 'Bearer ' + _oaiKey; }
 
         let lineBuffer = '';
         let accContent = '';
@@ -1862,8 +2008,41 @@ function openaiCompatChatCallStream(
         // tool_calls 是增量合併結構（index-based）
         const toolCallBuilders: Map<number, { id: string; name: string; args: string }> = new Map();
         let promptTokens = 0; let completionTokens = 0; const startMs = Date.now();
+        // <think> 串流路由狀態機（0=before, 1=in_think, 2=after）
+        let _thinkState: 0 | 1 | 2 = 0;
+        let _tagBuf = '';
+        const _dispatch = (raw: string) => {
+          let s = _tagBuf + raw; _tagBuf = '';
+          while (s.length > 0) {
+            if (_thinkState === 0) {
+              const openIdx = s.indexOf('<think>');
+              if (openIdx === -1) {
+                let cut = s.length;
+                for (let p = Math.min(s.length, 6); p >= 1; p--) { if ('<think>'.startsWith(s.slice(s.length - p))) { cut = s.length - p; _tagBuf = s.slice(cut); break; } }
+                if (cut > 0 && onTextChunk) onTextChunk(s.slice(0, cut));
+                s = '';
+              } else {
+                if (openIdx > 0 && onTextChunk) onTextChunk(s.slice(0, openIdx));
+                s = s.slice(openIdx + 7); _thinkState = 1;
+              }
+            } else if (_thinkState === 1) {
+              const closeIdx = s.indexOf('</think>');
+              if (closeIdx === -1) {
+                let cut = s.length;
+                for (let p = Math.min(s.length, 7); p >= 1; p--) { if ('</think>'.startsWith(s.slice(s.length - p))) { cut = s.length - p; _tagBuf = s.slice(cut); break; } }
+                if (cut > 0 && onThinkChunk) onThinkChunk(s.slice(0, cut));
+                s = '';
+              } else {
+                if (closeIdx > 0 && onThinkChunk) onThinkChunk(s.slice(0, closeIdx));
+                s = s.slice(closeIdx + 8); _thinkState = 2;
+              }
+            } else {
+              if (onTextChunk) onTextChunk(s); s = '';
+            }
+          }
+        };
 
-        const req = protocol.request(options, (res) => {
+        const req = protocol.request(options, (res)=> {
           if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
             let errBody = '';
             res.setEncoding('utf8');
@@ -1894,20 +2073,36 @@ function openaiCompatChatCallStream(
             return;
           }
           res.setEncoding('utf8');
+          OllamaChatPanel.log(`[openaiCompat] HTTP ${res.statusCode} headers=${JSON.stringify(res.headers).slice(0,200)}`);
+          let _firstChunk = true;
+          let _sseEvent = '';       // track current SSE event type
+          let _sseError = '';       // accumulate SSE error message
           res.on('data', (data: string) => {
             lineBuffer += data;
             const lines = lineBuffer.split('\n');
             lineBuffer = lines.pop() ?? '';
             for (const line of lines) {
               const t = line.trim();
-              if (!t || !t.startsWith('data:')) continue;
+              if (!t) { _sseEvent = ''; continue; }           // blank line resets event type
+              if (t.startsWith('event:')) { _sseEvent = t.slice(6).trim(); continue; }
+              if (!t.startsWith('data:')) continue;
               const payload = t.slice(5).trim();
               if (payload === '[DONE]') continue;
+              // SSE error event: reject with the error message
+              if (_sseEvent === 'error') {
+                try {
+                  const errObj = JSON.parse(payload);
+                  const msg = errObj?.error?.message ?? payload.slice(0, 300);
+                  _sseError = msg;
+                } catch { _sseError = payload.slice(0, 300); }
+                continue;
+              }
               try {
                 const chunk = JSON.parse(payload) as {
                   choices?: Array<{
                     delta?: {
                       content?: string | null;
+                      reasoning_content?: string | null;   // LM Studio / OpenRouter 思考欄位
                       tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
                     };
                     finish_reason?: string;
@@ -1916,10 +2111,18 @@ function openaiCompatChatCallStream(
                 };
                 if (chunk.choices?.[0]?.finish_reason === 'length') wasTruncated = true;
                 const delta = chunk.choices?.[0]?.delta;
-                if (delta?.content) { accContent += delta.content; if (onTextChunk) onTextChunk(delta.content); }
+                // reasoning_content → 思考框（Gemma 4 / OpenRouter thinking 格式）
+                if (delta?.reasoning_content) {
+                  if (_firstChunk) { OllamaChatPanel.log(`[openaiCompat] first reasoning_content chunk: ${JSON.stringify(delta.reasoning_content.slice(0,40))}`); _firstChunk = false; }
+                  if (onThinkChunk) onThinkChunk(delta.reasoning_content);
+                }
+                if (delta?.content) {
+                  if (_firstChunk) { OllamaChatPanel.log(`[openaiCompat] first content chunk: ${JSON.stringify(delta.content.slice(0,40))}`); _firstChunk = false; }
+                  accContent += delta.content; _dispatch(delta.content);
+                }
                 if (delta?.tool_calls) {
                   for (const tc of delta.tool_calls) {
-                    if (!toolCallBuilders.has(tc.index)) { toolCallBuilders.set(tc.index, { id: tc.id ?? '', name: tc.function?.name ?? '', args: '' }); }
+                    if (!toolCallBuilders.has(tc.index)) { toolCallBuilders.set(tc.index, { id: tc.id ?? '', name: '', args: '' }); }
                     const b = toolCallBuilders.get(tc.index)!;
                     if (tc.id) b.id = tc.id;
                     if (tc.function?.name) b.name += tc.function.name;
@@ -1934,6 +2137,19 @@ function openaiCompatChatCallStream(
             }
           });
           res.on('end', () => {
+            OllamaChatPanel.log(`[openaiCompat] end: accContent.length=${accContent.length} toolCalls=${toolCallBuilders.size} sseError=${!!_sseError}`);
+            // SSE error event → check if context overflow + tools → retry without tools
+            if (_sseError) {
+              const isCtxOverflow = /exceeds.*context|context.*size|context.*length/i.test(_sseError);
+              if (includeTools && !triedWithoutTools && isCtxOverflow) {
+                OllamaChatPanel.log(`[openaiCompat] context overflow with tools, retrying without tools`);
+                triedWithoutTools = true;
+                sendRequest(false);
+                return;
+              }
+              reject(new Error('OpenAI API 錯誤：' + _sseError));
+              return;
+            }
             if (onStats && completionTokens > 0) {
               const elapsed = (Date.now() - startMs) / 1000;
               onStats(promptTokens + completionTokens, elapsed > 0 ? completionTokens / elapsed : 0);
@@ -1957,7 +2173,7 @@ function openaiCompatChatCallStream(
         });
 
         req.on('error', (e: Error) => reject(new Error(`無法連線到 OpenAI-compatible server (${baseUrl})：${e.message}`)));
-        req.setTimeout(600000, () => { req.destroy(new Error('OpenAI-compatible 呼叫逾時 (600s)')); });
+        req.setTimeout(1200000, () => { req.destroy(new Error('OpenAI-compatible 呼叫逾時 (1200s)')); });
         req.write(body); req.end();
       };
 
@@ -2465,6 +2681,39 @@ export function ollamaDisplayLabel(url: string, model: string, allUrls: string[]
   try { const u = new URL(url); return `[${u.hostname}:${u.port || '11434'}] ${model}`; } catch { return model; }
 }
 
+/** 查詢 OpenAI-compatible 伺服器的模型清單，返回 openai::url||model 格式的 ID 陣列。 */
+export function fetchOpenAiCompatModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    try {
+      const url = new URL('/v1/models', baseUrl);
+      const protocol = url.protocol === 'https:' ? https : http;
+      const headers: Record<string, string> = { 'Accept': 'application/json' };
+      if (apiKey) { headers['Authorization'] = 'Bearer ' + apiKey; }
+      const req = protocol.request({ hostname: url.hostname, port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80), path: url.pathname, method: 'GET', headers }, (res) => {
+        let data = '';
+        res.on('data', (c: Buffer) => { data += c; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode}`)); return; }
+          try {
+            const json = JSON.parse(data);
+            // 過濾 embedding-only 模型（無法用於 chat completions）
+            const EMBED_PATTERN = /embed|rerank|classifier|clip|stable-?diffusion/i;
+            const ids = (json.data ?? [])
+              .map((m: { id?: string }) => m.id)
+              .filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0 && !EMBED_PATTERN.test(id))
+              .map((id: string) => `openai::${baseUrl.replace(/\/$/, '')}||${id}`)
+              .sort();
+            resolve(ids);
+          } catch { reject(new Error('Invalid JSON')); }
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(8000, () => { req.destroy(new Error('ETIMEDOUT')); });
+      req.end();
+    } catch (e) { reject(e); }
+  });
+}
+
 function ollamaListModels(baseUrl: string): Promise<string[]> {
   return new Promise((resolve, reject) => {
     try {
@@ -2473,11 +2722,15 @@ function ollamaListModels(baseUrl: string): Promise<string[]> {
 
       const loadOpenAiModels = () => {
         const openAiProtocol = openAiUrl.protocol === 'https:' ? https : http;
+        const _lmKey = vscode.workspace.getConfiguration('amiAiClaw').get<string>('openaiCompatApiKey', '');
+        const _lmHeaders: Record<string, string> = { 'Accept': 'application/json' };
+        if (_lmKey) { _lmHeaders['Authorization'] = 'Bearer ' + _lmKey; }
         const openAiReq = openAiProtocol.request({
           hostname: openAiUrl.hostname,
           port: openAiUrl.port ? parseInt(openAiUrl.port, 10) : (openAiUrl.protocol === 'https:' ? 443 : 80),
           path: openAiUrl.pathname,
           method: 'GET',
+          headers: _lmHeaders,
         }, (openAiRes) => {
           let openAiData = '';
           openAiRes.on('data', (chunk: Buffer) => { openAiData += chunk; });
@@ -2485,9 +2738,10 @@ function ollamaListModels(baseUrl: string): Promise<string[]> {
             if (openAiRes.statusCode !== 200) { reject(new Error('HTTP ' + openAiRes.statusCode)); return; }
             try {
               const json = JSON.parse(openAiData);
+              const EMBED_PAT = /embed|rerank|classifier|clip|stable-?diffusion/i;
               const ids: string[] = (json.data ?? [])
                 .map((m: { id?: string }) => m.id)
-                .filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
+                .filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0 && !EMBED_PAT.test(id))
                 .map((id: string) => `openai::${baseUrl.replace(/\/$/, '')}||${id}`)
                 .sort();
               resolve(ids);

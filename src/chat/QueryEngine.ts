@@ -8,6 +8,7 @@ import {
   getProviderKind,
   getProviderLabel,
   isCopilotModel,
+  isOpenAIModel,
   isOllamaModel,
   normalizeProviderModelId,
   stripProviderPrefix,
@@ -41,10 +42,12 @@ export interface QueryEngineServices {
   encodeOllamaModelId: (url: string, model: string, allUrls: string[]) => string;
   ollamaDisplayLabel: (url: string, model: string, allUrls: string[]) => string;
   ollamaListModels: (url: string) => Promise<string[]>;
+  fetchOpenAiCompatModels: (url: string, apiKey: string) => Promise<string[]>;
   ollamaGetContextLength: (url: string, model: string) => Promise<number>;
   ollamaWarmupModel: (url: string, model: string) => void;
   ollamaUnloadModel: (url: string, model: string) => Promise<void>;
   ollamaListRunningModels: (url: string) => Promise<string[]>;
+  ollamaGetRunningModels: (url: string) => Promise<{ name: string; size_vram: number }[]>;
   ollamaCheckConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
   ollamaGenerate: (url: string, model: string, prompt: string) => Promise<{ response: string; thinking?: string }>;
   ollamaGenerateStream: (
@@ -56,6 +59,15 @@ export interface QueryEngineServices {
     onStats?: (tokens: number, tps: number) => void,
     images?: string[]
   ) => Promise<string>;
+  openaiCompatChatCallStream: (
+    url: string,
+    model: string,
+    messages: QueryEngineChatMessage[],
+    tools: unknown[],
+    onTextChunk?: (chunk: string) => void,
+    onStats?: (tokens: number, tps: number) => void,
+    onThinkChunk?: (chunk: string) => void
+  ) => Promise<QueryEngineChatMessage>;
   getCopilotMultiplier: (model: vscode.LanguageModelChat) => string;
   getCopilotMultiplierById: (id: string) => string;
   copilotStreamText: (
@@ -85,6 +97,7 @@ export interface QueryEngineServices {
   formatToolTitle?: (name: string, args: Record<string, unknown>) => string;
   filterSensitiveInfo?: (text: string) => string;
   agentTools?: unknown[];
+  clearModelCtxCache?: () => void;
 }
 
 interface WebviewModelOption {
@@ -130,12 +143,15 @@ export class QueryEngine {
     copilotModels: { id: string; name: string; multiplier: string }[]
   ): WebviewModelOption[] {
     return [
-      ...ollamaModels.map((model) => ({
-        id: model.id,
-        label: model.label,
-        provider: 'ollama',
-        providerLabel: 'Ollama',
-      })),
+      ...ollamaModels.map((model) => {
+        const isOai = model.id.startsWith('openai::');
+        return {
+          id: model.id,
+          label: model.label,
+          provider: isOai ? 'openai' : 'ollama',
+          providerLabel: isOai ? 'OpenAI Compatible' : 'Ollama',
+        };
+      }),
       ...copilotModels.map((model) => ({
         id: addProviderPrefix('copilot', model.id),
         label: model.name,
@@ -366,7 +382,7 @@ export class QueryEngine {
       sessionId: this._callbacks.getActiveSessionId(),
     });
 
-    this._callbacks.postToWebview({ type: 'streamStart' });
+    this._callbacks.postToWebview({ type: 'streamStart', thinking: true });
     let fullResponse = '';
     const sendStart = Date.now();
 
@@ -424,6 +440,24 @@ export class QueryEngine {
             recent,
             expandedPrompt
           );
+        } else if (isOpenAIModel(model)) {
+          const response = await this._services.openaiCompatChatCallStream(
+            baseUrl,
+            stripProviderPrefix(model),
+            [
+              ...(systemContent.trim() ? [{ role: 'system' as const, content: systemContent }] : []),
+              ...recent,
+              { role: 'user' as const, content: expandedPrompt },
+            ],
+            [],
+            (chunk) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk }),
+            (tokens, tps) => {
+              this._callbacks.postToWebview({ type: 'streamStats', tokens, tps });
+              this._callbacks.trackUsage(model, tokens);
+            },
+            (chunk) => this._callbacks.postToWebview({ type: 'thinkChunk', chunk, model })
+          );
+          fullResponse = response.content ?? '';
         } else {
           fullResponse = await this._services.ollamaGenerateStream(
             baseUrl,
@@ -502,6 +536,16 @@ export class QueryEngine {
           }
           const copilotMsg = await this._services.copilotChatCallWithCts(copilotId, messages, tools);
           response = { role: 'assistant', content: copilotMsg?.content ?? '', tool_calls: copilotMsg?.tool_calls };
+        } else if (isOpenAIModel(model)) {
+          response = await this._services.openaiCompatChatCallStream(
+            baseUrl,
+            stripProviderPrefix(model),
+            messages,
+            tools,
+            onTextChunk,
+            onStats,
+            onThinkChunk
+          );
         } else {
           response = await this._services.ollamaChatCallStream!(baseUrl, model, messages, tools, onThinkChunk, onTextChunk, onStats);
         }
@@ -516,6 +560,18 @@ export class QueryEngine {
             fullPrompt += `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content ?? ''}\n\n`;
           }
           fullPrompt += `User: ${userPrompt}`;
+          if (isOpenAIModel(model)) {
+            const fallbackResponse = await this._services.openaiCompatChatCallStream(
+              baseUrl,
+              stripProviderPrefix(model),
+              [{ role: 'user', content: fullPrompt }],
+              [],
+              onTextChunk,
+              onStats,
+              onThinkChunk
+            );
+            return fallbackResponse.content ?? '';
+          }
           return await this._services.ollamaGenerateStream(
             baseUrl, model, fullPrompt,
             (c) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk: c }),
@@ -556,7 +612,7 @@ export class QueryEngine {
           messages.push({ role: 'tool', content: result, tool_call_id: tc.id ?? fn.name });
         }
         // 進入下一輪，模型決定是否再呼叫工具或產出最終回答
-        this._callbacks.postToWebview({ type: 'streamStart' });
+        this._callbacks.postToWebview({ type: 'streamStart', thinking: isOllamaModel(model) });
         continue;
       }
 
@@ -632,8 +688,10 @@ export class QueryEngine {
     const prompt = `請以繁體中文，將下面內容濃縮成三條要點（每條 1 行），簡潔扼要：\n\n${text}`;
 
     try {
-      const result = await this._services.ollamaGenerate(baseUrl, model, prompt);
-      this._callbacks.postToWebview({ type: 'assistant', text: `（摘要）\n${result.response}` });
+      const text = isOpenAIModel(model)
+        ? (await this._services.openaiCompatChatCallStream(baseUrl, stripProviderPrefix(model), [{ role: 'user', content: prompt }], [])).content ?? ''
+        : (await this._services.ollamaGenerate(baseUrl, model, prompt)).response;
+      this._callbacks.postToWebview({ type: 'assistant', text: `（摘要）\n${text}` });
     } catch (error: unknown) {
       this._callbacks.postToWebview({ type: 'error', text: error instanceof Error ? error.message : String(error) });
     }
@@ -643,6 +701,8 @@ export class QueryEngine {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const ollamaUrls = this._services.getOllamaUrls(cfg);
     this._callbacks.log(`fetchModelsFromServer: ${ollamaUrls.join(', ')}`);
+    // 清除 context length 快取，讓 LM Studio 等 context 設定變更立即生效
+    if (this._services.clearModelCtxCache) { this._services.clearModelCtxCache(); }
 
     const liveModels: { id: string; label: string }[] = [];
     let copilotModels: { id: string; name: string; multiplier: string }[] = [];
@@ -672,6 +732,32 @@ export class QueryEngine {
           connectionUrl = url;
         }
         this._callbacks.log(`fetchModelsFromServer error from ${url}: ${message}`);
+      }
+    }
+
+    const openaiUrls = cfg.get<string[]>('openaiUrls') ?? [];
+    const openaiApiKey = cfg.get<string>('openaiCompatApiKey', '');
+    for (const url of openaiUrls) {
+      try {
+        const models = await this._services.fetchOpenAiCompatModels(url, openaiApiKey);
+        for (const model of models) {
+          const sep = model.indexOf('||');
+          const cleanLabel = sep !== -1 ? model.slice(sep + 2) : model.replace(/^openai::/, '');
+          liveModels.push({ id: model, label: cleanLabel });
+        }
+        if (!connectionOk) {
+          connectionOk = true;
+          connectionMessage = 'OpenAI-compatible OK';
+          connectionUrl = url;
+        }
+        this._callbacks.log(`fetchModelsFromServer OpenAI-compatible OK from ${url}`);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!connectionOk) {
+          connectionMessage = message;
+          connectionUrl = url;
+        }
+        this._callbacks.log(`fetchModelsFromServer OpenAI-compatible error from ${url}: ${message}`);
       }
     }
 
@@ -735,7 +821,24 @@ export class QueryEngine {
 
     const fromShort = previousModel.split('/').pop();
     const toShort = model.split('/').pop();
-    this._callbacks.log(`Model switch: ${previousModel} -> ${model}，正在卸載舊模型並等待 VRAM 釋放`);
+
+    // 先查目前執行中的模型 VRAM 用量，決定是否需要強制卸載
+    const runningInfo = await this._services.ollamaGetRunningModels(baseUrl);
+    const prevFamily = previousModel.split(':')[0];
+    const newFamily  = model.split(':')[0];
+    const oldModelInfo = runningInfo.find(m => m.name === previousModel || m.name.startsWith(prevFamily));
+    const newAlreadyLoaded = runningInfo.some(m => m.name === model || m.name.startsWith(newFamily));
+
+    if (newAlreadyLoaded) {
+      this._callbacks.log(`Model switch: ${previousModel} -> ${model}，新模型已載入，跳過卸載`);
+      return;
+    }
+    if (!oldModelInfo || oldModelInfo.size_vram === 0) {
+      this._callbacks.log(`Model switch: ${previousModel} -> ${model}，舊模型不佔 VRAM（CPU 模式），跳過卸載`);
+      return;
+    }
+
+    this._callbacks.log(`Model switch: ${previousModel} -> ${model}，舊模型佔用 VRAM ${(oldModelInfo.size_vram / 1024 ** 3).toFixed(1)} GB，正在卸載`);
     await this._services.ollamaUnloadModel(baseUrl, previousModel);
     this._callbacks.postToWebview({
       type: 'assistant',
@@ -744,7 +847,7 @@ export class QueryEngine {
 
     for (let seconds = 90; seconds > 0; seconds--) {
       const runningModels = await this._services.ollamaListRunningModels(baseUrl);
-      const stillLoaded = runningModels.some((name) => name === previousModel || name.startsWith(previousModel.split(':')[0]));
+      const stillLoaded = runningModels.some((name) => name === previousModel || name.startsWith(prevFamily));
       if (!stillLoaded) {
         const waited = 90 - seconds;
         this._callbacks.log(`VRAM 已釋放，等待結束（用時 ${waited}s）`);
@@ -832,7 +935,10 @@ export class QueryEngine {
 
     let summary = '';
     try {
-      if (this._services.ollamaChatCallStream && !isCopilotModel(model)) {
+      if (isOpenAIModel(model)) {
+        const resp = await this._services.openaiCompatChatCallStream(baseUrl, stripProviderPrefix(model), summaryMessages, []);
+        summary = formatCompactSummary((resp?.content ?? '').trim());
+      } else if (this._services.ollamaChatCallStream && !isCopilotModel(model)) {
         const resp = await this._services.ollamaChatCallStream(baseUrl, model, summaryMessages, []);
         summary = formatCompactSummary((resp?.content ?? '').trim());
       }

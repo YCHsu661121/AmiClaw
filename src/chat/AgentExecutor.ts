@@ -66,7 +66,8 @@ export interface AgentExecutorServices {
     messages: AgentExecutorChatMessage[],
     tools: unknown[],
     onTextChunk?: (chunk: string) => void,
-    onStats?: (tokens: number, tps: number) => void
+    onStats?: (tokens: number, tps: number) => void,
+    onThinkChunk?: (chunk: string) => void
   ) => Promise<AgentExecutorChatMessage>;
   copilotChatCallWithCts: (
     modelId: string,
@@ -157,6 +158,13 @@ export class AgentExecutor {
     this._agentMessages = this._agentMessagesBySession[sessionId];
   }
 
+  public setAgentMessagesForSession(sessionId: string, messages: AgentExecutorChatMessage[]): void {
+    this._agentMessagesBySession[sessionId] = messages;
+    if (this._callbacks.getActiveSessionId() === sessionId) {
+      this._agentMessages = messages;
+    }
+  }
+
   public clearSessionMessages(sessionId: string): void {
     const cleared: AgentExecutorChatMessage[] = [];
     this._agentMessagesBySession[sessionId] = cleared;
@@ -229,6 +237,17 @@ export class AgentExecutor {
     this._callbacks.log(`handleAgent: decoded model="${model}" url="${baseUrl}"`);
     await this._callbacks.ensureModelReady(baseUrl, model);
 
+    // 查詢 context window；若尚未快取且非 Copilot，提前取一次，以便決定是否削減 system prompt
+    if (this._modelContextLength === 0 && !model.startsWith('copilot::')) {
+      const ctxLen = await this._services.ollamaGetContextLength(baseUrl, model);
+      if (ctxLen > 0) {
+        this._modelContextLength = ctxLen;
+        this._callbacks.log(`handleAgent: context_length=${ctxLen}`);
+      }
+    }
+    // 小 context（≤16384）時跳過大型注入以避免 token 超限
+    const _smallCtx = this._modelContextLength > 0 && this._modelContextLength <= 16384;
+
     if (this._agentMessages.length === 0) {
       const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
       const folderList = workspaceFolders.map((folder) => folder.uri.fsPath).join(', ') || process.cwd();
@@ -238,25 +257,27 @@ export class AgentExecutor {
         .filter((document) => !document.isUntitled && document.uri.scheme === 'file')
         .map((document) => document.uri.fsPath);
 
-      // 自動附帶作用中檔案內容（可由設定關閉）
+      // 自動附帶作用中檔案內容（可由設定關閉；小 context 時跳過）
       const cfgAuto = vscode.workspace.getConfiguration('amiAiClaw');
       const autoInclude = cfgAuto.get<boolean>('autoIncludeActiveFile', true);
       const maxBytes = Math.max(1024, Math.min(64 * 1024, (cfgAuto.get<number>('autoIncludeActiveMaxKb', 16) || 16) * 1024));
       let activeFileBlock = '';
-      if (autoInclude && activeEditor && !activeEditor.document.isUntitled && activeEditor.document.uri.scheme === 'file') {
+      if (!_smallCtx && autoInclude && activeEditor && !activeEditor.document.isUntitled && activeEditor.document.uri.scheme === 'file') {
         const raw = activeEditor.document.getText();
         const lang = activeEditor.document.languageId || '';
         const text = raw.length > maxBytes
           ? raw.slice(0, maxBytes) + `\n…（內容已截斷至 ${Math.floor(maxBytes / 1024)}KB，原始 ${Math.round(raw.length / 1024)}KB；如需完整內容請呼叫 read_file）`
           : raw;
         activeFileBlock = `\n\n## 作用中檔案內容（自動附帶）\n\`\`\`${lang}\n${text}\n\`\`\``;
+      } else if (_smallCtx && autoInclude) {
+        this._callbacks.log(`handleAgent: smallCtx(${this._modelContextLength}), skip activeFileBlock`);
       }
 
-      // 深度解析：當 contextDepth 為 outline / full 時，附加整個工作區摘要或完整原始碼
+      // 深度解析：當 contextDepth 為 outline / full 時（小 context 時強制跳過）
       let workspaceDigestBlock = '';
       try {
         const depth = getCurrentContextDepth();
-        if (depth !== 'file') {
+        if (!_smallCtx && depth !== 'file') {
           const digest = await buildWorkspaceDigest({
             depth,
             maxTotalKb: Math.max(8, cfgAuto.get<number>('outlineMaxKb', 24)),
@@ -316,25 +337,26 @@ export class AgentExecutor {
     try {
       this._shadowInterventions = 0;
         this._shadowJustInjected = false;
-      for (let step = 0; step < 20 && !this._agentCancel; step++) {
+      for (let step = 0; step < 1000000000 && !this._agentCancel; step++) {
         let response: AgentExecutorChatMessage | undefined;
         const isOllama = !model.startsWith('copilot::') && !isOpenAICompat;
+        this._callbacks.log(`[Agent step=${step}] model="${model}" isOpenAI=${isOpenAICompat} isOllama=${isOllama} msgs=${this._agentMessages.length}`);
         await this.autoSummarizeHistory(model, baseUrl);
         this._postContextPercent();
 
         if (isOllama || isOpenAICompat) {
-          this._callbacks.postToWebview({ type: 'streamStart' });
+          this._callbacks.postToWebview({ type: 'streamStart', thinking: true });
         }
-        // 思考監控：追蹤 Ollama reasoning 模型的思考時長，每 15s 報告一次進度
         let _thinkStartTs = 0;
         let _thinkHasText = false;
         let _thinkTimerId: ReturnType<typeof setInterval> | undefined;
         const THINK_NUDGE_MS = 90_000;
 
-        const onThinkChunk = isOllama
+        const onThinkChunk = (isOllama || isOpenAICompat)
           ? (chunk: string) => {
               if (!_thinkStartTs) {
                 _thinkStartTs = Date.now();
+                this._callbacks.log(`[Agent onThinkChunk] first chunk len=${chunk.length} model=${model}`);
                 _thinkTimerId = setInterval(() => {
                   if (!_thinkHasText) {
                     const sec = Math.round((Date.now() - _thinkStartTs) / 1000);
@@ -363,10 +385,11 @@ export class AgentExecutor {
         const openAiModel = isOpenAICompat ? model.slice('openai::'.length) : model;
 
         try {
+          this._callbacks.log(`[Agent step=${step}] calling ${isOpenAICompat ? 'openaiCompat' : isOllama ? 'ollama' : 'copilot'} url=${baseUrl}`);
           response = model.startsWith('copilot::')
             ? await this._services.copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, this._services.agentTools)
             : isOpenAICompat
-              ? await this._services.openaiCompatChatCallStream(baseUrl, openAiModel, this._agentMessages, this._services.agentTools, onTextChunk, onStats)
+              ? await this._services.openaiCompatChatCallStream(baseUrl, openAiModel, this._agentMessages, this._services.agentTools, onTextChunk, onStats, onThinkChunk)
               : await this._services.ollamaChatCallStream(baseUrl, model, this._agentMessages, this._services.agentTools, onThinkChunk, onTextChunk, onStats);
 
           if (response && !isOllama && !isOpenAICompat) {
@@ -391,12 +414,12 @@ export class AgentExecutor {
           if (/token|limit|context|exceed/i.test(message) && this._agentMessages.length > 4) {
             await this.autoSummarizeHistory(model, baseUrl);
             if (isOllama || isOpenAICompat) {
-              this._callbacks.postToWebview({ type: 'streamStart' });
+              this._callbacks.postToWebview({ type: 'streamStart', thinking: true });
             }
             response = model.startsWith('copilot::')
               ? await this._services.copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, this._services.agentTools)
               : isOpenAICompat
-                ? await this._services.openaiCompatChatCallStream(baseUrl, openAiModel, this._agentMessages, this._services.agentTools, onTextChunk, onStats)
+                ? await this._services.openaiCompatChatCallStream(baseUrl, openAiModel, this._agentMessages, this._services.agentTools, onTextChunk, onStats, onThinkChunk)
                 : await this._services.ollamaChatCallStream(baseUrl, model, this._agentMessages, this._services.agentTools, onThinkChunk, onTextChunk, onStats);
           } else {
             throw error;
@@ -429,6 +452,14 @@ export class AgentExecutor {
               fullPath: (args.path as string) || (args.command as string) || '',
             });
 
+            const _toolStartTs = Date.now();
+            let _stallTimerId: ReturnType<typeof setTimeout> | undefined;
+            if (AgentExecutor.STALL_MONITORED_TOOLS.has(fn.name)) {
+              _stallTimerId = setTimeout(() => {
+                const sec = Math.round((Date.now() - _toolStartTs) / 1000);
+                this._callbacks.postToWebview({ type: 'agentStepProgress', text: `⏳ ${fn.name} 執行中 (${sec}s)…` });
+              }, AgentExecutor.TOOL_STALL_MS);
+            }
             let result: string;
             let isError = false;
             try {
@@ -436,7 +467,10 @@ export class AgentExecutor {
             } catch (error) {
               result = '錯誤：' + (error instanceof Error ? error.message : String(error));
               isError = true;
+            } finally {
+              if (_stallTimerId !== undefined) { clearTimeout(_stallTimerId); _stallTimerId = undefined; }
             }
+            const _toolElapsedMs = Date.now() - _toolStartTs;
 
             if (vscode.workspace.getConfiguration('amiAiClaw').get<boolean>('filterSensitiveInfo', true)) {
               result = this._services.filterSensitiveInfo(result);
@@ -479,6 +513,15 @@ export class AgentExecutor {
               this._agentMessages.push({
                 role: 'user',
                 content: `以上是工具回傳的檔案內容。請立即根據內容完成任務：${typeof originalQ === 'string' ? originalQ.slice(0, 200) : ''}\n\n**不要描述你能做什麼，直接分析並給出結論。**`,
+              });
+            }
+            // 工具停頓督促：完成後耗時超過門檻，注入催促訊息防止 agent 停滯
+            if (AgentExecutor.STALL_MONITORED_TOOLS.has(fn.name) && _toolElapsedMs > AgentExecutor.TOOL_STALL_MS && !isError) {
+              const stallSec = Math.round(_toolElapsedMs / 1000);
+              this._callbacks.log(`[StallMonitor] ${fn.name} 耗時 ${stallSec}s，注入催促`);
+              this._agentMessages.push({
+                role: 'user',
+                content: `上一個工具 ${fn.name} 花了 ${stallSec} 秒才完成。結果已就緒，請立即繼續執行任務，禁止重複呼叫相同工具讀取已取得的資料。`,
               });
             }
 
@@ -536,16 +579,17 @@ export class AgentExecutor {
           // 移除剛剛加入的錯誤 assistant 訊息（避免帶入歷史）
           this._agentMessages.pop();
           const toolReminder = step === 0
-            ? '你剛才說無法執行，但這是錯誤的。你現在就在 AmiClaw Agent 模式中，擁有完整工具存取權限。'
+            ? '你剛才的回答像是在 Ask（問答）模式：給使用者建議、列出步驟，或說「你可以執行…」。這是錯誤的。'
+              + '\n\n你現在在 **Agent 模式**，必須自己呼叫工具執行任務，不得指示使用者去操作。'
               + '\n\n**可直接呼叫的工具（無需任何額外設定）：**\n'
               + '- run_command(command) — 執行任意 shell/PowerShell 指令\n'
               + '- read_file(path) — 讀取任意檔案\n'
               + '- list_dir(path) — 列出目錄\n'
               + '- search_workspace(query) — 搜尋工作區\n'
               + '- run_python(code) — 執行 Python\n'
-              + '\n**禁止事項：** 禁止說「我的權限」「請切換至 Agent 模式」「Read-only 模式」等語句——你現在就是 Agent，直接呼叫工具即可。'
+              + '\n**禁止事項：** 禁止說「我的權限」「請切換至 Agent 模式」「Read-only 模式」「你需要執行…」「建議執行…」「以下步驟…」等語句。'
               + '\n\n請立即呼叫工具完成使用者的任務。'
-            : '再次提醒：你是 AmiClaw Agent，直接呼叫 run_command 或 read_file 等工具即可，不得再解釋或建議使用者自行操作。立即執行。';
+            : '再次提醒：你是 AmiClaw Agent，直接呼叫工具即可，不得再給使用者「建議步驟」或「說明如何操作」。立即執行。';
           this._agentMessages.push({ role: 'user', content: toolReminder });
           continue;
         }
@@ -563,9 +607,11 @@ export class AgentExecutor {
           });
         }
 
-        if (isOllama) {
+        if (isOllama || isOpenAICompat) {
+          // chunks already streamed; just close the stream bubble
           this._callbacks.postToWebview({ type: 'streamEnd' });
         } else {
+          // Copilot: no streaming, post full message
           this._callbacks.postToWebview({
             type: 'assistant',
             text: text || rawText,
@@ -677,6 +723,12 @@ export class AgentExecutor {
 
   /** 影子督促人格單次執行的最大介入次數（斷路器），防止無限追問。 */
   private static readonly SHADOW_MAX = 10;
+  /** 工具停頓門檻（ms）：思考/讀取/搜索超過此時間視為停頓，顯示進度並於完成後催促。 */
+  private static readonly TOOL_STALL_MS = 30_000;
+  private static readonly STALL_MONITORED_TOOLS = new Set([
+    'read_file', 'read_file_smart', 'read_files', 'read_workspace',
+    'search_workspace', 'grep_file', 'search_regex',
+  ]);
 
   /** L2: regex 去噪——ANSI、行尾空白、重复空行、大型 block comment */
   private static _denoiseContent(text: string): string {
@@ -707,7 +759,8 @@ export class AgentExecutor {
 
   private static _isShadowWorthy(task: string, response: string): boolean {
     if (response.length < 200) return false;
-    const TASK_TRIGGERS = ['分析', '審查', 'review', 'analyze', '讀取', '檢查', 'debug', 'refactor', '重構', '架構', '程式', 'code', '找', '問題', '修正', '實作'];
+    const defaultTriggers = ['分析', '審查', 'review', 'analyze', '讀取', '檢查', 'debug', 'refactor', '重構', '架構', '程式', 'code', '找', '問題', '修正', '實作'];
+    const TASK_TRIGGERS: string[] = vscode.workspace.getConfiguration('amiAiClaw').get<string[]>('shadowTriggerKeywords', defaultTriggers);
     const CODE_SIGNALS = ['```', '函式', '函數', 'function', 'class ', 'interface ', '.ts', '.js', '.py', 'import ', '模組', 'module', '路徑', '檔案', '行號'];
     return TASK_TRIGGERS.some(k => task.toLowerCase().includes(k.toLowerCase()))
         || CODE_SIGNALS.some(k => response.includes(k));
@@ -724,6 +777,20 @@ export class AgentExecutor {
     isOpenAICompat: boolean,
     pendingTodos: Array<{id: number; text: string}> = [],
   ): Promise<{ complete: boolean; missing: string; nextInstruction: string } | null> {
+    // OpenAI 相容模型：用輕量 heuristic，不再呼叫 LLM（避免 context overflow + 超時）
+    if (isOpenAICompat) {
+      const hasPending = pendingTodos.length > 0;
+      const tooShort = finalAnswer.trim().length < 120;
+      const truncated = /\.{3,}$|（已截斷|…$/.test(finalAnswer.trim());
+      if (!hasPending && !tooShort && !truncated) {
+        this._callbacks.log('[ShadowSupervisor] heuristic: complete');
+        return { complete: true, missing: '', nextInstruction: '' };
+      }
+      const missing = hasPending ? '待辦事項尚未完成' : tooShort ? '回覆過短' : '回覆被截斷';
+      this._callbacks.log(`[ShadowSupervisor] heuristic: incomplete (${missing})`);
+      return { complete: false, missing, nextInstruction: '請繼續完成剩餘工作。' };
+    }
+
     const TIMEOUT_MS = 20000;
     const prompt = buildShadowSupervisorPrompt(task.slice(0, 1200), finalAnswer.slice(0, 4000), pendingTodos);
 

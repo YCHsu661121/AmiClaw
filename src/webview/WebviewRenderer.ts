@@ -33,11 +33,13 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .bubble button{font-size:11px;padding:2px 7px;margin:3px 3px 0 0;cursor:pointer;border-radius:4px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.25);color:inherit}
       #bottomBar{border-top:1px solid rgba(128,128,128,0.15);background:var(--vscode-editor-background);padding:6px 8px;display:flex;flex-direction:column;gap:4px}
       #topBar{display:flex;flex-direction:column;gap:0;padding:0}
-      #topBarPrimary{display:flex;align-items:center;gap:5px;padding:0 2px 3px;flex-wrap:nowrap;overflow:hidden}
+      #topBarPrimary{display:flex;align-items:center;gap:5px;padding:0 2px 3px;flex-wrap:nowrap}
       #topBarAdvanced{display:none;flex-wrap:wrap;gap:4px;padding:4px 2px 2px;border-top:1px solid rgba(128,128,128,0.12)}
       #topBarAdvanced.open{display:flex}
       #topBarToggle{font-size:11px;padding:2px 6px;border-radius:3px;background:rgba(128,128,128,0.1);border:1px solid rgba(128,128,128,0.2);cursor:pointer;color:inherit;opacity:0.65;flex-shrink:0;line-height:1.5;white-space:nowrap}
       #topBarToggle:hover,#topBarToggle.open{opacity:1;background:rgba(128,128,128,0.2)}
+      #shadowKeywordsInput{font-size:11px;padding:2px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));min-width:110px;max-width:200px;outline:none;flex:1}
+      #shadowKeywordsInput:focus{border-color:var(--vscode-focusBorder,#007fd4)}
       .toolbar-group{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 6px;border:1px solid rgba(128,128,128,0.16);border-radius:8px;background:rgba(128,128,128,0.05)}
       .toolbar-spacer{flex:1 1 auto}
       #chatSessionSelect{max-width:170px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
@@ -167,7 +169,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .team-todo-item.t-done .team-todo-task { text-decoration:line-through; opacity:0.42 }
       .team-todo-item.t-running .team-todo-task { color:#4fc1ff }
       .team-todo-worker { font-size:0.72em; opacity:0.5; margin-left:3px; font-style:italic; white-space:nowrap }
-      .agent-todos-panel{background:rgba(128,128,128,0.06);border:1px solid rgba(247,204,101,0.3);border-radius:0;padding:8px 14px;width:100%;box-sizing:border-box;border-left:none;border-right:none;border-top:1px solid rgba(247,204,101,0.3);border-bottom:1px solid rgba(128,128,128,0.15)}
+      .agent-todos-panel{background:rgba(128,128,128,0.06);border:1px solid rgba(247,204,101,0.3);border-radius:0;padding:8px 14px;width:100%;box-sizing:border-box;border-left:none;border-right:none;border-top:1px solid rgba(247,204,101,0.3);border-bottom:1px solid rgba(128,128,128,0.15);max-height:180px;overflow-y:auto}
       .agent-todos-header{font-size:0.8em;font-weight:700;color:#f7cc65;margin-bottom:6px;display:flex;align-items:center;gap:8px}
       .agent-todos-progress-track{flex:1;height:3px;background:rgba(128,128,128,0.2);border-radius:2px;min-width:40px}
       .agent-todos-progress-fill{height:100%;background:#f7cc65;border-radius:2px;transition:width 0.4s}
@@ -414,7 +416,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         <div id="topBarPrimary">
           <select id="chatSessionSelect" aria-label="選擇聊天" style="max-width:130px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px"></select>
           <button class="icon-btn" id="newChat" title="新增聊天" aria-label="新增聊天">➕</button>
-          <select id="modelSelect" aria-label="選擇模型" style="flex:1;min-width:120px;max-width:220px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px">${optionsHtml}</select>
+          <button id="topBarToggle" title="進階選項（聊天管理、思考等級、工具面板）">⚙ ▾</button>
+          <select id="modelSelect" aria-label="選擇模型" style="flex:1;min-width:80px;max-width:220px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px">${optionsHtml}</select>
           <select id="modeSelect" aria-label="互動模式" title="互動模式" style="font-size:12px;padding:3px 6px;border-radius:4px">
             <option value="ask">💬 Ask</option>
             <option value="agent" selected>🤖 Agent</option>
@@ -424,13 +427,13 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           </select>
           <button class="icon-btn" id="stopAgent" title="停止目前執行中的 Agent / Team / Debate" aria-label="停止執行">⏹</button>
           <button class="icon-btn" id="clear" title="清除對話" aria-label="清除對話">🗑</button>
-          <button id="topBarToggle" title="進階選項（聊天管理、思考等級、工具面板）">⚙ ▾</button>
           <span class="toolbar-spacer"></span>
-          <span id="connStatus" style="font-size:11px;opacity:0.8;flex-shrink:0">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
+          <span id="connStatus" style="font-size:11px;opacity:0.8;flex-shrink:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
         </div>
         <div id="topBarAdvanced">
           <div class="toolbar-group" aria-label="聊天管理">
             <button class="icon-btn" id="renameChat" title="設定聊天標題" aria-label="設定聊天標題">&#x1F3F7;&#xFE0F;</button>
+            <button class="icon-btn" id="deleteChat" title="刪除此聊天" aria-label="刪除聊天">&#x1F5D1;&#xFE0F;</button>
             <button class="icon-btn" id="exportChat" title="匯出對話" aria-label="匯出對話">&#x1F4E4;</button>
             <button class="icon-btn" id="importChat" title="匯入對話" aria-label="匯入對話">&#x1F4E5;</button>
             <button class="icon-btn" id="searchChatBtn" title="搜尋所有對話" aria-label="搜尋所有對話">&#x1F50D;</button>
@@ -458,6 +461,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             <select id="shadowModelSelect" aria-label="影子督促模型" title="影子督促人格使用的模型（留空 = 同主人格）" style="font-size:12px;padding:3px 6px;border-radius:4px;max-width:140px">
               <option value="">🕵️ 同主人格</option>
             </select>
+            <input type="text" id="shadowKeywordsInput" placeholder="督促觸發詞，逗號分隔" title="影子督促觸發詞：prompt 含任一詞時啟動審查（逗號分隔，留空還原預設）" aria-label="影子督促觸發詞">
           </div>
           <div class="toolbar-group" aria-label="工具與面板">
             <button class="icon-btn" id="memBtn" title="記憶管理" aria-label="記憶管理">🧠</button>
@@ -880,7 +884,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
           if (debugPanel && debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
           if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); if (statusBar && msg.tokens) { var _aML = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F'); statusBar.textContent = _aML + '\u2003\u2014\u2003~' + msg.tokens + ' tokens'; } }
-          else if (msg.type === 'streamStart')   { startStreamThinkingPlaceholder(); }
+          else if (msg.type === 'streamStart')   { if (msg.thinking !== false) { startStreamThinkingPlaceholder(); } else { clearPendingBubble(); getOrCreateStreamNode(); } }
           else if (msg.type === 'thinkChunk')    { clearStreamThinkingPlaceholder(); appendThinkChunk(msg.chunk, msg.model); }
           else if (msg.type === 'assistantChunk'){ clearStreamThinkingPlaceholder(); appendChunk(msg.chunk); }
           else if (msg.type === 'streamAbort')   { clearStreamThinkingPlaceholder(); if (_streamNode && chat.contains(_streamNode)) { _streamNode.remove(); } _streamNode = null; }
@@ -997,7 +1001,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
                 status: 'staging',
                 shadowDir: '',
                 files: _fileMods.map(function(m) {
-                  return { original: m.filePath, shadow: m.shadow || m.filePath, op: m.op || 'write', verified: true };
+                  return { original: m.filePath, shadow: m.shadow || m.filePath, op: m.op || 'write', verified: true, linesAdded: m.linesAdded||0, linesRemoved: m.linesRemoved||0 };
                 })
               });
               // 自動彈出 fileModPanel
@@ -1058,7 +1062,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             applyProviderInfo(msg.providerInfo || { modelId: msg.current, id: inferProviderFromModelId(msg.current) });
             if (normalizedModels.length) { populateTeamPicker(normalizedModels); populateDebatePicker(normalizedModels); populateComparePicker(normalizedModels); }
           }
-          else if (msg.type === 'initialState')  { if (msg.providerInfo) applyProviderInfo(msg.providerInfo); if (msg.streamMode) { streamMode = true; var ts = document.getElementById('toggleStream'); if (ts) ts.classList.add('active'); } applyPermModeFromFlags(!!msg.autoPilotEnabled, !!msg.autoApproveWrite); if (msg.thinkLevel) setThinkLevelUi(msg.thinkLevel); if (msg.contextDepth) setContextDepthUi(msg.contextDepth); }
+          else if (msg.type === 'initialState')  { if (msg.providerInfo) applyProviderInfo(msg.providerInfo); if (msg.streamMode) { streamMode = true; var ts = document.getElementById('toggleStream'); if (ts) ts.classList.add('active'); } applyPermModeFromFlags(!!msg.autoPilotEnabled, !!msg.autoApproveWrite); if (msg.thinkLevel) setThinkLevelUi(msg.thinkLevel); if (msg.contextDepth) setContextDepthUi(msg.contextDepth); if (Array.isArray(msg.shadowTriggerKeywords)) { var skEl = document.getElementById('shadowKeywordsInput'); if (skEl) skEl.value = msg.shadowTriggerKeywords.join(', '); } }
           else if (msg.type === 'providerInfo')  { applyProviderInfo(msg.providerInfo); }
           else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
@@ -1102,6 +1106,30 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             var rnSess = null;
             for (var ri2 = 0; ri2 < _chatSessions.length; ri2++) { if (_chatSessions[ri2].id === msg.sessionId) { rnSess = _chatSessions[ri2]; break; } }
             if (rnSess && msg.title) { rnSess.title = msg.title; rnSess.manualTitle = true; renderChatSessionSelect(); persistSessionState(); }
+          }
+          else if (msg.type === 'deleteChatSessionFromHost') {
+            var delHostId = msg.sessionId;
+            if (!delHostId) return;
+            if (_chatSessions.length <= 1) {
+              chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
+              vscode.postMessage({ type: 'clearHistory', sessionId: delHostId });
+              _chatSessions = [];
+              _activeChatSessionId = null;
+              createNewSession();
+            } else {
+              _chatSessions = _chatSessions.filter(function(s) { return s.id !== delHostId; });
+              vscode.postMessage({ type: 'deleteSession', sessionId: delHostId });
+              if (_activeChatSessionId === delHostId) {
+                _activeChatSessionId = _chatSessions[_chatSessions.length - 1].id;
+                var delNext = getActiveSession();
+                resetTransientNodes();
+                chat.innerHTML = (delNext && delNext.html) || '';
+                clearFiles();
+                vscode.postMessage({ type: 'switchChatSession', sessionId: _activeChatSessionId });
+              }
+              renderChatSessionSelect();
+              persistSessionState();
+            }
           }
           else if (msg.type === 'exportDone')   { if (statusBar) statusBar.textContent = '\u2705 \u5df2\u532f\u51fa: ' + (msg.path || ''); setTimeout(function() { if (statusBar && statusBar.textContent.startsWith('\u2705 \u5df2\u532f\u51fa')) statusBar.textContent = ''; }, 3000); }
           else if (msg.type === 'importDone')   {
@@ -1273,6 +1301,14 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         resetTransientNodes();
         chat.innerHTML = s.html || '';
         clearFiles();
+        // 恢復該 session 的模型選擇
+        if (s.model && modelSelect) {
+          var found = false;
+          for (var oi = 0; oi < modelSelect.options.length; oi++) {
+            if (modelSelect.options[oi].value === s.model) { modelSelect.value = s.model; found = true; break; }
+          }
+          if (!found) { /* 模型已不存在，保留目前選擇 */ }
+        }
         renderChatSessionSelect();
         vscode.postMessage({ type: 'switchChatSession', sessionId: _activeChatSessionId });
         persistSessionState();
@@ -1305,6 +1341,32 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         persistSessionState();
       }
 
+      function deleteActiveSession() {
+        if (!window.confirm('確定刪除此聊天？')) return;
+        var deletedId = _activeChatSessionId;
+
+        if (_chatSessions.length <= 1) {
+          // 最後一個 session：全部清除，自動建立新空白 session
+          chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
+          vscode.postMessage({ type: 'clearHistory', sessionId: deletedId });
+          _chatSessions = [];
+          _activeChatSessionId = null;
+          createNewSession();
+          return;
+        }
+
+        _chatSessions = _chatSessions.filter(function(s) { return s.id !== deletedId; });
+        vscode.postMessage({ type: 'deleteSession', sessionId: deletedId });
+        _activeChatSessionId = _chatSessions[_chatSessions.length - 1].id;
+        var next = getActiveSession();
+        resetTransientNodes();
+        chat.innerHTML = (next && next.html) || '';
+        clearFiles();
+        renderChatSessionSelect();
+        vscode.postMessage({ type: 'switchChatSession', sessionId: _activeChatSessionId });
+        persistSessionState();
+      }
+
       function renameActiveSession() {
         var s = getActiveSession();
         if (!s) return;
@@ -1329,6 +1391,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       if (chatSessionSelect) chatSessionSelect.addEventListener('change', function() { switchChatSession(chatSessionSelect.value); });
       if (newChatBtn) newChatBtn.addEventListener('click', function() { createNewSession(); });
       if (renameChatBtn) renameChatBtn.addEventListener('click', function() { renameActiveSession(); });
+      var deleteChatBtn = document.getElementById('deleteChat');
+      if (deleteChatBtn) deleteChatBtn.addEventListener('click', function() { deleteActiveSession(); });
 
       // 進階選項列展開/折疊
       var topBarToggle = document.getElementById('topBarToggle');
@@ -1513,6 +1577,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         var _imgs = attachedImages.map(function(d){ return d.replace(/^data:[^;]+;base64,/, ''); });
         var _shadowMSel = document.getElementById('shadowModelSelect');
         var _shadowM = _shadowMSel ? _shadowMSel.value : '';
+        // 儲存此 session 使用的模型，切換 tab 時可以恢復
+        var _curSess = getActiveSession(); if (_curSess && m) { _curSess.model = m; persistSessionState(); }
         vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId, shadowModel: _shadowM || undefined, images: _imgs.length ? _imgs : undefined });
         prompt.value = ''; resizePrompt(); clearFiles();
         setSendEnabled(false);
@@ -2494,15 +2560,14 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         if (!state || state.status === 'idle') { panel.style.display = 'none'; return; }
         panel.style.display = '';
         var files = state.files || [];
-        // 計算 diff stats：讀 shadow 檔案行數差（無法同步讀，改用檔案數作摘要）
-        var adds = files.filter(function(f){return f.op==='write'||f.op==='insert';}).length;
-        var dels = files.filter(function(f){return f.op==='delete';}).length;
+        var totalAdd = files.reduce(function(s,f){return s+(f.linesAdded||0);},0);
+        var totalDel = files.reduce(function(s,f){return s+(f.linesRemoved||0);},0);
         var label = document.getElementById('shadowBarLabel');
         if (label) label.textContent = '已變更 ' + files.length + ' 個檔案';
         var addStat = document.getElementById('shadowAddStat');
         var delStat = document.getElementById('shadowDelStat');
-        if (addStat) addStat.textContent = adds > 0 ? '+'+adds : '';
-        if (delStat) delStat.textContent = dels > 0 ? '-'+dels : '';
+        if (addStat) addStat.textContent = totalAdd > 0 ? '+'+totalAdd : '';
+        if (delStat) delStat.textContent = totalDel > 0 ? '-'+totalDel : '';
         var list = document.getElementById('shadowFileList'); if (!list) return;
         list.innerHTML = '';
         files.forEach(function(f) {
@@ -3615,6 +3680,18 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         contextDepthSelect.addEventListener('change', function() {
           vscode.postMessage({ type: 'contextDepth', depth: contextDepthSelect.value });
         });
+      }
+
+      // ── 影子督促觸發詞 ───────────────────────────────────────────────────────────
+      var shadowKeywordsInput = document.getElementById('shadowKeywordsInput');
+      function _commitShadowKeywords() {
+        if (!shadowKeywordsInput) return;
+        var kws = shadowKeywordsInput.value.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+        vscode.postMessage({ type: 'updateShadowKeywords', keywords: kws });
+      }
+      if (shadowKeywordsInput) {
+        shadowKeywordsInput.addEventListener('blur', _commitShadowKeywords);
+        shadowKeywordsInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); _commitShadowKeywords(); shadowKeywordsInput.blur(); } });
       }
 
       // ── 修改記錄 Listbox ─────────────────────────────────────────────────────────

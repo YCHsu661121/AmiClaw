@@ -3,10 +3,16 @@
         "http://ai:11434",
         "http://intelnode2:11434"
     ],
-    "amiAiClaw.model": "openai::http://intelnode2:8000||Qwen/Qwen3-0.6B",
+    "amiAiClaw.openaiUrls": [
+        "http://intelnode2:1234"
+    ],
+    "amiAiClaw.openaiCompatApiKey": "sk-lm-irIOgPx7:fEkQTku0od4n3y6EueJn",
+    "amiAiClaw.model": "openai::http://intelnode2:1234||deepseek/deepseek-v4-flash",
+    "amiAiClaw.models": ["openai::http://intelnode2:1234||deepseek/deepseek-v4-flash"],
     "amiAiClaw.thinkingLevel": "high",
     "amiAiClaw.contextDepth": "file",
     "amiAiClaw.visionModel": "llama3.2-vision",
     "amiAiClaw.autoPilotEnabled": true,
-    "amiAiClaw.agentAutoApproveWrite": false
+    "amiAiClaw.agentAutoApproveWrite": false,
+    "amiAiClaw.enableDebugLog": true
 }

@@ -3,6 +3,7 @@ import { exec as nodeExec } from 'child_process';
 import { promisify } from 'util';
 const exec = promisify(nodeExec);
 import { OllamaChatPanel } from './ollama-chat';
+import { setAutoPilotActive, setAutoPilotEnabledBySetting } from './autopilot';
 
 interface ChatSessionInfo { id: string; title: string; }
 
@@ -48,6 +49,16 @@ function openAndSend(context: vscode.ExtensionContext, msg: object) {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  // ── Initialize AutoPilot State (Critical fix: was missing) ──────────────
+  const autoPilotCfg = vscode.workspace.getConfiguration('amiAiClaw');
+  const apEnabled = autoPilotCfg.get<boolean>('autoPilotEnabled', false);
+  setAutoPilotEnabledBySetting(apEnabled);
+  if (apEnabled) {
+    setAutoPilotActive(true);
+  } else {
+    setAutoPilotActive(false);
+  }
+
   OllamaChatPanel.reportDiagnostic('activate:start');
   const sessionsProvider = new ChatSessionsProvider(context);
 
