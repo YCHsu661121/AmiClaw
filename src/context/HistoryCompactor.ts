@@ -36,6 +36,9 @@ export interface HistoryCompactOptions {
   keepRecentRounds?: number;
   /** Summary 之前的訊息全部移除；若為 false 則僅標記 boundary */
   dropPreBoundary?: boolean;
+
+  /** 最小訊息數，少於此值時跳過壓縮直接回傳原陣列（預設 10） */
+  minMessages?: number;
 }
 
 export interface CompactionResult<T extends CompactableMessage> {
@@ -80,11 +83,18 @@ Your summary should include the following sections:
 2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.
 3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and why this file is important.
 4. Errors and fixes: List all errors that you ran into, and how you fixed them. Pay special attention to specific user feedback.
-5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
-6. All user messages: List ALL user messages that are not tool results. These are critical for understanding the users' feedback and changing intent.
-7. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
-8. Current Work: Describe in detail precisely what was being worked on immediately before this summary request. Include file names and code snippets where applicable.
-9. Optional Next Step: List the next step that you will take. Ensure that this step is DIRECTLY in line with the user's most recent explicit requests. Include direct quotes from the most recent conversation showing exactly what task you were working on.
+5. User Decisions & Commitments (CRITICAL — must never be lost):
+   - List EVERY explicit choice, decision, approval, or commitment the user made.
+   - Look for phrases like: "我選 / 我決定 / 我採用 / 我同意 / 用 A / 方案二 / 就這 / 照這樣 / 可以 / OK / 好 / go / proceed / yes / I choose / I'll go with / let's use / 用這個 / 選 X / 用 Y".
+   - **Quote each decision verbatim** (in the original language).
+   - Include what option was picked (A / B / C / 方案一 / 方案二), and what was rejected if explicit.
+   - If the user reversed a prior decision, record both the original and the revision in order.
+   - These are the highest-priority facts. Losing one causes the assistant to contradict the user's explicit choice.
+6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
+7. All user messages: List ALL user messages that are not tool results. These are critical for understanding the users' feedback and changing intent.
+8. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
+9. Current Work: Describe in detail precisely what was being worked on immediately before this summary request. Include file names and code snippets where applicable.
+10. Optional Next Step: List the next step that you will take. Ensure that this step is DIRECTLY in line with the user's most recent explicit requests. Include direct quotes from the most recent conversation showing exactly what task you were working on.
 
 Output format:
 
@@ -162,10 +172,25 @@ export async function compactHistory<T extends CompactableMessage>(
   caller: CompactCaller,
   options: HistoryCompactOptions = {}
 ): Promise<CompactionResult<T>> {
-  const keepRecent = options.keepRecentRounds ?? 2;
+  const keepRecent = options.keepRecentRounds ?? 4;
   const dropPre = options.dropPreBoundary ?? true;
+  const minMsgs = options.minMessages ?? 10;
 
   const activeMessages = getMessagesAfterCompactBoundary(messages);
+
+  // Guard: skip compaction when there are too few messages to summarize
+  // (avoids wasting a full LLM call on short sessions).
+  if (activeMessages.length < minMsgs) {
+    const tokens = activeMessages.reduce((s, m) => s + estimateTokensRough(m.content ?? ''), 0);
+    return {
+      messages,
+      summary: '',
+      tokensBefore: tokens,
+      tokensAfter: tokens,
+      boundaryIndex: -1,
+    };
+  }
+
   const tokensBefore = activeMessages.reduce((s, m) => s + estimateTokensRough(m.content ?? ''), 0);
 
   // 呼叫 LLM 產生 summary
