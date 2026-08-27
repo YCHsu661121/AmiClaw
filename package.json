@@ -355,6 +355,21 @@
             "default": "",
             "description": "WhatsApp 觸發 Agent 時使用的模型。支援 Ollama（如 qwen2.5:14b）、GitHub Copilot（如 copilot::gpt-4o）、OpenAI 相容（如 openai::http://host:port||modelname）。空白表示使用目前 UI 選擇的模型（amiAiClaw.model）。"
           },
+          "amiAiClaw.waWhisperModel": {
+            "type": "string",
+            "default": "whisper-1",
+            "description": "WhatsApp 語音訊息轉文字使用的 Whisper 模型名。須在 OpenAI 相容 /v1/audio/transcriptions 端點可用。"
+          },
+          "amiAiClaw.waWhisperBaseUrl": {
+            "type": "string",
+            "default": "",
+            "description": "Whisper API baseUrl（含 scheme，如 http://localhost:11434 或 https://api.openai.com/v1）。白空 = 不启用語音轉文字。"
+          },
+          "amiAiClaw.waWhisperApiKey": {
+            "type": "string",
+            "default": "",
+            "description": "Whisper API Bearer Token（本地 Ollama 留空即可）。"
+          },
           "amiAiClaw.toolAlwaysAllow": {
             "type": "array",
             "items": { "type": "string" },

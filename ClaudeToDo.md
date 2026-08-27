@@ -47,6 +47,12 @@
 - `docker-compose.yml`
 - `knip.json`
 
+BUG:
+1. [已確認] SystemPromptBuilder: 提示詞注入 (Prompt Injection) 風險。
+2. [已確認] TokenBudgetManager: 因字元截斷導致的 Token 浪費問題。
+3. [新發現] extension.ts: workspaceFolders[0] 可能導致的空指標風險。
+4. [新發現] WebviewRenderer.ts: DOM 依賴脆弱性與 as any 的濫用。
+
 定位：
 - 一個 **VS Code Extension**（`publisher.name = ami-ai-claw`，舊名 Ollama / Ollama Chat）。
 - 主要產品是 **本機 Ollama 聊天側邊欄 + Agent 工具呼叫 + 多角色協作**。

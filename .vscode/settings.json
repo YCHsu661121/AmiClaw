@@ -11,7 +11,7 @@
     "amiAiClaw.models": ["openai::http://intelnode2:1234||deepseek/deepseek-v4-flash"],
     "amiAiClaw.thinkingLevel": "high",
     "amiAiClaw.contextDepth": "file",
-    "amiAiClaw.visionModel": "llama3.2-vision",
+    "amiAiClaw.visionModel": "llava",
     "amiAiClaw.autoPilotEnabled": true,
     "amiAiClaw.agentAutoApproveWrite": false,
     "amiAiClaw.enableDebugLog": true

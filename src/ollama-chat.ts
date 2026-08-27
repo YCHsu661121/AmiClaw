@@ -11,6 +11,7 @@ import * as os from 'os';
 import { execSync } from 'child_process';
 import { URL } from 'url';
 import { WhatsAppManager } from './integrations/WhatsAppManager';
+import { HeartbeatService } from './services/HeartbeatService';
 import { ToolExecutor, type ToolPermissionDiff } from './tools/ToolExecutor';
 import { AGENT_TOOLS, getToolIcon, formatToolTitle } from './tools/ToolRegistry';
 import { TeamManager } from './team/TeamManager';
@@ -63,11 +64,21 @@ export class OllamaChatPanel {
   private _chatDirty = false;
   private _persistTimer: NodeJS.Timeout | null = null;
   private _agentPersistTimer: NodeJS.Timeout | null = null;
+  private _ltmCache = '';  // eager-loaded at init; avoids async race in getLongTermMemory()
   // ── 工作檔對話記錄模式 ────────────────────────────────────────────────────────
   private _todoModePrompt: string | undefined;   // 非 undefined 表示目前在 todo 模式
   private _todoAccumulator = '';                  // 累積 agentChunk / assistant 文字
   private _persistDebounceMs = 500;
   private _maxMessagesPerSession = 500;
+
+  private _readyPromise: Promise<void>;
+  private _resolveReady!: () => void;
+  private _isWebviewReady = false;
+  private _messageQueue: object[] = []; // buffer messages until webviewReady is received
+
+  public async waitForWebviewReady(): Promise<void> {
+    return this._readyPromise;
+  }
 
   private static formatError(error: unknown): string {
     if (error instanceof Error) {
@@ -301,6 +312,29 @@ export class OllamaChatPanel {
 
   private constructor(panel: PanelLike, context: vscode.ExtensionContext) {
     this._panel = panel;
+    // Promise resolves when webview posts 'webviewReady'; callers use waitForWebviewReady()
+    this._readyPromise = new Promise<void>(resolve => { this._resolveReady = resolve; });
+    const hbSub = HeartbeatService.getInstance().onTick(() => {
+      this.broadcastHeartbeat();
+    });
+    this._disposables.push(hbSub);
+
+    // WA 定期回報：agent 執行中每 60s 推送一次進度（12 ticks × 5s）
+    let _hbWaTick = 0;
+    const hbWaSub = HeartbeatService.getInstance().onTick(() => {
+      _hbWaTick++;
+      if (_hbWaTick < 12) return;
+      _hbWaTick = 0;
+      const info = HeartbeatService.getInstance().getAgentInfo();
+      if (!info.running || !this._wa?.connected) return;
+      const elapsedMin = info.startedAt ? ((Date.now() - info.startedAt) / 60000).toFixed(1) : '?';
+      const shadowNote = info.shadowRunning ? '（影子督促審查中）' : info.shadowCount > 0 ? `（已督促 ${info.shadowCount} 次）` : '';
+      this._wa.notifyOwner(`🤖 Agent 進行中 — step ${info.step} | ${elapsedMin}m elapsed | ${info.lastActivity}${shadowNote}`);
+    });
+    this._disposables.push(hbWaSub);
+    HeartbeatService.getInstance().start();
+
+
     this._context = context;
     this._tools = new ToolExecutor({
       postToWebview: (msg) => this._postToWebview(msg as Record<string, unknown>),
@@ -456,6 +490,17 @@ export class OllamaChatPanel {
     });
     // 載入持久化的使用量統計
     this._usageStats = context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }>>('amiAiClaw.usageStats') ?? {};
+    // Eager-load LTM from file so first request never uses stale globalState
+    void (async () => {
+      try {
+        const fileLtm = await memdir.readMemoryIndex();
+        this._ltmCache = fileLtm.trim()
+          ? fileLtm
+          : (this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '');
+      } catch {
+        this._ltmCache = this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
+      }
+    })();
     // 載入先前序列化的短期對話（优先從 workspaceState 讀，後已寫入用 workspaceState）
     const persistedChats =
       this._context.workspaceState.get<Record<string, ChatMessage[]>>('amiAiClaw.chatHistories') ??
@@ -502,6 +547,7 @@ export class OllamaChatPanel {
       try {
         switch (message.type) {
           case 'send':
+            OllamaChatPanel.log(`[Route] send (Ask模式) model=${message.model ?? '(none)'} modeSelect=${(message as Record<string,unknown>)._dbgModeSelect ?? '?'} agentMode=${(message as Record<string,unknown>)._dbgAgentMode ?? '?'}`);
             await this._queryEngine.handleSend(message.prompt, message.model, message.sessionId, message.images as string[] | undefined);
             break;
           case 'insert':
@@ -534,6 +580,13 @@ export class OllamaChatPanel {
             break;
           case 'webviewReady':
             OllamaChatPanel.log('webviewReady received — calling fetchModelsFromServer');
+            if (!this._isWebviewReady) {
+              this._isWebviewReady = true;
+              this._resolveReady();
+              // flush messages that arrived before webview was ready
+              for (const m of this._messageQueue) { this._panel.webview.postMessage(m); }
+              this._messageQueue = [];
+            }
             {
               const cfg = vscode.workspace.getConfiguration('amiAiClaw');
               const autoPilotCfg = cfg.get<boolean>('autoPilotEnabled', false);
@@ -556,6 +609,7 @@ export class OllamaChatPanel {
             await this._queryEngine.fetchModelsFromServer();
             break;
           case 'agentSend':
+            OllamaChatPanel.log(`[Route] agentSend (Agent模式) model=${message.model ?? '(none)'}`);
             this.switchChatSession(message.sessionId);
             await this._agentExecutor.handleAgent(message.prompt, message.model, true, false, message.shadowModel as string | undefined);
             this.scheduleAgentPersist();
@@ -577,7 +631,7 @@ export class OllamaChatPanel {
           }
           case 'thinkLevel': {
             const raw = String(message.level ?? 'medium');
-            const level: ThinkingLevel = (raw === 'off' || raw === 'low' || raw === 'medium' || raw === 'high') ? raw : 'medium';
+            const level: ThinkingLevel = (raw === 'off' || raw === 'low' || raw === 'medium' || raw === 'high' || raw === 'max') ? raw : 'medium';
             await vscode.workspace.getConfiguration('amiAiClaw').update('thinkingLevel', level, vscode.ConfigurationTarget.Workspace);
             this._panel.webview.postMessage({ type: 'thinkLevelState', level });
             break;
@@ -761,7 +815,13 @@ export class OllamaChatPanel {
             const delSid = this.resolveSessionId(message.sessionId);
             this._agentExecutor.clearSessionMessages(delSid);
             delete this._chatHistories[delSid];
+            if (delSid === this._activeSessionId) {
+              const nextSid = Object.keys(this._chatHistories).find(k => k !== delSid);
+              if (nextSid) this.switchChatSession(nextSid);
+            }
+
             this.schedulePersistChatHistories();
+            console.log('[DEBUG ollama-chat] deleteSession complete for', delSid, 'Remaining keys:', Object.keys(this._chatHistories).length);
             break;
           }
           case 'memoryGet': {
@@ -1063,6 +1123,10 @@ export class OllamaChatPanel {
 
   /** Send any message to the webview from outside the class (e.g. from extension.ts commands) */
   public postMessageToWebview(msg: object): void {
+    if (!this._isWebviewReady) {
+      this._messageQueue.push(msg);
+      return;
+    }
     this._panel.webview.postMessage(msg);
   }
 
@@ -1190,6 +1254,10 @@ export class OllamaChatPanel {
     this._panel.webview.postMessage(msg);
   }
 
+  private broadcastHeartbeat(): void {
+    this._panel.webview.postMessage({ type: 'heartbeat', timestamp: Date.now() });
+  }
+
   private resolveSessionId(sessionId?: string): string {
     const raw = typeof sessionId === 'string' ? sessionId.trim() : '';
     return raw || 'default';
@@ -1217,8 +1285,7 @@ export class OllamaChatPanel {
     const panel = OllamaChatPanel.currentPanel;
     if (!panel) { return; }
 
-    // Small delay so the webview has time to initialize if it was just created
-    await new Promise(r => setTimeout(r, 500));
+    await panel.waitForWebviewReady();
 
     for (const uri of uris) {
       let stat: vscode.FileStat;
@@ -1402,31 +1469,12 @@ ${historyText}
   }
 
   private getLongTermMemory(): string {
-    // Prefer file-based MEMORY.md when available; fallback to globalState string
-    try {
-      // synchronous read is not available here; return cached globalState and schedule async load
-      // For simplicity, attempt to read file synchronously via require('fs').readFileSync is not ideal in extension context
-      // Use the async reader only when callers expect string immediately; we keep globalState as primary source for now
-      const ltm = this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
-      // schedule background refresh from file (best-effort)
-      void (async () => {
-        try {
-          const fileLtm = await memdir.readMemoryIndex();
-          if (fileLtm && fileLtm.trim().length > 0 && fileLtm !== ltm) {
-            // update globalState cache to reflect file content
-            await this._context.globalState.update('amiAiClaw.longTermMemory', fileLtm);
-            this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: fileLtm, persona: '', historyCount: this._chatHistory.length, historyPreview: '', sessionId: this._activeSessionId, usageStats: this._usageStats });
-          }
-        } catch (e) { /* ignore */ }
-      })();
-      return ltm;
-    } catch (e) {
-      return this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
-    }
+    // _ltmCache is loaded eagerly at init and kept in sync by saveLongTermMemory()
+    return this._ltmCache || (this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '');
   }
 
   private async saveLongTermMemory(text: string): Promise<void> {
-    // Save to MEMORY.md (file-based) and update globalState cache for compatibility
+    this._ltmCache = text;  // keep in-memory cache in sync immediately
     try {
       await memdir.saveMemoryIndex(text);
     } catch (e) {
@@ -1697,16 +1745,18 @@ function ollamaGetContextLength(baseUrl: string, model: string): Promise<number>
         res.on('end', () => {
           try {
             const json = JSON.parse(data);
-            // Ollama 0.3+：model_info 物件中的 *.context_length 欄位
-            const modelInfo: Record<string, unknown> = json.model_info ?? {};
+            // Priority 1: parameters.num_ctx = actual loaded window (Modelfile/user config)
             let len = 0;
-            for (const k of Object.keys(modelInfo)) {
-              if (k.endsWith('.context_length')) { len = Number(modelInfo[k]); break; }
-            }
-            // 舊版 fallback：parameters 段落的 num_ctx
-            if (!len && json.parameters) {
+            if (json.parameters) {
               const m = String(json.parameters).match(/num_ctx\s+(\d+)/);
               if (m) { len = Number(m[1]); }
+            }
+            // Priority 2: model_info.*.context_length = architecture capacity (may far exceed loaded window)
+            if (!len) {
+              const modelInfo: Record<string, unknown> = json.model_info ?? {};
+              for (const k of Object.keys(modelInfo)) {
+                if (k.endsWith('.context_length')) { len = Number(modelInfo[k]); break; }
+              }
             }
             if (len > 0) { _modelCtxCache.set(cacheKey, { len, ts: Date.now() }); }
             resolve(len > 0 ? len : 0);
@@ -1908,7 +1958,7 @@ export function ollamaChatCallStream(
             const t = line.trim(); if (!t) continue;
             try {
               const json = JSON.parse(t) as Record<string, unknown>;
-              if (json.error) { streamError = json.error as string; return; }
+              if (json.error) { const e = json.error; streamError = typeof e === 'string' ? e : ((e as Record<string, unknown>).message as string | undefined) ?? JSON.stringify(e); return; }
               const msgFrag = json.message as (ChatMessage & { thinking?: string }) | undefined;
               if (msgFrag) {
                 if (msgFrag.thinking) { accThinking += msgFrag.thinking; if (onThinkChunk) onThinkChunk(msgFrag.thinking); }
@@ -2312,23 +2362,26 @@ function supportsThinking(model: string): boolean {
     m.includes('r1-') || /^r1[:.-]/.test(m);
 }
 
-export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high';
+export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max';
 
 export function getCurrentThinkingLevel(): ThinkingLevel {
   const v = vscode.workspace.getConfiguration('amiAiClaw').get<string>('thinkingLevel', 'medium');
-  return (v === 'off' || v === 'low' || v === 'medium' || v === 'high') ? v : 'medium';
+  return (v === 'off' || v === 'low' || v === 'medium' || v === 'high' || v === 'max') ? v : 'medium';
 }
 
 /**
  * 依使用者「思考等級」設定 + 模型能力，回傳要塞進 Ollama request body 的 think 參數。
  * - off: 強制 think:false（即使模型支援，也跳過思考，省 token & 加速）
- * - low/medium/high: 模型支援才 think:true（Ollama API 目前只接受 boolean，等級差異留給未來）
+ * - low/medium: 傳對應字串（各模型 Jinja 模板通用）
+ * - high/max: 傳 true（布林），讓 Ollama 套用模型預設最大思考力，避免模板等級字串不相容
  * - 模型不支援思考時，不加 think key（讓 Ollama 用模型預設）
  */
-function getOllamaThinkParam(model: string): { think?: boolean } {
+function getOllamaThinkParam(model: string): { think?: boolean | string } {
   const level = getCurrentThinkingLevel();
   if (level === 'off') { return { think: false }; }
   if (!supportsThinking(model)) { return {}; }
+  // 'low'/'medium' are universally supported strings; 'high'/'max' fall back to boolean true
+  if (level === 'low' || level === 'medium') { return { think: level }; }
   return { think: true };
 }
 
@@ -2520,7 +2573,7 @@ export function ollamaGenerateStream(
             if (!t) continue;
             try {
               const json = JSON.parse(t);
-              if (json.error) { streamError = json.error as string; return; }
+              if (json.error) { const e = json.error; streamError = typeof e === 'string' ? e : ((e as Record<string, unknown>).message as string | undefined) ?? JSON.stringify(e); return; }
               // dedicated thinking field (Ollama >= 0.9 with think models)
               if (json.thinking && onThinkChunk) onThinkChunk(json.thinking as string);
               if (json.response) processToken(json.response as string);
@@ -2605,7 +2658,7 @@ export function ollamaChatStream(
             const t = line.trim(); if (!t) continue;
             try {
               const json = JSON.parse(t);
-              if (json.error) { streamError = json.error as string; return; }
+              if (json.error) { const e = json.error; streamError = typeof e === 'string' ? e : ((e as Record<string, unknown>).message as string | undefined) ?? JSON.stringify(e); return; }
               // /api/chat stream format: json.message.thinking + json.message.content
               if (json.message?.thinking && onThinkChunk) onThinkChunk(json.message.thinking as string);
               if (json.message?.content) processToken(json.message.content as string);

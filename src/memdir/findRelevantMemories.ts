@@ -18,16 +18,14 @@ export async function findRelevantMemories(query: string, max = 5): Promise<Sele
       const text = raw.toLowerCase();
       let score = 0;
       for (const t of tokens) { if (text.includes(t)) score += 1; }
-      // prefer newer files slightly
-      score += Math.max(0, Math.min(3, Math.floor((Date.now() - h.mtimeMs) / (1000 * 60 * 60 * 24))));
+      // recency bonus: +3 today → +0 after 3+ days (newer files preferred)
+      const daysSince = (Date.now() - h.mtimeMs) / (1000 * 60 * 60 * 24);
+      if (daysSince < 3) score += Math.round(3 - daysSince);
       if (score > 0) scored.push({ h, score });
     } catch { /* ignore */ }
   }
-  // fallback: if nothing matched, pick most recent files
-  if (scored.length === 0) {
-    const picked = headers.slice(0, max).map(h => ({ path: h.path, excerpt: '', mtimeMs: h.mtimeMs }));
-    return picked;
-  }
+  // return empty rather than injecting files with no content match
+  if (scored.length === 0) return [];
   scored.sort((a,b)=>b.score - a.score || b.h.mtimeMs - a.h.mtimeMs);
   const out: SelectedMemory[] = [];
   for (const s of scored.slice(0, max)) {

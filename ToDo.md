@@ -4,8 +4,6 @@
 ## 📋 Project Roadmap
 
 ### 🟢 Completed Phases
-- [x] **Phase 0: Structural Mapping** (Identify modules, boundaries, and dependencies)
-- [x] **Phase 1: Core Execution Engine Analysis** (`src/chat/*`)
   - *Focus: AgentExecutor loop, cancellation handling, state persistence.*
 
 ### 🟡 In-Progress Phases
@@ -22,3 +20,4 @@
 
 ### 🏁 Final Deliverable
 - [ ] **Final Bug Report Compilation** (Consolidating all findings into a structured `bug.md` with severity levels)
+- [x] TODO placeholder

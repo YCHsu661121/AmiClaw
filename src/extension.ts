@@ -38,8 +38,11 @@ function openAndSend(context: vscode.ExtensionContext, msg: object) {
   void (async () => {
     try {
       await OllamaChatPanel.createOrShow(context);
-      const send = () => OllamaChatPanel.currentPanel?.postMessageToWebview(msg);
-      if (OllamaChatPanel.currentPanel) { send(); } else { setTimeout(send, 700); }
+      const panel = OllamaChatPanel.currentPanel;
+      if (panel) {
+        await panel.waitForWebviewReady();
+        panel.postMessageToWebview(msg);
+      }
     } catch (e) {
       OllamaChatPanel.reportDiagnostic('openAndSend failed', e);
       OllamaChatPanel.revealDiagnostics();

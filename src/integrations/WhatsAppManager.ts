@@ -47,6 +47,8 @@ export class WhatsAppManager {
   private _waConnectedAt = 0;
   /** 連續收到 440 connectionReplaced 的次數；超過 1 次即放棄重連 */
   private _wa440RetryCount = 0;
+  /** 最後一個可回覆的 sendJid，用於主動推送通知（心跳 / Agent 完成） */
+  private _lastActiveSendJid = '';
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -357,6 +359,8 @@ export class WhatsAppManager {
     const pushName = String(msg['pushName'] ?? '');
     const displaySender = pushName ? `${pushName} (+${senderPhone})` : `+${senderPhone}`;
     this._cb.log(`WA incoming from ${displaySender}${fromMe ? ' [note-to-self]' : ''}: ${text} (sendJid=${sendJid})`);
+    // 記住最後可回覆的 JID，供 notifyOwner 主動推送使用
+    if (sendJid) this._lastActiveSendJid = sendJid;
     // 在聊天視窗顯示收到的訊息（panel 可能已關閉，try-catch 防止拋出）
     try { this._cb.postToWebview({ type: 'waIncoming', sender: displaySender, text, remoteJid }); } catch { /* disposed */ }
     // 白名單過濾：fromMe+@lid 必然是本人，直接放行；其他號碼需比對白名單
@@ -521,6 +525,20 @@ export class WhatsAppManager {
       this._waModelOverride = '';
       await send(`❌ 切換失敗：${String(e)}`);
     }
+  }
+
+  /**
+   * 主動推送文字訊息給最後聯絡的 WA 對象（心跳回報 / Agent 完成通知）。
+   * 若未連線或無 sendJid 紀錄則靜默忽略。
+   */
+  notifyOwner(text: string): void {
+    if (!this._waSock || !this._waConnected || !this._lastActiveSendJid) return;
+    this._waSentTexts.add(text);
+    setTimeout(() => { this._waSentTexts.delete(text); }, 30_000);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this._waSock as any).sendMessage(this._lastActiveSendJid, { text }).catch((e: unknown) => {
+      this._cb.log('WA notifyOwner error: ' + String(e));
+    });
   }
 
   /**
@@ -815,8 +833,6 @@ export class WhatsAppManager {
           `  \u{1F916} agent    : ${this._cb.isAgentRunning()}`,
         ];
         return lines.join('\n');
-      }
-
       }
 
       case 'whatsapp_disconnect': {

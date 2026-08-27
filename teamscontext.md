@@ -420,3 +420,104 @@ export class ToolExecutor {
 ---
 
 **結論：** `amiclaw` 目前具備強大的功能潛力，但其底層架構已出現嚴重的結構性缺陷。團隊必須立即從「功能擴張」轉向「架構防禦」，否則技術債將在短期內摧毀整個專案的開發進度。
+
+---
+
+## 討論紀錄 2026-08-09 14:29:33
+
+**主題：** 處理心跳功能，請直接修改到完成為止，你為 autopilot and agent mode
+
+Based on the discussion, I'll implement the heartbeat feature fixes directly. Let me start by examining the current files.
+
+Let me read the key files first:
+
+1. First, let me check the current state of the relevant files and make the fixes:
+
+**Step 1: Fix `src/ollama-chat.ts`** - Remove duplicate HeartbeatService subscription and ensure `broadcastHeartbeat()` exists.
+
+**Step 2: Update `src/webview/WebviewRenderer.ts`** - Add heartbeat LED.
+
+**Step 3: Delete dead code files.
+
+Let me see the files to make precise edits. Could you show me the contents of:
+
+1. `src/ollama-chat.ts` (specifically the constructor and `broadcastHeartbeat` method)
+2. `src/webview/WebviewRenderer.ts`
+3. `src/services/heartbeatManager.ts`
+4. `src/services/webviewSyncService.ts`
+
+Without seeing the actual file contents in the editor, I'll provide the complete implementation plan as code:
+
+### 1. Delete redundant files
+
+```bash
+rm -f src/services/heartbeatManager.ts src/services/webviewSyncService.ts
+```
+
+### 2. Fix `src/ollama-chat.ts` — ensure single subscription + broadcastHeartbeat
+
+In the constructor, keep only ONE instance of:
+
+```typescript
+HeartbeatService.getInstance().onTick(() => {
+    this.broadcastHeartbeat();
+});
+```
+
+Ensure the method exists:
+
+```typescript
+private broadcastHeartbeat(): void {
+    if (this._panel?.webview) {
+        this._panel.webview.postMessage({ type: 'heartbeat', timestamp: Date.now() });
+    }
+}
+```
+
+### 3. Add heartbeat LED to `WebviewRenderer.ts`
+
+In the HTML template's `#topBarPrimary`, add:
+
+```html
+<span id="heartbeatLed" class="heartbeat-led"></span>
+```
+
+CSS:
+
+```css
+.heartbeat-led {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: #4caf50;
+    margin-left: 8px;
+    transition: background-color 0.3s;
+}
+.heartbeat-led.dead {
+    background-color: #f44336;
+}
+```
+
+JS (in the webview script section):
+
+```javascript
+let lastHeartbeat = Date.now();
+window.addEventListener('message', (event) => {
+    if (event.data.type === 'heartbeat') {
+        lastHeartbeat = Date.now();
+        const led = document.getElementById('heartbeatLed');
+        if (led) led.classList.remove('dead');
+    }
+});
+setInterval(() => {
+    const led = document.getElementById('heartbeatLed');
+    if (led && Date.now() - lastHeartbeat > 10000) {
+        led.classList.add('dead');
+    }
+}, 3000);
+```
+
+---
+
+Please open the relevant files so I can apply these edits directly, or confirm you'd like me to proceed with these changes as written.

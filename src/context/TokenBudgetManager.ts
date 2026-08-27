@@ -106,3 +106,13 @@ export function estimateTokensRough(text: string): number {
   }
   return Math.ceil(cjk + other / 4);
 }
+
+/**
+ * 強制截斷字串以符合 Token 限制。
+ * 為確保絕對安全，我們採取「最保守估算」：將字串截斷至 maxTokens 個字元。
+ * 因為即使全為中文字，token 數也只會等於字元數，絕不會超過 maxTokens。
+ */
+export function truncateToTokenLimit(text: string, maxTokens: number): string {
+  if (estimateTokensRough(text) <= maxTokens) return text;
+  return text.substring(0, maxTokens);
+}

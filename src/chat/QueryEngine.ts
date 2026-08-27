@@ -354,14 +354,17 @@ export class QueryEngine {
       const pct = Math.round(tokens / threshold * 100);
       this._callbacks.postToWebview({ type: 'contextPercent', tokens, pct, threshold });
     } catch { /* 非關鍵 */ }
-    const recent = chatHistory.slice(-20);
+    const recent = chatHistory.slice(-40);
 
-    // 嘗試找出與本次 prompt 相關的記憶檔案並注入（非阻塞核心流程，但在此 await 簡單實作）
+    // 注入與本次 prompt 相關的記憶檔案（排除 MEMORY.md，其內容已在 LTM 區塊）
     try {
       const relevant = await findRelevantMemories(expandedPrompt, 5);
       if (relevant && relevant.length > 0) {
-        const memLines = relevant.map(m => `- ${m.path} (mtime=${new Date(m.mtimeMs).toISOString()})\n${m.excerpt.slice(0,800)}\n`).join('\n');
-        systemContent += `\n\n## 注入的相關記憶檔案\n${memLines}`;
+        const filtered = relevant.filter(m => !m.path.endsWith('MEMORY.md'));
+        if (filtered.length > 0) {
+          const memLines = filtered.map(m => `- ${m.path}\n${m.excerpt.slice(0, 800)}\n`).join('\n');
+          systemContent += `\n\n## 注入的相關記憶檔案\n${memLines}`;
+        }
       }
     } catch (e) { /* ignore */ }
 
@@ -432,13 +435,21 @@ export class QueryEngine {
           && this._services.ollamaChatCallStream
           && this._services.executeTool
           && this._services.agentTools;
+        const askReason = [
+          !askToolsEnabled && 'askModeTools=false',
+          !this._services.ollamaChatCallStream && 'ollamaChatCallStream未注入',
+          !this._services.executeTool && 'executeTool未注入',
+          !this._services.agentTools && 'agentTools未注入',
+        ].filter(Boolean).join(', ');
+        this._callbacks.log(`[Ask] model=${model} canUseTools=${!!canUseTools}${askReason ? ` reason=(${askReason})` : ''}`);
         if (canUseTools) {
           fullResponse = await this.handleAskWithTools(
             baseUrl,
             model,
             systemContent,
             recent,
-            expandedPrompt
+            expandedPrompt,
+            false // handleSend 為 Ask 模式
           );
         } else if (isOpenAIModel(model)) {
           const response = await this._services.openaiCompatChatCallStream(
@@ -498,7 +509,8 @@ export class QueryEngine {
     model: string,
     systemContent: string,
     recent: QueryEngineChatMessage[],
-    userPrompt: string
+    userPrompt: string,
+    isAgentMode = false
   ): Promise<string> {
     const READONLY_TOOL_NAMES = new Set([
       'get_active_file', 'read_file', 'read_files', 'list_dir',
@@ -506,10 +518,14 @@ export class QueryEngine {
       'git_status', 'git_diff', 'git_log',
     ]);
     const allTools = (this._services.agentTools as Array<{ function?: { name?: string } }>) ?? [];
-    const tools = allTools.filter((t) => t.function?.name && READONLY_TOOL_NAMES.has(t.function.name));
+    // Agent 模式使用完整工具集；Ask 模式僅保留唯讀子集
+    const tools = isAgentMode
+      ? allTools
+      : allTools.filter((t) => t.function?.name && READONLY_TOOL_NAMES.has(t.function.name));
     const messages: QueryEngineChatMessage[] = [];
     if (systemContent.trim()) {
-      messages.push({ role: 'system', content: systemContent + '\n\n## 工具使用守則（Ask 模式）\n- 你有唯讀工具：read_file、read_files、list_dir、search_workspace、search_regex、git_status、git_diff、git_log。\n- 任何修改檔案/執行命令的請求請拒絕並提示使用者切換到 🤖 Agent 模式。\n- 需要查看多個檔案時優先用 read_files 一次取得，避免連續 read_file。' });
+      const askOnlyGuide = isAgentMode ? '' : '\n\n## 工具使用守則（Ask 模式）\n- 你有唯讀工具：read_file、read_files、list_dir、search_workspace、search_regex、git_status、git_diff、git_log。\n- 任何修改檔案/執行命令的請求請拒絕並提示使用者切換到 🤖 Agent 模式。\n- 需要查看多個檔案時優先用 read_files 一次取得，避免連續 read_file。';
+      messages.push({ role: 'system', content: systemContent + askOnlyGuide });
     }
     for (const m of recent) {
       messages.push({ role: m.role, content: m.content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id });
@@ -525,6 +541,7 @@ export class QueryEngine {
 
     const MAX_STEPS = 6;
     let finalText = '';
+    this._callbacks.log(`[Ask tools] 開始 model=${model} isAgentMode=${isAgentMode} tools=${tools.length}/${allTools.length} steps=${MAX_STEPS}`);
     for (let step = 0; step < MAX_STEPS; step++) {
       let response: QueryEngineChatMessage;
       try {
@@ -534,9 +551,11 @@ export class QueryEngine {
           if (!this._services.copilotChatCallWithCts) {
             throw new Error('copilotChatCallWithCts service not injected');
           }
+          this._callbacks.log(`[Ask tools] step=${step} → Copilot model=${copilotId}`);
           const copilotMsg = await this._services.copilotChatCallWithCts(copilotId, messages, tools);
           response = { role: 'assistant', content: copilotMsg?.content ?? '', tool_calls: copilotMsg?.tool_calls };
         } else if (isOpenAIModel(model)) {
+          this._callbacks.log(`[Ask tools] step=${step} → OpenAI-compat model=${stripProviderPrefix(model)} url=${baseUrl}`);
           response = await this._services.openaiCompatChatCallStream(
             baseUrl,
             stripProviderPrefix(model),
@@ -547,6 +566,7 @@ export class QueryEngine {
             onThinkChunk
           );
         } else {
+          this._callbacks.log(`[Ask tools] step=${step} → Ollama model=${model} url=${baseUrl}`);
           response = await this._services.ollamaChatCallStream!(baseUrl, model, messages, tools, onThinkChunk, onTextChunk, onStats);
         }
       } catch (error) {
@@ -579,6 +599,13 @@ export class QueryEngine {
             onStats
           );
         }
+        if (/no user query found/i.test(message) && step < MAX_STEPS - 1) {
+          // Qwen3/Llama4 Jinja template requires a user message after tool results
+          this._callbacks.log(`[Ask tools] Jinja 模板缺少 user 訊息，注入繼續指令重試 (step=${step})`);
+          messages.push({ role: 'user', content: `請根據工具結果繼續：${userPrompt.slice(0, 200)}` });
+          if (isOllamaModel(model)) { this._callbacks.postToWebview({ type: 'streamStart', thinking: true }); }
+          continue;
+        }
         throw error;
       }
 
@@ -588,7 +615,7 @@ export class QueryEngine {
         for (const tc of response.tool_calls) {
           const fn = tc.function;
           const args = (typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments) as Record<string, unknown>;
-          if (!READONLY_TOOL_NAMES.has(fn.name)) {
+          if (!isAgentMode && !READONLY_TOOL_NAMES.has(fn.name)) {
             const denyMsg = `❌ Ask 模式不允許 ${fn.name}（寫入/執行類）。請切換到 🤖 Agent 模式。`;
             this._callbacks.postToWebview({ type: 'agentStep', icon: '🚫', title: denyMsg, fullPath: '' });
             this._callbacks.postToWebview({ type: 'agentStepDone', result: denyMsg, isError: true });
@@ -880,9 +907,9 @@ export class QueryEngine {
       this._modelContextLength = 0;
     }
 
-    // 觸發摘要的門檻：若已知 context window 則取其 75%，否則沿用設定值
+    // 觸發摘要的門檻：60% 不夠，需預留 tool defs (~7K tokens) + 程式碼密度差異 (3 vs 4 chars/token)
     const threshold = this._modelContextLength > 0
-      ? Math.floor(this._modelContextLength * 0.75)
+      ? Math.floor(this._modelContextLength * 0.45)
       : cfgThreshold;
 
     if (chatHistory.length < 4) { return; }
@@ -893,7 +920,15 @@ export class QueryEngine {
     // 保留最新 4 則，對前面的摘要
     const keepTail = chatHistory.slice(-4);
     const toSummarize = chatHistory.slice(0, chatHistory.length - 4);
-    if (toSummarize.length < 2) { return; }
+    if (toSummarize.length < 2) {
+      // Too few old messages to summarize; truncate the longest recent messages to free context
+      for (const msg of chatHistory) {
+        if ((msg.content?.length ?? 0) > 8000) {
+          msg.content = (msg.content ?? '').slice(0, 8000) + '\n…（截斷以釋放 context）';
+        }
+      }
+      return;
+    }
 
     this._callbacks.postToWebview({
       type: 'agentStep',

@@ -5,7 +5,8 @@ import { formatCompactSummary } from '../context/HistoryCompactor';
 import { buildWorkspaceDigest, getCurrentContextDepth, fmtSize } from '../context/WorkspaceDigest';
 import { buildAgentSystemPrompt, buildShadowSupervisorPrompt } from '../context/SystemPromptBuilder';
 import { AgentCarryover } from './AgentCarryover';
-import { isRefusalResponse } from './RefusalDetector';
+import { isRefusalResponse, isChoiceConfirmation } from './RefusalDetector';
+import { HeartbeatService } from '../services/HeartbeatService';
 import {
   buildSessionNotes,
   loadSessionNotes,
@@ -42,7 +43,7 @@ export interface AgentExecutorCallbacks {
   expandFileMentions?: (prompt: string) => Promise<string>;
   /** Session Notes — 啟動時載入上次筆記（可空字串） */
   getSessionNotes: () => Promise<string>;
-  /** 取得目前未結案的 manage_todo 項目，供影子審查勗用 */
+  /** 取得目前未結案的 manage_todo 項目，供影子審查用途 */
   getAgentTodos?: () => Array<{id: number; text: string; done: boolean}>;
   /** Session Notes — Agent 執行中每 N 次工具呼叫後自動呼叫，持久化筆記 */
   onSessionNotesUpdate: (notes: string) => Promise<void>;
@@ -202,6 +203,10 @@ export class AgentExecutor {
     this._callbacks.setWaAgentMode(waTriggered);
     this._callbacks.postToWebview({ type: 'agentStatus', running: true });
     const agentStart = Date.now();
+    HeartbeatService.getInstance().setAgentInfo({
+      running: true, step: 0, model: '', shadowRunning: false,
+      shadowCount: 0, lastActivity: '初始化', startedAt: agentStart,
+    });
 
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const urls = this._services.getOllamaUrls(cfg);
@@ -337,10 +342,12 @@ export class AgentExecutor {
     try {
       this._shadowInterventions = 0;
         this._shadowJustInjected = false;
+      let _jsonToolErrRetries = 0; // retry counter for malformed tool-call JSON from Ollama
       for (let step = 0; step < 1000000000 && !this._agentCancel; step++) {
         let response: AgentExecutorChatMessage | undefined;
         const isOllama = !model.startsWith('copilot::') && !isOpenAICompat;
         this._callbacks.log(`[Agent step=${step}] model="${model}" isOpenAI=${isOpenAICompat} isOllama=${isOllama} msgs=${this._agentMessages.length}`);
+        HeartbeatService.getInstance().setAgentInfo({ step, model, lastActivity: `step ${step} 請求中` });
         await this.autoSummarizeHistory(model, baseUrl);
         this._postContextPercent();
 
@@ -413,6 +420,32 @@ export class AgentExecutor {
           }
           if (/token|limit|context|exceed/i.test(message) && this._agentMessages.length > 4) {
             await this.autoSummarizeHistory(model, baseUrl);
+            if (isOllama || isOpenAICompat) {
+              this._callbacks.postToWebview({ type: 'streamStart', thinking: true });
+            }
+            response = model.startsWith('copilot::')
+              ? await this._services.copilotChatCallWithCts(model.slice('copilot::'.length), this._agentMessages, this._services.agentTools)
+              : isOpenAICompat
+                ? await this._services.openaiCompatChatCallStream(baseUrl, openAiModel, this._agentMessages, this._services.agentTools, onTextChunk, onStats, onThinkChunk)
+                : await this._services.ollamaChatCallStream(baseUrl, model, this._agentMessages, this._services.agentTools, onThinkChunk, onTextChunk, onStats);
+          } else if (/invalid tool call|unexpected end of json|malformed.*tool|tool.*json|json.*parse/i.test(message) && _jsonToolErrRetries < 5) {
+            _jsonToolErrRetries++;
+            this._callbacks.log(`[Agent] Ollama tool-call JSON 錯誤，第 ${_jsonToolErrRetries}/5 次重試，等待 100s… (${message.slice(0, 120)})`);
+            this._callbacks.postToWebview({ type: 'agentStepProgress', text: `⚠️ 模型 tool-call JSON 格式錯誤，100s 後重試 (${_jsonToolErrRetries}/5)…` });
+            await new Promise(r => setTimeout(r, 100_000));
+            if (this._agentCancel) break;
+            if (isOllama || isOpenAICompat) {
+              this._callbacks.postToWebview({ type: 'streamStart', thinking: true });
+            }
+            // continue loop — step 不遞增，不 throw
+            continue;
+          } else if (/no user query found/i.test(message)) {
+            // Qwen3/Llama4 Jinja template requires a user message; inject one and retry
+            this._callbacks.log(`[Agent] Jinja 模板缺少 user 訊息，注入繼續指令重試`);
+            this._callbacks.postToWebview({ type: 'agentStepProgress', text: '⚠️ 模型要求 user 訊息，注入繼續指令重試…' });
+            const lastUser = [...this._agentMessages].reverse().find(m => m.role === 'user');
+            const task = typeof lastUser?.content === 'string' ? lastUser.content.slice(0, 200) : '';
+            this._agentMessages.push({ role: 'user', content: `請根據工具結果繼續執行任務：${task || '根據上下文繼續'}` });
             if (isOllama || isOpenAICompat) {
               this._callbacks.postToWebview({ type: 'streamStart', thinking: true });
             }
@@ -535,6 +568,12 @@ export class AgentExecutor {
               });
             }
           }
+          // Qwen3/Llama4 Jinja templates require a user message; inject one if last is 'tool'
+          if (this._agentMessages[this._agentMessages.length - 1]?.role === 'tool') {
+            const _lastUser = [...this._agentMessages].reverse().find(m => m.role === 'user');
+            const _task = typeof _lastUser?.content === 'string' ? _lastUser.content.slice(0, 200) : '';
+            this._agentMessages.push({ role: 'user', content: `工具已完成，請繼續執行任務：${_task || '根據上下文繼續'}` });
+          }
           continue;
         }
 
@@ -594,6 +633,14 @@ export class AgentExecutor {
           continue;
         }
 
+        // ── 選項確認偵測：模型知道怎麼做但在等授權，自動選最佳選項繼續 ──
+        if (isChoiceConfirmation(text) && step < 5) {
+          this._callbacks.log(`AgentExecutor: 偵測到選項確認（step=${step}），自動授權繼續`);
+          this._agentMessages.pop();
+          this._agentMessages.push({ role: 'user', content: '已授權。請自行選擇你認為最合適的選項，立即開始執行，不需再次詢問確認。' });
+          continue;
+        }
+
         const tokenEstimate = Math.ceil(this._services.estimateTokens(rawText));
         this._agentMessages.push({ role: 'assistant', content: rawText });
 
@@ -633,7 +680,20 @@ export class AgentExecutor {
           || _pendingTodos.length > 0);
         if (shadowEnabled && shadowWorthy && this._shadowInterventions < AgentExecutor.SHADOW_MAX && !this._agentCancel) {
           this._callbacks.postToWebview({ type: 'agentStepProgress', text: '🕵️ 影子督促：檢查分析完整性…' });
-          const verdict = await this._runShadowSupervisor(expandedPrompt, finalText, shadowModel, shadowBaseUrl, shadowIsOpenAICompat, _pendingTodos);
+          HeartbeatService.getInstance().setAgentInfo({
+            shadowRunning: true,
+            lastActivity: `影子督促第${this._shadowInterventions + 1}次審查中`,
+          });
+          // null = 超時或失敗，等 100s 重試，最多 3 次
+          let verdict = await this._runShadowSupervisor(expandedPrompt, finalText, shadowModel, shadowBaseUrl, shadowIsOpenAICompat, _pendingTodos);
+          for (let _shadowRetry = 1; verdict === null && _shadowRetry < 3; _shadowRetry++) {
+            this._callbacks.log(`[ShadowSupervisor] 第 ${_shadowRetry} 次重試，等待 100s…`);
+            this._callbacks.postToWebview({ type: 'agentStepProgress', text: `🕵️ 影子督促無回應，100s 後重試 (${_shadowRetry}/3)…` });
+            await new Promise(r => setTimeout(r, 100000));
+            if (this._agentCancel) break;
+            verdict = await this._runShadowSupervisor(expandedPrompt, finalText, shadowModel, shadowBaseUrl, shadowIsOpenAICompat, _pendingTodos);
+          }
+          HeartbeatService.getInstance().setAgentInfo({ shadowRunning: false });
           if (verdict && !verdict.complete) {
             this._shadowInterventions++;
             this._callbacks.log(`[ShadowSupervisor] 第 ${this._shadowInterventions} 次督促 — 缺口：${verdict.missing}`);
@@ -700,10 +760,9 @@ export class AgentExecutor {
       this._agentCancel = false;
       this._callbacks.setWaAgentMode(false);
       this._callbacks.postToWebview({ type: 'agentStatus', running: false });
+      HeartbeatService.getInstance().setAgentInfo({ running: false, shadowRunning: false, lastActivity: '已完成' });
     }
   }
-
-  // Fix 2: 有界筆記佇列——超過 CAP 時捨棄最舊的 pending，保留最新狀態
   private _enqueueNotes(updater: () => Promise<void>): void {
     if (this._notesQueue.length >= AgentExecutor.NOTES_QUEUE_CAP) {
       this._notesQueue.shift(); // 最新 notes 永遠包含舊資訊，捨棄中間版本安全
@@ -791,7 +850,7 @@ export class AgentExecutor {
       return { complete: false, missing, nextInstruction: '請繼續完成剩餘工作。' };
     }
 
-    const TIMEOUT_MS = 20000;
+    const TIMEOUT_MS = 300000;
     const prompt = buildShadowSupervisorPrompt(task.slice(0, 1200), finalAnswer.slice(0, 4000), pendingTodos);
 
     const doCall = async (): Promise<{ complete: boolean; missing: string; nextInstruction: string } | null> => {
@@ -800,14 +859,6 @@ export class AgentExecutor {
         if (model.startsWith('copilot::')) {
           const res = await this._services.copilotChatCallWithCts(
             model.slice('copilot::'.length),
-            [{ role: 'user', content: prompt }],
-            [],
-          );
-          raw = res.content ?? '';
-        } else if (isOpenAICompat) {
-          const res = await this._services.openaiCompatChatCallStream(
-            baseUrl,
-            model.slice('openai::'.length),
             [{ role: 'user', content: prompt }],
             [],
           );
@@ -835,14 +886,17 @@ export class AgentExecutor {
       }
     };
 
-    // 20s timeout 防止 Ollama/Copilot 長時間阻塞
-    const timeoutPromise = new Promise<null>(resolve =>
-      setTimeout(() => {
-        this._callbacks.log('[ShadowSupervisor] 超時 (>20s)，降級單人格');
+    // 300s timeout 防止 Ollama/Copilot 長時間阻塞；Promise.race 後必須 clearTimeout 避免殭屍 log
+    let _timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<null>(resolve => {
+      _timeoutHandle = setTimeout(() => {
+        this._callbacks.log('[ShadowSupervisor] 超時 (>300s)，降級單人格');
         resolve(null);
-      }, TIMEOUT_MS)
-    );
-    return Promise.race([doCall(), timeoutPromise]);
+      }, TIMEOUT_MS);
+    });
+    const result = await Promise.race([doCall(), timeoutPromise]);
+    clearTimeout(_timeoutHandle);
+    return result;
   }
 
   public async startAuto(initialPrompt: string, modelOverride?: string): Promise<void> {
@@ -1005,9 +1059,9 @@ export class AgentExecutor {
       this._modelContextLength = 0;
     }
 
-    // 觸發摘要的門檻：若已知 context window 則取其 75%，否則沿用設定值
+    // 觸發摘要的門檻：60% 不夠，需預留 tool defs (~7K tokens) + 程式碼密度差異 (3 vs 4 chars/token)
     const threshold = this._modelContextLength > 0
-      ? Math.floor(this._modelContextLength * 0.75)
+      ? Math.floor(this._modelContextLength * 0.45)
       : cfgThreshold;
 
     const systemMessage = this._agentMessages[0];
@@ -1064,6 +1118,10 @@ export class AgentExecutor {
         trimmed = trimmed.slice(dropCount);
         while (trimmed.length > 0 && trimmed[0].role === 'tool') { trimmed = trimmed.slice(1); }
       }
+      // 部分模型（Qwen3、Llama4 等）的 Jinja 模板要求至少一則 user 訊息
+      if (!trimmed.some(m => m.role === 'user')) {
+        trimmed = [{ role: 'user', content: '[上下文已壓縮，請繼續執行任務]' }, ...trimmed];
+      }
       this._agentMessages = [systemMessage, ...trimmed];
       this._agentMessagesBySession[this._callbacks.getActiveSessionId()] = this._agentMessages;
     };
@@ -1081,7 +1139,19 @@ export class AgentExecutor {
           && !String(c).startsWith('[影子督促')
           && !String(c).startsWith('[自動摘要');  // 保護摘要錨點（Fix 5）
     });
-    if (toSummarize.length < 2) { return; }
+    if (toSummarize.length < 2) {
+      // Too few old messages to summarize; truncate oversized tool results to free context
+      for (const msg of this._agentMessages) {
+        if (msg.role === 'tool' && msg.content !== MC_CLEARED && (msg.content?.length ?? 0) > 8000) {
+          msg.content = msg.content!.slice(0, 8000) + '\n…（工具結果已截斷以釋放 context）';
+        }
+      }
+      const afterTokens = this._services.estimateTokens(
+        (systemMessage?.content ?? '') + this._agentMessages.slice(1).map(m => m.content ?? '').join('')
+      );
+      if (afterTokens >= threshold) { dropFallback(this._agentMessages.slice(1)); }
+      return;
+    }
 
     this._callbacks.postToWebview({ type: 'agentStep', icon: '📝', title: `對話歷史過長（≈${totalTokens} tokens），自動摘要舊訊息中…`, fullPath: '' });
 

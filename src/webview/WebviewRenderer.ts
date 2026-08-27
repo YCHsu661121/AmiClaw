@@ -94,6 +94,17 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       #sendBtn:disabled{opacity:0.4;cursor:default}
 /* TEST_MODIFICATION: Added active scale effect */
 #sendBtn:active{transform:scale(0.95);transition:transform 0.1s}
+      #breathLight{position:relative;width:18px;height:18px;align-self:center;flex-shrink:0}
+      #breathLight .bl-ring{position:absolute;inset:1px;border:1px solid var(--vscode-button-background,#0e639c);border-radius:50%;transform:rotate(-28deg) scaleY(0.55);opacity:0.3;transition:opacity 0.5s,border-color 0.5s}
+      #breathLight .bl-core{position:absolute;left:50%;top:50%;width:5px;height:5px;margin:-2.5px 0 0 -2.5px;border-radius:50%;background:var(--vscode-button-background,#0e639c);animation:blCoreIdle 3s ease-in-out infinite;transition:background 0.5s}
+      #breathLight .bl-ewrap{position:absolute;inset:1px;transform:rotate(-28deg) scaleY(0.55)}
+      #breathLight .bl-e{position:absolute;left:50%;top:50%;width:3px;height:3px;margin:-1.5px 0 0 -1.5px;border-radius:50%;background:var(--vscode-button-background,#0e639c);animation:blSpin 3s linear infinite;transition:background 0.5s,box-shadow 0.5s}
+      @keyframes blSpin{from{transform:rotate(0deg) translateX(7px)}to{transform:rotate(360deg) translateX(7px)}}
+      @keyframes blCoreIdle{0%,100%{transform:scale(0.85);opacity:0.45}50%{transform:scale(1.2);opacity:0.75}}
+      #breathLight.thinking .bl-ring{opacity:0.95;border-color:var(--vscode-progressBar-background,var(--vscode-button-background,#0e639c))}
+      #breathLight.thinking .bl-core{background:var(--vscode-progressBar-background,var(--vscode-button-background,#0e639c));animation:blCoreActive 1.1s ease-in-out infinite}
+      #breathLight.thinking .bl-e{background:var(--vscode-progressBar-background,var(--vscode-button-background,#0e639c));animation-duration:0.85s;box-shadow:0 0 4px var(--vscode-progressBar-background,var(--vscode-button-background,#0e639c))}
+      @keyframes blCoreActive{0%,100%{transform:scale(1);opacity:0.9}50%{transform:scale(1.55);opacity:1;box-shadow:0 0 6px var(--vscode-progressBar-background,var(--vscode-button-background,#0e639c))}}
       #statusBar{font-size:11px;opacity:0.75;padding:1px 4px;text-align:center;min-height:14px}
       #contextBar{display:flex;align-items:center;gap:5px;padding:1px 4px;font-size:10px;opacity:0.6;height:12px}
       #contextBar .ctx-label{white-space:nowrap;letter-spacing:0.03em}
@@ -447,11 +458,12 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           <div class="toolbar-group" aria-label="附加與思考">
             <button class="icon-btn" id="pickFile" title="附加檔案" aria-label="附加檔案">📎</button>
             <button class="icon-btn" id="toggleStream" title="切換串流模式" aria-label="切換串流模式">⚡</button>
-            <select id="thinkLevelSelect" aria-label="思考等級" title="思考等級：off 強制關閉、low/medium/high 啟用思考（thinking 模型生效，等級差異留待 Ollama API 支援）" style="font-size:12px;padding:3px 6px;border-radius:4px">
+            <select id="thinkLevelSelect" aria-label="思考等級" title="思考等級：off 強制關閉、low/medium/high/max 傳對應等級給 Ollama（thinking 模型生效）" style="font-size:12px;padding:3px 6px;border-radius:4px">
               <option value="off">🚫 不思考</option>
               <option value="low">💭 低</option>
               <option value="medium" selected>🧠 中</option>
               <option value="high">🌌 高</option>
+              <option value="max">🔥 最大</option>
             </select>
             <select id="contextDepthSelect" aria-label="深度解析" title="深度解析（注入到 system prompt）：file = 只附帶作用中檔案；outline = 加上工作區結構摘要（檔案樹 + 重要檔 outline）；full = 把整個工作區原始碼倒進 context（受 deepAnalysisMaxKb 容量上限保護）" style="font-size:12px;padding:3px 6px;border-radius:4px">
               <option value="file" selected>📄 一般</option>
@@ -551,6 +563,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       <div id="inputRow">
         <div id="slashPopup"></div>
         <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
+        <div id="breathLight" title="AI 思考狀態" aria-label="AI 思考狀態"><div class="bl-ring"></div><div class="bl-core"></div><div class="bl-ewrap"><div class="bl-e"></div></div></div>
         <button id="sendBtn" title="送出">&#9658;</button>
       </div>
       <div id="permissionBar">
@@ -884,11 +897,11 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
           if (debugPanel && debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
           if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); if (statusBar && msg.tokens) { var _aML = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F'); statusBar.textContent = _aML + '\u2003\u2014\u2003~' + msg.tokens + ' tokens'; } }
-          else if (msg.type === 'streamStart')   { if (msg.thinking !== false) { startStreamThinkingPlaceholder(); } else { clearPendingBubble(); getOrCreateStreamNode(); } }
+          else if (msg.type === 'streamStart')   { setBreathState(true); if (msg.thinking !== false) { startStreamThinkingPlaceholder(); } else { clearPendingBubble(); getOrCreateStreamNode(); } }
           else if (msg.type === 'thinkChunk')    { clearStreamThinkingPlaceholder(); appendThinkChunk(msg.chunk, msg.model); }
           else if (msg.type === 'assistantChunk'){ clearStreamThinkingPlaceholder(); appendChunk(msg.chunk); }
-          else if (msg.type === 'streamAbort')   { clearStreamThinkingPlaceholder(); if (_streamNode && chat.contains(_streamNode)) { _streamNode.remove(); } _streamNode = null; }
-          else if (msg.type === 'streamEnd')     { clearStreamThinkingPlaceholder(); _agentStepNode = null; setSendEnabled(true);
+          else if (msg.type === 'streamAbort')   { setBreathState(false); clearStreamThinkingPlaceholder(); if (_streamNode && chat.contains(_streamNode)) { _streamNode.remove(); } _streamNode = null; }
+          else if (msg.type === 'streamEnd')     { setBreathState(false); clearStreamThinkingPlaceholder(); _agentStepNode = null; setSendEnabled(true);
             var _sbE = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null;
             if (_sbE) {
               var _tb = _sbE.querySelector('.stream-token-badge');
@@ -969,9 +982,11 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'debateEnd')     { _debateRunning = false; var _dsBar2 = document.getElementById('debateSwapBar'); if (_dsBar2) _dsBar2.style.display = 'none'; finalizeDebate(msg.consensus); setSendEnabled(true); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f'; }
           else if (msg.type === 'agentStatus')   {
             if (msg.running) {
+              setBreathState(true);
               if (statusBar) statusBar.textContent = '\u2699\ufe0f Agent \u57f7\u884c\u4e2d\u2026';
               _lastTokenInfo = '';
             } else {
+              setBreathState(false);
               if (statusBar) statusBar.textContent = _lastTokenInfo || (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             }
             setSendEnabled(!msg.running);
@@ -1232,6 +1247,12 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
 
       const sendBtn = document.getElementById('sendBtn');
       const statusBar = document.getElementById('statusBar');
+      const breathLight = document.getElementById('breathLight');
+      function setBreathState(thinking) {
+        if (!breathLight) return;
+        if (thinking) breathLight.classList.add('thinking');
+        else breathLight.classList.remove('thinking');
+      }
       const chatSessionSelect = document.getElementById('chatSessionSelect');
       const newChatBtn = document.getElementById('newChat');
       const renameChatBtn = document.getElementById('renameChat');
@@ -1295,7 +1316,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         _activeChatSessionId = sessionId;
         var s = getActiveSession();
         if (!s) {
-          s = { id: sessionId, title: '聊天', html: '', manualTitle: false };
+          _chatSeq += 1;
+          s = { id: sessionId, title: '聊天 ' + _chatSeq, html: '', manualTitle: false };
           _chatSessions.push(s);
         }
         resetTransientNodes();
@@ -1344,18 +1366,23 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       function deleteActiveSession() {
         if (!window.confirm('確定刪除此聊天？')) return;
         var deletedId = _activeChatSessionId;
+        console.log('[DEBUG] deleteActiveSession called. confirm passed, deletedId:', deletedId, 'Total sessions:', _chatSessions.length);
 
+          console.log('[DEBUG] Last session branch triggered. Clearing all.');
         if (_chatSessions.length <= 1) {
           // 最後一個 session：全部清除，自動建立新空白 session
           chat.innerHTML = ''; _streamNode = null; _agentStepNode = null; _pendingBubble = null;
           vscode.postMessage({ type: 'clearHistory', sessionId: deletedId });
           _chatSessions = [];
           _activeChatSessionId = null;
+          _chatSeq = 0;
           createNewSession();
           return;
         }
 
+        console.log('[DEBUG] Normal deletion branch triggered. Filtering array...');
         _chatSessions = _chatSessions.filter(function(s) { return s.id !== deletedId; });
+        console.log('[DEBUG] Filter complete. New length:', _chatSessions.length, 'Target ID was:', deletedId);
         vscode.postMessage({ type: 'deleteSession', sessionId: deletedId });
         _activeChatSessionId = _chatSessions[_chatSessions.length - 1].id;
         var next = getActiveSession();
@@ -1507,6 +1534,14 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         if (_pendingBubble) { _pendingBubble.remove(); _pendingBubble = null; }
         const node = document.createElement('div'); node.className = 'msg assistant';
         const bub = document.createElement('div'); bub.className = 'bubble';
+        // 更積極地回報忙線：顯示明確的提示文字
+        const statusText = document.createElement('span');
+        statusText.style.display = 'block';
+        statusText.style.fontSize = '13px';
+        statusText.style.color = '#555';
+        statusText.textContent = '\u601d\u8003\u4e2d...';
+        bub.appendChild(statusText);
+
         const dots = document.createElement('span'); dots.className = 'loading-dots';
         dots.innerHTML = '<span></span><span></span><span></span>';
         bub.appendChild(dots); node.appendChild(bub);
@@ -1579,7 +1614,11 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         var _shadowM = _shadowMSel ? _shadowMSel.value : '';
         // 儲存此 session 使用的模型，切換 tab 時可以恢復
         var _curSess = getActiveSession(); if (_curSess && m) { _curSess.model = m; persistSessionState(); }
-        vscode.postMessage({ type: agentMode ? 'agentSend' : 'send', prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId, shadowModel: _shadowM || undefined, images: _imgs.length ? _imgs : undefined });
+        var _msgType = agentMode ? 'agentSend' : 'send';
+        var _modeSelEl = document.getElementById('modeSelect');
+        var _modeSelVal = _modeSelEl ? _modeSelEl.value : 'unknown';
+        dbg('[Send] type=' + _msgType + ' agentMode=' + agentMode + ' modeSelect=' + _modeSelVal + ' model=' + m + ' teamMode=' + teamMode);
+        vscode.postMessage({ type: _msgType, prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId, shadowModel: _shadowM || undefined, images: _imgs.length ? _imgs : undefined, _dbgModeSelect: _modeSelVal, _dbgAgentMode: agentMode });
         prompt.value = ''; resizePrompt(); clearFiles();
         setSendEnabled(false);
         appendLoadingBubble();
@@ -3003,16 +3042,22 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
 
       function updateModelSelect(models, current) {
         if (!modelSelect) return;
+        // 優先保留使用者目前在 UI 已選的值，避免 fetchModels race condition 覆蓋選擇
+        var prevUiValue = modelSelect.value;
         modelSelect.innerHTML = '';
         var hasAny = false;
         var providerGroups = {};
         var providerOrder = [];
+        var allIds = [];
         (models || []).forEach(function(model) {
           var provider = model.provider || inferProviderFromModelId(model.id);
           var groupKey = model.providerLabel || getProviderAppearance(provider).label;
           if (!providerGroups[groupKey]) { providerGroups[groupKey] = []; providerOrder.push(groupKey); }
           providerGroups[groupKey].push(model);
+          allIds.push(model.id);
         });
+        // 決定目標選擇：UI 原選擇 → msg.current → 第一個
+        var targetValue = (prevUiValue && allIds.indexOf(prevUiValue) !== -1) ? prevUiValue : current;
         providerOrder.forEach(function(groupKey) {
           var grp = document.createElement('optgroup');
           grp.label = groupKey;
@@ -3025,7 +3070,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             opt.dataset.providerLabel = model.providerLabel || getProviderAppearance(opt.dataset.provider).label;
             if (model.multiplier) opt.dataset.multiplier = model.multiplier;
             if (thinkMark) opt.dataset.thinking = '1';
-            if (model.id === current || model.label === current) opt.selected = true;
+            if (model.id === targetValue || model.label === targetValue) opt.selected = true;
             grp.appendChild(opt);
             hasAny = true;
           });
@@ -3061,8 +3106,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             displayName: selOpt ? selOpt.textContent : modelSelect.value
           });
         })();
-        // 同步當前選擇到後端設定（確保 handleAgent fallback 不使用舊模型名稱）
-        if (modelSelect.value) { vscode.postMessage({ type: 'saveModel', model: modelSelect.value }); }
+        // 只有當選擇被迫 fallback（原 UI 選擇不在新清單中）才寫回設定，避免 race condition 覆蓋使用者選擇
+        if (modelSelect.value && modelSelect.value !== prevUiValue) { vscode.postMessage({ type: 'saveModel', model: modelSelect.value }); }
       }
 
       function updateConnStatus(ok, url, message) {

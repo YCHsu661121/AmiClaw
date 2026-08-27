@@ -4,3 +4,4 @@ dist/
 *.vsix
 openclaw/
 npm-debug.log
+CleanVeb.log

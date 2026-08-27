@@ -173,7 +173,7 @@ export async function compactHistory<T extends CompactableMessage>(
   options: HistoryCompactOptions = {}
 ): Promise<CompactionResult<T>> {
   const keepRecent = options.keepRecentRounds ?? 4;
-  const dropPre = options.dropPreBoundary ?? true;
+  const dropPre = options.dropPreBoundary ?? false;
   const minMsgs = options.minMessages ?? 10;
 
   const activeMessages = getMessagesAfterCompactBoundary(messages);
