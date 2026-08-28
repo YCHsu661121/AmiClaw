@@ -13,7 +13,7 @@ import { URL } from 'url';
 import { WhatsAppManager } from './integrations/WhatsAppManager';
 import { HeartbeatService } from './services/HeartbeatService';
 import { ToolExecutor, type ToolPermissionDiff } from './tools/ToolExecutor';
-import { AGENT_TOOLS, getToolIcon, formatToolTitle } from './tools/ToolRegistry';
+import { ALL_TOOLS, getToolIcon, formatToolTitle } from './tools/ToolRegistry';
 import { TeamManager } from './team/TeamManager';
 import { DebateEngine } from './debate/DebateEngine';
 import { QueryEngine, QueryEngineServices } from './chat/QueryEngine';
@@ -64,6 +64,8 @@ export class OllamaChatPanel {
   private _chatDirty = false;
   private _persistTimer: NodeJS.Timeout | null = null;
   private _agentPersistTimer: NodeJS.Timeout | null = null;
+  private _webviewSessionsPersistTimer: NodeJS.Timeout | null = null;
+  private _latestWebviewSessions: unknown = null; // dispose 時強制 flush 用
   private _ltmCache = '';  // eager-loaded at init; avoids async race in getLongTermMemory()
   // ── 工作檔對話記錄模式 ────────────────────────────────────────────────────────
   private _todoModePrompt: string | undefined;   // 非 undefined 表示目前在 todo 模式
@@ -96,7 +98,7 @@ export class OllamaChatPanel {
 
   private static getDiagnosticChannel(): vscode.OutputChannel {
     if (!OllamaChatPanel._diag) {
-      OllamaChatPanel._diag = vscode.window.createOutputChannel('AMI-AiClaw Diagnostics');
+      OllamaChatPanel._diag = vscode.window.createOutputChannel('AmiClaw Diagnostics');
     }
     return OllamaChatPanel._diag;
   }
@@ -108,7 +110,7 @@ export class OllamaChatPanel {
       for (const line of OllamaChatPanel.formatError(error).split(/\r?\n/)) {
         channel.appendLine(`  ${line}`);
       }
-      console.error(`[AMI-AiClaw] ${msg}`, error);
+      console.error(`[AmiClaw] ${msg}`, error);
     }
   }
 
@@ -119,7 +121,7 @@ export class OllamaChatPanel {
   static log(msg: string): void {
     if (!vscode.workspace.getConfiguration('amiAiClaw').get<boolean>('enableDebugLog', false)) { return; }
     if (!OllamaChatPanel._log) {
-      OllamaChatPanel._log = vscode.window.createOutputChannel('AMI-AiClaw');
+      OllamaChatPanel._log = vscode.window.createOutputChannel('AmiClaw');
     }
     OllamaChatPanel._log.appendLine(`[${new Date().toISOString()}] ${msg}`);
   }
@@ -192,6 +194,14 @@ export class OllamaChatPanel {
     } catch (e) {
       OllamaChatPanel.log('persistChatHistories error: ' + (e instanceof Error ? e.message : String(e)));
     }
+  }
+
+  private scheduleWebviewSessionsPersist(data: unknown): void {
+    this._latestWebviewSessions = data;
+    if (this._webviewSessionsPersistTimer) { clearTimeout(this._webviewSessionsPersistTimer); }
+    this._webviewSessionsPersistTimer = setTimeout(() => {
+      void this._context.workspaceState.update('amiAiClaw.webviewSessions', data);
+    }, 1500);
   }
 
   private scheduleAgentPersist(): void {
@@ -401,7 +411,7 @@ export class OllamaChatPanel {
         getToolIcon,
         formatToolTitle,
         filterSensitiveInfo,
-        agentTools: AGENT_TOOLS,
+        agentTools: ALL_TOOLS,
         clearModelCtxCache,
       }
     );
@@ -438,7 +448,7 @@ export class OllamaChatPanel {
         filterSensitiveInfo,
         getToolIcon,
         formatToolTitle,
-        agentTools: AGENT_TOOLS,
+        agentTools: ALL_TOOLS,
       }
     );
     // Initialise WhatsApp manager (delegates all WA state and messaging)
@@ -464,7 +474,7 @@ export class OllamaChatPanel {
       getSystemContent: (includeAtlassian = true) => this._queryEngine.buildSystemContent(includeAtlassian),
       trackUsage: (model, tokens, multiplier, toolCall) => this.trackUsage(model, tokens, multiplier, toolCall),
       trackLatency: (model, ms) => this.trackLatency(model, ms),
-      getAgentTools: () => AGENT_TOOLS,
+      getAgentTools: () => ALL_TOOLS,
     }, {
       getOllamaUrls,
       decodeOllamaModel,
@@ -511,7 +521,7 @@ export class OllamaChatPanel {
     }
     OllamaChatPanel.log('Constructor: start');
     OllamaChatPanel.reportDiagnostic('constructor:start');
-    vscode.window.showInformationMessage('AMI-AiClaw: Extension activated');
+    vscode.window.showInformationMessage('AmiClaw: Extension activated');
 
     // Seed long-term memory with Atlassian rules (re-seed when version tag changes)
     const LTM_SEED_VER = 'atlassian-v3';
@@ -560,6 +570,12 @@ export class OllamaChatPanel {
           case 'summarize':
             await this._queryEngine.summarizeText(message.text, message.model);
             break;
+          case 'generateChatTitle':
+            void this._queryEngine.generateChatTitle(message.sessionId as string, message.userMsg as string, message.assistantMsg as string);
+            break;
+          case 'saveWebviewState':
+            this.scheduleWebviewSessionsPersist({ sessions: message.sessions, activeId: message.activeId, seq: message.seq });
+            break;
           case 'startAuto':
             this._agentExecutor.startAuto(message.prompt, message.model);
             break;
@@ -604,18 +620,20 @@ export class OllamaChatPanel {
                 thinkLevel: getCurrentThinkingLevel(),
                 contextDepth: getCurrentContextDepth(),
                 shadowTriggerKeywords: cfg.get<string[]>('shadowTriggerKeywords', defaultKws),
+                webviewSessions: this._context.workspaceState.get('amiAiClaw.webviewSessions') ?? null,
               });
             }
             await this._queryEngine.fetchModelsFromServer();
             break;
           case 'agentSend':
-            OllamaChatPanel.log(`[Route] agentSend (Agent模式) model=${message.model ?? '(none)'}`);
+            OllamaChatPanel.log(`[Route] agentSend (Coordinator+Worker) model=${message.model ?? '(none)'}`);
             this.switchChatSession(message.sessionId);
-            await this._agentExecutor.handleAgent(message.prompt, message.model, true, false, message.shadowModel as string | undefined);
+            await this._agentExecutor.handleCoordinator(message.prompt, message.model);
             this.scheduleAgentPersist();
             break;
           case 'agentStop':
             this._agentExecutor.cancelAgent();
+            this._queryEngine.cancelSend();
             break;
           case 'autoApproveWrite': {
             await vscode.workspace.getConfiguration('amiAiClaw').update('agentAutoApproveWrite', !!message.enabled, vscode.ConfigurationTarget.Workspace);
@@ -774,6 +792,42 @@ export class OllamaChatPanel {
               case 'wa':
                 this._panel.webview.postMessage({ type: 'assistant', text: `📱 WhatsApp：${this._wa.agentMode ? '✅ 已連線（Agent 模式）' : (this._wa ? '已初始化' : '未啟動')}` });
                 break;
+              case 'workflow': {
+                // /workflow list | save <name> | run <name> | delete <name>
+                const { listWorkflows, saveWorkflow, loadWorkflow, deleteWorkflow, buildWorkflowCoordinatorPrompt } = await import('./services/WorkflowEngine');
+                const parts = sc === 'workflow' ? [] : message.args as string[] ?? [];
+                const sub = parts[0] ?? 'list';
+                if (sub === 'list') {
+                  const wfs = await listWorkflows();
+                  const txt = wfs.length === 0
+                    ? '（尚無已儲存的工作流程）\n用 `/workflow save <名稱>` 儲存目前任務為工作流程'
+                    : wfs.map(w => `⚙️ **${w.name}** （${w.steps.length} 步）\n　${w.description}${w.lastRun ? `\n　上次執行：${w.lastRun.slice(0, 10)}` : ''}`).join('\n\n');
+                  this._panel.webview.postMessage({ type: 'assistant', text: `## 工作流程清單\n\n${txt}` });
+                } else if (sub === 'run') {
+                  const name = parts.slice(1).join(' ').trim();
+                  const wf = await loadWorkflow(name);
+                  if (!wf) { this._panel.webview.postMessage({ type: 'assistant', text: `找不到工作流程「${name}」` }); break; }
+                  const prompt = buildWorkflowCoordinatorPrompt(wf);
+                  this.switchChatSession(message.sessionId);
+                  await this._agentExecutor.handleCoordinator(prompt, message.model);
+                  this.scheduleAgentPersist();
+                } else if (sub === 'save') {
+                  const name = parts.slice(1).join(' ').trim() || '未命名';
+                  const steps = this._chatHistory
+                    .filter(m => m.role === 'user' && m.content)
+                    .map(m => ({ prompt: (m.content ?? '').slice(0, 500), description: (m.content ?? '').slice(0, 60) }));
+                  if (steps.length === 0) { this._panel.webview.postMessage({ type: 'assistant', text: '對話記錄為空，無法儲存' }); break; }
+                  await saveWorkflow({ name, description: steps[0].prompt.slice(0, 120), steps, createdAt: new Date().toISOString() });
+                  this._panel.webview.postMessage({ type: 'assistant', text: `✅ 已儲存工作流程「${name}」（${steps.length} 步）` });
+                } else if (sub === 'delete') {
+                  const name = parts.slice(1).join(' ').trim();
+                  await deleteWorkflow(name);
+                  this._panel.webview.postMessage({ type: 'assistant', text: `🗑️ 已刪除工作流程「${name}」` });
+                } else {
+                  this._panel.webview.postMessage({ type: 'assistant', text: '用法：`/workflow list` | `/workflow save <名稱>` | `/workflow run <名稱>` | `/workflow delete <名稱>`' });
+                }
+                break;
+              }
               default:
                 this._panel.webview.postMessage({ type: 'assistant', text: `❓ 未知指令：/${sc}` });
             }
@@ -1167,7 +1221,7 @@ export class OllamaChatPanel {
     // 最後備援：傳統 editor-column panel（注意：使用者關閉此 tab 後實例會 dispose）
     const panel = vscode.window.createWebviewPanel(
       OllamaChatPanel.viewType,
-      'AMI-AiClaw',
+      'AmiClaw',
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
       { enableScripts: true, retainContextWhenHidden: true }
     );
@@ -1179,7 +1233,7 @@ export class OllamaChatPanel {
       OllamaChatPanel.reportDiagnostic('createOrShow: fallback editor panel init failed', e);
       try { panel.dispose(); } catch { /* ignore */ }
       OllamaChatPanel.revealDiagnostics();
-      void vscode.window.showErrorMessage('AMI-AiClaw 啟動失敗，請查看輸出視窗「AMI-AiClaw Diagnostics」。');
+      void vscode.window.showErrorMessage('AmiClaw 啟動失敗，請查看輸出視窗「AmiClaw Diagnostics」。');
       throw e;
     }
   }
@@ -1218,7 +1272,7 @@ export class OllamaChatPanel {
   public static createSilent(_context: vscode.ExtensionContext) {
     if (OllamaChatPanel.currentPanel) { return; }
     // 不主動 focus（會搶走使用者焦點），等使用者點 activity bar 圖示時自然解析
-    OllamaChatPanel.log('AMI-AiClaw 等待使用者開啟側邊欄；開啟後 WhatsApp 等服務會自動初始化');
+    OllamaChatPanel.log('AmiClaw 等待使用者開啟側邊欄；開啟後 WhatsApp 等服務會自動初始化');
   }
 
   /**
@@ -1321,6 +1375,10 @@ export class OllamaChatPanel {
   public dispose() {
     if (this._disposed) { return; }
     this._disposed = true;
+    if (this._latestWebviewSessions) {
+      if (this._webviewSessionsPersistTimer) { clearTimeout(this._webviewSessionsPersistTimer); this._webviewSessionsPersistTimer = null; }
+      void this._context.workspaceState.update('amiAiClaw.webviewSessions', this._latestWebviewSessions);
+    }
     OllamaChatPanel.currentPanel = undefined;
     try {
       this._panel.dispose();

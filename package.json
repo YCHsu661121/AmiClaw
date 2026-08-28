@@ -1,12 +1,12 @@
 {
   "name": "ami-ai-claw",
-  "displayName": "AMI-AiClaw",
-  "description": "AMI-AiClaw - Local Ollama AI assistant for code generation, Agent automation, and multi-model collaboration.",
+  "displayName": "AmiClaw",
+  "description": "AmiClaw - Local Ollama AI assistant for code generation, Agent automation, and multi-model collaboration.",
   "author": "Y.C. Hsu",
   "license": "MIT",
   "version": "1.0.1",
   "publisher": "localdev",
-  "icon": "AMI-AiClaw.png",
+  "icon": "AmiClaw.png",
   "engines": { "vscode": "^1.90.0" },
   "main": "./out/extension.js",
   "scripts": {
@@ -37,7 +37,7 @@
       "activitybar": [
         {
           "id": "amiAiClaw",
-          "title": "AMI-AiClaw",
+          "title": "AmiClaw",
           "icon": "media/ami-ai-claw-activity.svg"
         }
       ]
@@ -46,7 +46,7 @@
       "amiAiClaw": [
         {
           "id": "amiAiClaw.chatView",
-          "name": "AMI-AiClaw",
+          "name": "AmiClaw",
           "type": "webview"
         },
         {
@@ -59,7 +59,7 @@
     "commands": [
       {
         "command": "amiAiClaw.chat",
-        "title": "AMI-AiClaw"
+        "title": "AmiClaw"
       },
       {
         "command": "amiAiClaw.runTodoFile",
@@ -67,7 +67,7 @@
       },
       {
         "command": "amiAiClaw.sendToChat",
-        "title": "傳送到 AMI-AiClaw"
+        "title": "傳送到 AmiClaw"
       },
       {
         "command": "amiAiClaw.newChatSession",
@@ -88,42 +88,42 @@
       },
       {
         "command": "amiAiClaw.focusInput",
-        "title": "AMI-AiClaw: 聚焦輸入框"
+        "title": "AmiClaw: 聚焦輸入框"
       },
       {
         "command": "amiAiClaw.showAuditLog",
-        "title": "AMI-AiClaw: 顯示稽核日誌"
+        "title": "AmiClaw: 顯示稽核日誌"
       },
       {
         "command": "amiAiClaw.jira",
-        "title": "AMI-AiClaw: Jira 快速指令",
+        "title": "AmiClaw: Jira 快速指令",
         "icon": "$(tasklist)"
       }
       ,
       {
         "command": "amiAiClaw.uefiCodeReview",
-        "title": "AMI-AiClaw: UEFI Code Review",
+        "title": "AmiClaw: UEFI Code Review",
         "icon": "$(shield)"
       }
       ,
       {
         "command": "amiAiClaw.debugWriteMemory",
-        "title": "AMI-AiClaw: Debug Write MEMORY.md"
+        "title": "AmiClaw: Debug Write MEMORY.md"
       }
       ,
       {
         "command": "amiAiClaw.migrateMemory",
-        "title": "AMI-AiClaw: Migrate global MEMORY to workspace"
+        "title": "AmiClaw: Migrate global MEMORY to workspace"
       }
       ,
       {
         "command": "amiAiClaw.showFileCount",
-        "title": "AMI-AiClaw: Show workspace file count"
+        "title": "AmiClaw: Show workspace file count"
       }
       ,
       {
         "command": "amiAiClaw.execFileCountShell",
-        "title": "AMI-AiClaw: Exec shell file-count (ls/dir)"
+        "title": "AmiClaw: Exec shell file-count (ls/dir)"
       }
     ],
     "keybindings": [
@@ -186,7 +186,7 @@
     "configuration": [
       {
         "id": "amiAiClaw",
-        "title": "AMI-AiClaw",
+        "title": "AmiClaw",
         "properties": {
           "amiAiClaw.urls": {
             "type": "array",
@@ -455,7 +455,7 @@
           "amiAiClaw.enableDebugLog": {
             "type": "boolean",
             "default": false,
-            "description": "開啟延伸除錯日誌，輸出至 VS Code Output Channel \"AMI-AiClaw\"(視窗 → 輸出 → 下拉選 AMI-AiClaw)。無需時請保持關閉以避免額外計算負擔。"
+            "description": "開啟延伸除錯日誌，輸出至 VS Code Output Channel \"AmiClaw\"(視窗 → 輸出 → 下拉選 AmiClaw)。無需時請保持關閉以避免額外計算負擔。"
           },
           "amiAiClaw.teamRoles": {
             "type": "array",

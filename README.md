@@ -1,4 +1,4 @@
-﻿# AMI-AiClaw — VS Code Extension
+﻿# AmiClaw — VS Code Extension
 
 [English](#english) | [繁體中文](#繁體中文)
 
@@ -11,13 +11,13 @@ An AI chat panel inside VS Code that connects directly to your local [Ollama](ht
 
 ### Installation
 
-1. Download the latest `ami-ai-claw-x.x.x.vsix` from [Releases](https://github.com/YCHsu661121/AMI-AiClaw/releases), or build it yourself
+1. Download the latest `ami-ai-claw-x.x.x.vsix` from [Releases](https://github.com/YCHsu661121/AmiClaw/releases), or build it yourself
 2. VS Code → Extensions (`Ctrl+Shift+X`) → `…` (top-right) → **Install from VSIX…**
 3. Select the `.vsix` file and reload the window
 
 ### Open the Chat Panel
 
-`Ctrl+Shift+P` → type **AMI-AiClaw** → Enter.
+`Ctrl+Shift+P` → type **AmiClaw** → Enter.
 
 ### Modes at a Glance
 
@@ -241,7 +241,7 @@ Search `amiAiClaw` in VS Code `settings.json`. Key settings (defaults shown):
 | `amiAiClaw.systemPrompt` | _(senior-engineer prompt)_ | Role instructions applied to every conversation |
 | `amiAiClaw.sendKey` | `Enter` | Send key (`Enter` or `Ctrl+Enter`) |
 | `amiAiClaw.thinkingLevel` | `medium` | Reasoning level for thinking models (`off` / `low` / `medium` / `high`) |
-| `amiAiClaw.enableDebugLog` | `false` | Verbose logging to the "AMI-AiClaw" output channel |
+| `amiAiClaw.enableDebugLog` | `false` | Verbose logging to the "AmiClaw" output channel |
 
 **Context & memory**
 
@@ -282,7 +282,7 @@ Search `amiAiClaw` in VS Code `settings.json`. Key settings (defaults shown):
 
 ### Troubleshooting
 
-**AMI-AiClaw command not found** → Confirm the extension is enabled in the Extensions panel, then `Ctrl+Shift+P` → Reload Window
+**AmiClaw command not found** → Confirm the extension is enabled in the Extensions panel, then `Ctrl+Shift+P` → Reload Window
 
 **Cannot connect to Ollama** → Verify Ollama is running and `http://localhost:11434` responds
 
@@ -305,13 +305,13 @@ Search `amiAiClaw` in VS Code `settings.json`. Key settings (defaults shown):
 
 ### 安裝
 
-1. 從 [Releases](https://github.com/YCHsu661121/AMI-AiClaw/releases) 下載最新的 `ami-ai-claw-x.x.x.vsix`，或自行打包
+1. 從 [Releases](https://github.com/YCHsu661121/AmiClaw/releases) 下載最新的 `ami-ai-claw-x.x.x.vsix`，或自行打包
 2. VS Code → Extensions（`Ctrl+Shift+X`）→ 右上角 `…` → **Install from VSIX…**
 3. 選擇 `.vsix` 檔案，重新載入視窗即完成
 
 ### 開啟聊天視窗
 
-`Ctrl+Shift+P` → 搜尋 **AMI-AiClaw** → Enter。
+`Ctrl+Shift+P` → 搜尋 **AmiClaw** → Enter。
 
 ---
 
@@ -537,7 +537,7 @@ Ask 與 Agent 模式都能在回答前自動把相關程式碼餵給模型：
 | `amiAiClaw.systemPrompt` | _（資深工程師提示）_ | 每次對話自動套用的角色設定 |
 | `amiAiClaw.sendKey` | `Enter` | 送出鍵（`Enter` 或 `Ctrl+Enter`） |
 | `amiAiClaw.thinkingLevel` | `medium` | 思考模型推理等級（`off` / `low` / `medium` / `high`） |
-| `amiAiClaw.enableDebugLog` | `false` | 輸出詳細日誌到「AMI-AiClaw」輸出頻道 |
+| `amiAiClaw.enableDebugLog` | `false` | 輸出詳細日誌到「AmiClaw」輸出頻道 |
 
 **上下文與記憶**
 
@@ -578,7 +578,7 @@ Ask 與 Agent 模式都能在回答前自動把相關程式碼餵給模型：
 
 ### 疑難排解
 
-**找不到 AMI-AiClaw 命令** → Extensions 頁面確認已啟用，再 `Ctrl+Shift+P` → Reload Window
+**找不到 AmiClaw 命令** → Extensions 頁面確認已啟用，再 `Ctrl+Shift+P` → Reload Window
 
 **無法連線到 Ollama** → 確認 Ollama 正在執行（`http://localhost:11434` 可正常回應）
 

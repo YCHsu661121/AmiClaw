@@ -126,6 +126,14 @@ export class QueryEngine {
     private readonly _services: QueryEngineServices
   ) {}
 
+  public cancelSend(): void {
+    if (this._pendingSendCts) {
+      this._pendingSendCts.cancel();
+      this._pendingSendCts.dispose();
+      this._pendingSendCts = null;
+    }
+  }
+
   private normalizeConfiguredModelId(modelId: string): string {
     return normalizeProviderModelId(modelId);
   }
@@ -705,6 +713,21 @@ export class QueryEngine {
         { title: 'Atlassian 整合（atlassian.atlascode）', content: atlassianRules },
       ],
     });
+  }
+
+  public async generateChatTitle(sessionId: string, userMsg: string, assistantMsg: string): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const urls = this._services.getOllamaUrls(cfg);
+    const rawModel = cfg.get<string>('model') ?? '';
+    const { url: baseUrl, model } = this._services.decodeOllamaModel(rawModel, urls);
+    const prompt = `根據以下對話，用繁體中文生成一個15字以內的簡潔標題，只輸出標題本身，不要加引號或解釋：\n用戶：${userMsg}\n助理：${assistantMsg}`;
+    try {
+      const raw = isOpenAIModel(model)
+        ? (await this._services.openaiCompatChatCallStream(baseUrl, stripProviderPrefix(model), [{ role: 'user', content: prompt }], [])).content ?? ''
+        : (await this._services.ollamaGenerate(baseUrl, model, prompt)).response;
+      const title = raw.trim().replace(/^["「『【〔]|["」』】〕]$/g, '').replace(/\n[\s\S]*/g, '').slice(0, 20);
+      if (title) this._callbacks.postToWebview({ type: 'chatTitleGenerated', sessionId, title });
+    } catch { /* 靜默失敗，保留現有標題 */ }
   }
 
   public async summarizeText(text: string, modelOverride?: string): Promise<void> {

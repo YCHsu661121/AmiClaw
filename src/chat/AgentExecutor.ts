@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+﻿import * as vscode from 'vscode';
 import { DEFAULT_COMPACTABLE_TOOLS } from '../context/MicroCompactor';
 import { estimateTokensRough } from '../context/TokenBudgetManager';
 import { formatCompactSummary } from '../context/HistoryCompactor';
@@ -120,6 +120,8 @@ export class AgentExecutor {
   private static readonly NOTES_QUEUE_CAP = 5;
   private static readonly HOT_STEPS = 2;    // L1: 最新 N 個 assistant turn 保留全文
   private static readonly L2_MIN_LEN = 500; // L2: 工具輸出超過此長度才去噪
+  /** 最少工具呼叫數才值得觸發 LLM 背景記憶更新 */
+  private static readonly LLM_MEMORY_MIN_CALLS = 3;
 
   public constructor(
     private readonly _callbacks: AgentExecutorCallbacks,
@@ -150,6 +152,283 @@ export class AgentExecutor {
 
   public cancelAuto(): void {
     this._autoCancel = true;
+  }
+
+  // ── Coordinator + Worker 架構（claude-code 模式） ────────────────────────
+
+  /**
+   * Coordinator 模式：模型只持有 spawn_worker / coordinator_done 兩個工具，
+   * 負責規劃和拆解任務。每次呼叫 spawn_worker 時，在隔離 context 內啟動一個
+   * 擁有完整工具集的 Worker agent 並等待其完成，再把結果回傳給 Coordinator。
+   */
+  public async handleCoordinator(userPrompt: string, modelOverride?: string): Promise<void> {
+    if (this._agentRunning) {
+      this._callbacks.postToWebview({ type: 'error', text: 'Agent 已在執行中，請等候完成' });
+      return;
+    }
+    this._agentRunning = true;
+    this._agentCancel = false;
+    this._abortController = new AbortController();
+    this._callbacks.postToWebview({ type: 'agentStatus', running: true });
+
+    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+    const urls = this._services.getOllamaUrls(cfg);
+    const rawModel = modelOverride ?? cfg.get<string>('model') ?? 'llama3';
+    const normalizedModel = rawModel.startsWith('copilot/') ? `copilot::${rawModel.slice('copilot/'.length)}` : rawModel;
+    const { url: baseUrl, model } = normalizedModel.startsWith('copilot::')
+      ? { url: urls[0], model: normalizedModel }
+      : this._services.decodeOllamaModel(normalizedModel, urls);
+
+    await this._callbacks.ensureModelReady(baseUrl, model);
+
+    // Coordinator 只有兩個工具
+    const coordinatorTools = [
+      {
+        type: 'function',
+        function: {
+          name: 'spawn_worker',
+          description: 'Spawn a Worker agent that has access to all tools (read, write, execute). The worker will independently complete the subtask and report back. Use this to delegate concrete work.',
+          parameters: {
+            type: 'object',
+            properties: {
+              task:    { type: 'string', description: 'Clear description of the specific subtask for the worker' },
+              context: { type: 'string', description: 'Optional background context or constraints for the worker' },
+            },
+            required: ['task'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'coordinator_done',
+          description: 'Signal that all subtasks have been delegated and completed. Provide a summary of what was accomplished.',
+          parameters: {
+            type: 'object',
+            properties: {
+              summary: { type: 'string', description: 'Summary of all completed work' },
+            },
+            required: ['summary'],
+          },
+        },
+      },
+    ];
+
+    const systemPrompt = [
+      '你是任務協調員（Coordinator）。你的職責是：',
+      '1. 分析使用者的任務，規劃執行步驟',
+      '2. 使用 spawn_worker 將具體工作委派給 Worker agent（Worker 有完整工具存取）',
+      '3. 收到 Worker 回傳結果後，決定下一步或使用 coordinator_done 完成',
+      '',
+      '規則：',
+      '- 你自己不執行任何工具操作，只做規劃和協調',
+      '- 每個 spawn_worker 的 task 描述要清晰具體',
+      '- 複雜任務可以拆成多個連續的 spawn_worker 呼叫',
+      `- 工作區路徑：${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()}`,
+    ].join('\n');
+
+    const coordinatorMessages: AgentExecutorChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userPrompt },
+    ];
+
+    let workerCount = 0;
+    const MAX_STEPS = 20;
+
+    try {
+      for (let step = 0; step < MAX_STEPS && !this._agentCancel; step++) {
+        this._callbacks.postToWebview({ type: 'streamStart', thinking: true });
+
+        let response: AgentExecutorChatMessage;
+        try {
+          if (model.startsWith('copilot::')) {
+            response = await this._services.copilotChatCallWithCts(model.slice('copilot::'.length), coordinatorMessages, coordinatorTools);
+          } else if (model.startsWith('openai::')) {
+            response = await this._services.openaiCompatChatCallStream(
+              baseUrl, model.slice('openai::'.length), coordinatorMessages, coordinatorTools,
+              (c) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk: c }),
+            );
+          } else {
+            response = await this._services.ollamaChatCallStream(
+              baseUrl, model, coordinatorMessages, coordinatorTools,
+              undefined,
+              (c) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk: c }),
+            );
+          }
+        } catch (err) {
+          this._callbacks.postToWebview({ type: 'streamAbort' });
+          throw err;
+        }
+
+        this._callbacks.postToWebview({ type: 'streamEnd' });
+        coordinatorMessages.push({ role: 'assistant', content: response.content ?? null, tool_calls: response.tool_calls });
+
+        if (!response.tool_calls?.length) {
+          // Coordinator finished without calling coordinator_done — still done
+          break;
+        }
+
+        let allDone = false;
+        for (const toolCall of response.tool_calls) {
+          const fn = toolCall.function;
+          const args = (typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments) as Record<string, unknown>;
+
+          if (fn.name === 'coordinator_done') {
+            const summary = String(args.summary ?? '');
+            this._callbacks.postToWebview({ type: 'agentStep', icon: '✅', title: `協調完成：${summary.slice(0, 80)}`, fullPath: '' });
+            coordinatorMessages.push({ role: 'tool', content: 'done', tool_call_id: toolCall.id ?? fn.name });
+            allDone = true;
+            break;
+          }
+
+          if (fn.name === 'spawn_worker') {
+            workerCount++;
+            const task    = String(args.task    ?? '');
+            const context = String(args.context ?? '');
+            this._callbacks.postToWebview({ type: 'agentStep', icon: '🔧', title: `Worker #${workerCount}：${task.slice(0, 80)}`, fullPath: '' });
+
+            const workerResult = await this._runWorker(task, context, model, baseUrl, workerCount);
+
+            const preview = workerResult.length > 300 ? workerResult.slice(0, 300) + '…' : workerResult;
+            this._callbacks.postToWebview({ type: 'agentStepDone', result: preview, isError: false });
+            coordinatorMessages.push({ role: 'tool', content: workerResult, tool_call_id: toolCall.id ?? fn.name });
+          }
+        }
+
+        if (allDone) break;
+      }
+    } catch (error) {
+      this._callbacks.postToWebview({ type: 'error', text: 'Coordinator 錯誤：' + (error instanceof Error ? error.message : String(error)) });
+    } finally {
+      this._agentRunning = false;
+      this._agentCancel = false;
+      this._callbacks.postToWebview({ type: 'agentStatus', running: false });
+    }
+  }
+
+  /** Worker agent：以 CORE_TOOLS 啟動，model 可呼叫 search_tools 動態解鎖 EXTRA_TOOLS */
+  private async _runWorker(
+    task: string,
+    context: string,
+    model: string,
+    baseUrl: string,
+    workerIdx: number,
+  ): Promise<string> {
+    const { LLM_TOOLS, searchExtraTools } = await import('../tools/ToolRegistry');
+    const { loadWorkflow, listWorkflows, buildWorkflowCoordinatorPrompt } = await import('../services/WorkflowEngine');
+
+    const workerSystemPrompt = [
+      `你是 Worker Agent #${workerIdx}。你有 CORE 工具集；如需其他工具，呼叫 search_tools(query) 找到後即可使用。`,
+      '你的職責：接收協調員委派的子任務，使用工具完成後回傳結果文字。',
+      '規則：直接用工具完成工作，完成後輸出清晰的結果摘要。',
+      `工作區：${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()}`,
+    ].join('\n');
+
+    const workerMessages: AgentExecutorChatMessage[] = [
+      { role: 'system', content: workerSystemPrompt },
+      { role: 'user', content: context ? `任務：${task}\n\n背景：${context}` : `任務：${task}` },
+    ];
+
+    // Dynamically extended tool set — starts with LLM_TOOLS, grows as model calls search_tools
+    let activeLlmTools: unknown[] = [...LLM_TOOLS];
+    const MAX_WORKER_STEPS = 30;
+    let finalText = '';
+
+    for (let step = 0; step < MAX_WORKER_STEPS && !this._agentCancel; step++) {
+      let response: AgentExecutorChatMessage;
+      try {
+        if (model.startsWith('copilot::')) {
+          response = await this._services.copilotChatCallWithCts(model.slice('copilot::'.length), workerMessages, activeLlmTools);
+        } else if (model.startsWith('openai::')) {
+          response = await this._services.openaiCompatChatCallStream(
+            baseUrl, model.slice('openai::'.length), workerMessages, activeLlmTools,
+            (c) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk: c }),
+          );
+        } else {
+          response = await this._services.ollamaChatCallStream(
+            baseUrl, model, workerMessages, activeLlmTools,
+            undefined, (c) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk: c }),
+          );
+        }
+      } catch (err) {
+        return `Worker 錯誤：${err instanceof Error ? err.message : String(err)}`;
+      }
+
+      workerMessages.push({ role: 'assistant', content: response.content ?? null, tool_calls: response.tool_calls });
+
+      if (!response.tool_calls?.length) { finalText = response.content ?? ''; break; }
+
+      for (const toolCall of response.tool_calls) {
+        const fn = toolCall.function;
+        const args = (typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments) as Record<string, unknown>;
+
+        // ── search_tools: TF-IDF deferred tool discovery ─────────────────────
+        if (fn.name === 'search_tools') {
+          const query = String(args.query ?? '');
+          const topK = Number(args.top_k ?? 5);
+          const found = searchExtraTools(query, topK);
+          // Add found tools to activeLlmTools (dedup by name)
+          const existing = new Set(activeLlmTools.map((t: any) => t.function?.name));
+          for (const t of found) { if (!existing.has(t.function.name)) activeLlmTools.push(t); }
+          const names = found.map((t: any) => t.function.name).join(', ');
+          const msg = found.length > 0
+            ? `找到 ${found.length} 個工具已解鎖：${names}`
+            : `找不到與「${query}」相關的工具`;
+          this._callbacks.postToWebview({ type: 'agentStep', icon: '🔭', title: `search_tools: ${query}`, fullPath: '' });
+          this._callbacks.postToWebview({ type: 'agentStepDone', result: msg, isError: false });
+          workerMessages.push({ role: 'tool', content: msg, tool_call_id: toolCall.id ?? fn.name });
+          continue;
+        }
+
+        // ── workflow_list ─────────────────────────────────────────────────────
+        if (fn.name === 'workflow_list') {
+          const workflows = await listWorkflows();
+          const result = workflows.length === 0
+            ? '（尚無已儲存的工作流程）'
+            : workflows.map(w => `• ${w.name}（${w.steps.length} 步）: ${w.description}`).join('\n');
+          workerMessages.push({ role: 'tool', content: result, tool_call_id: toolCall.id ?? fn.name });
+          continue;
+        }
+
+        // ── workflow_run: load and return coordinator prompt ──────────────────
+        if (fn.name === 'workflow_run') {
+          const wfName = String(args.name ?? '');
+          const wf = await loadWorkflow(wfName);
+          if (!wf) {
+            workerMessages.push({ role: 'tool', content: `找不到工作流程「${wfName}」，請先用 workflow_list 確認名稱`, tool_call_id: toolCall.id ?? fn.name });
+          } else {
+            const prompt = buildWorkflowCoordinatorPrompt(wf);
+            workerMessages.push({ role: 'tool', content: `工作流程已載入（${wf.steps.length} 步）：\n${prompt}`, tool_call_id: toolCall.id ?? fn.name });
+          }
+          continue;
+        }
+
+        // ── Normal tool execution ─────────────────────────────────────────────
+        this._callbacks.postToWebview({
+          type: 'agentStep',
+          icon: this._services.getToolIcon(fn.name),
+          title: `  ↳ ${this._services.formatToolTitle(fn.name, args)}`,
+          fullPath: (args.path as string) || '',
+        });
+
+        let result: string;
+        try {
+          result = await this._callbacks.executeTool(fn.name, args, this._abortController.signal);
+        } catch (e) {
+          result = '工具錯誤：' + (e instanceof Error ? e.message : String(e));
+        }
+
+        this._callbacks.recordAuditEntry(fn.name, args, false);
+        this._callbacks.postToWebview({ type: 'agentStepDone', result: result.slice(0, 300), isError: false });
+        workerMessages.push({ role: 'tool', content: result, tool_call_id: toolCall.id ?? fn.name });
+
+        if (workerMessages[workerMessages.length - 1]?.role === 'tool') {
+          workerMessages.push({ role: 'user', content: '工具已完成，請繼續執行任務。' });
+        }
+      }
+    }
+
+    return finalText || '（Worker 完成但無文字輸出）';
   }
 
   public switchSession(sessionId: string): void {
@@ -414,7 +693,7 @@ export class AgentExecutor {
           if (/does not support tools/i.test(message)) {
             this._callbacks.postToWebview({
               type: 'error',
-              text: `模型 ${model} 不支援工具呼叫（tools API）。\nAgent 模式需要支援 tools 的模型，例如：qwen2.5:7b、llama3.1:8b、mistral-nemo。\n請在 AMI-AiClaw 設定中更換模型。`,
+              text: `模型 ${model} 不支援工具呼叫（tools API）。\nAgent 模式需要支援 tools 的模型，例如：qwen2.5:7b、llama3.1:8b、mistral-nemo。\n請在 AmiClaw 設定中更換模型。`,
             });
             break;
           }
@@ -703,6 +982,7 @@ export class AgentExecutor {
               icon: '🔍',
               title: `影子督促 ${this._shadowInterventions}/${AgentExecutor.SHADOW_MAX}：${(verdict.missing || '分析未完整').slice(0, 60)}`,
               fullPath: '',
+              isShadow: true,
             });
             this._callbacks.postToWebview({
               type: 'agentStepDone',
@@ -756,6 +1036,10 @@ export class AgentExecutor {
         this._sessionNotesCache = notes;
         this._enqueueNotes(() => this._callbacks.onSessionNotesUpdate(notes));
       }
+      // 背景 LLM 記憶更新（fire-and-forget，不阻塞使用者下一次輸入）
+      if (this._sessionToolCallCount >= AgentExecutor.LLM_MEMORY_MIN_CALLS && !this._agentCancel) {
+        this._enqueueNotes(() => this._updateSessionMemoryWithLLM(model, baseUrl));
+      }
       this._agentRunning = false;
       this._agentCancel = false;
       this._callbacks.setWaAgentMode(false);
@@ -763,6 +1047,71 @@ export class AgentExecutor {
       HeartbeatService.getInstance().setAgentInfo({ running: false, shadowRunning: false, lastActivity: '已完成' });
     }
   }
+
+  /**
+   * 移植自 claude-code SessionMemory：使用 LLM 從近期訊息中抽取結構化記憶。
+   * 透過 _enqueueNotes 以 fire-and-forget 方式執行，不阻塞主流程。
+   */
+  private async _updateSessionMemoryWithLLM(model: string, baseUrl: string): Promise<void> {
+    if (this._sessionToolCallCount < AgentExecutor.LLM_MEMORY_MIN_CALLS) { return; }
+
+    // 集近期訊息，跳過 system，截斷大型 tool 結果
+    const recentMsgs = this._agentMessages
+      .filter(m => m.role !== 'system')
+      .slice(-28)
+      .map(m => {
+        const c = typeof m.content === 'string' ? m.content : '';
+        const label = m.role === 'user' ? 'User' : m.role === 'assistant' ? 'AI' : 'Tool';
+        return `[${label}] ${c.slice(0, m.role === 'tool' ? 280 : 420)}`;
+      });
+    if (recentMsgs.length < 2) { return; }
+
+    const msgContext = recentMsgs.join('\n\n').slice(0, 5500);
+    const prevSummary = this._sessionNotesCache
+      ? `\n\n## 既有筆記（請更新而非重複）\n${this._sessionNotesCache.slice(0, 800)}`
+      : '';
+
+    const prompt = [
+      '你是對話摘要助手。從以下對話中提取關鍵資訊，輸出精簡的繁體中文 markdown 筆記。直接輸出筆記，不要任何前言。',
+      '',
+      '格式（空白節可省略）：',
+      '## 任務目標與進展',
+      '## 重要技術決策',
+      '## 關鍵檔案',
+      '## 問題與解法',
+      '## 下一步',
+      prevSummary,
+      '',
+      '---對話---',
+      msgContext,
+    ].join('\n');
+
+    let raw = '';
+    try {
+      if (model.startsWith('copilot::')) {
+        const res = await this._services.copilotChatCallWithCts(
+          model.slice('copilot::'.length), [{ role: 'user', content: prompt }], []
+        );
+        raw = res.content ?? '';
+      } else if (model.startsWith('openai::')) {
+        const res = await this._services.openaiCompatChatCallStream(
+          baseUrl, model.slice('openai::'.length), [{ role: 'user', content: prompt }], []
+        );
+        raw = res.content ?? '';
+      } else {
+        const res = await this._services.ollamaGenerate(baseUrl, model, prompt);
+        raw = res.response ?? '';
+      }
+    } catch { return; }
+
+    if (!raw.trim()) { return; }
+
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    const enriched = `# Session Memory\n_🤖 LLM 背景摘要 · ${ts} · ${this._sessionToolCallCount} 次工具呼叫_\n\n${raw.trim()}`;
+    this._sessionNotesCache = enriched;
+    await this._callbacks.onSessionNotesUpdate(enriched);
+  }
+
   private _enqueueNotes(updater: () => Promise<void>): void {
     if (this._notesQueue.length >= AgentExecutor.NOTES_QUEUE_CAP) {
       this._notesQueue.shift(); // 最新 notes 永遠包含舊資訊，捨棄中間版本安全
@@ -901,87 +1250,62 @@ export class AgentExecutor {
 
   public async startAuto(initialPrompt: string, modelOverride?: string): Promise<void> {
     if (this._autoRunning) {
-      vscode.window.showInformationMessage('自動執行已在進行中');
+      vscode.window.showInformationMessage('自主連續模式已在執行中');
       return;
     }
 
     this._autoRunning = true;
     this._autoCancel = false;
-    this._callbacks.postToWebview({ type: 'autoStatus', running: true });
+    this._callbacks.postToWebview({ type: 'autoStatus', running: true, tick: 0 });
 
-    const cfg = vscode.workspace.getConfiguration('amiAiClaw');
-    const urls = this._services.getOllamaUrls(cfg);
-    const rawModel = modelOverride ?? cfg.get<string>('model') ?? '';
-    const { url: baseUrl, model } = this._services.decodeOllamaModel(rawModel, urls);
+    const MAX_TICKS = 12;
+    const TICK_INTERVAL_MS = 2500;
+    let completedNormally = false;
 
-    await this._callbacks.ensureModelReady(baseUrl, model);
+    try {
+      // 第一輪：執行初始任務（完整初始化 system prompt）
+      await this.handleAgent(initialPrompt, modelOverride, true, false);
+      if (this._autoCancel) return;
 
-    let currentPrompt = `${initialPrompt}\n\n請開始並持續改進直到完成；若需要存取工作目錄外的檔案，請回傳 'NEEDS_ACCESS: <path>'；完成時回傳 'DONE'.`;
+      for (let tick = 1; tick <= MAX_TICKS && !this._autoCancel; tick++) {
+        // re-lock UI（handleAgent finally 會短暫送出 agentStatus:false）
+        this._callbacks.postToWebview({ type: 'autoStatus', running: true, tick });
 
-    for (let i = 0; i < this._autoMaxIterations && !this._autoCancel; i++) {
-      try {
-        this._callbacks.postToWebview({ type: 'assistant', text: `（自動輪次 ${i + 1}）執行中…` });
-        const result = await this._services.ollamaGenerate(baseUrl, model, currentPrompt);
+        if (this._checkProactiveDone()) { completedNormally = true; break; }
 
-        const accessMatch = /NEEDS_ACCESS:\s*([^\n\r]+)/i.exec(result.response) || /need access to\s*([^\n\r]+)/i.exec(result.response);
-        if (accessMatch) {
-          const requestedPath = (accessMatch[1] || '').trim();
-          this._callbacks.postToWebview({ type: 'assistant', text: result.response, thinking: result.thinking });
-          this._callbacks.postToWebview({ type: 'autoPaused', path: requestedPath });
-          this._autoRunning = false;
+        await new Promise<void>(r => setTimeout(r, TICK_INTERVAL_MS));
+        if (this._autoCancel) break;
 
-          const grant = await vscode.window.showWarningMessage(`Assistant requests access to: ${requestedPath}`, 'Grant Access', 'Cancel');
-          if (grant === 'Grant Access') {
-            const uris = await vscode.window.showOpenDialog({
-              canSelectFolders: true,
-              canSelectMany: false,
-              openLabel: 'Grant Access',
-            });
-            if (!uris || uris.length === 0) {
-              vscode.window.showInformationMessage('未授權存取，已停止自動執行。');
-              break;
-            }
-            const grantedPath = uris[0].fsPath;
-            this._callbacks.postToWebview({ type: 'assistant', text: `User granted access to ${grantedPath}. Resuming...` });
-            currentPrompt = `User granted access to ${grantedPath}. Continue your previous work. If you need specific files, ask the user. If finished, reply 'DONE'.`;
-            this._autoRunning = true;
-            continue;
-          }
+        this._callbacks.postToWebview({ type: 'autoStatus', running: true, tick });
+        const tickPrompt = `[⚙️ 自主 Tick ${tick}/${MAX_TICKS}] 請評估目前狀態：若任務尚未完成，立即呼叫工具繼續執行；若已完成，直接說明完成狀況即可。`;
+        await this.handleAgent(tickPrompt, modelOverride, false, false);
+      }
 
-          this._callbacks.postToWebview({ type: 'assistant', text: 'User denied access. Stopping auto-run.' });
-          break;
-        }
-
-        if (/\bDONE\b/i.test(result.response) || /已完成|完成了/i.test(result.response)) {
-          this._callbacks.postToWebview({ type: 'assistant', text: result.response, thinking: result.thinking });
-          this._callbacks.postToWebview({ type: 'autoStatus', running: false });
-          this._autoRunning = false;
-          break;
-        }
-
-        this._callbacks.postToWebview({ type: 'assistant', text: result.response, thinking: result.thinking });
-        const codeMatch = /\`\`\`([\s\S]*?)\`\`\`/.exec(result.response);
-        if (codeMatch) {
-          try {
-            await this._callbacks.handleInsert(codeMatch[1]);
-          } catch {
-            // ignore insertion errors
-          }
-        }
-
-        currentPrompt = `基於你剛才的回應：\n${result.response}\n\n請繼續改進或完成。若需要存取工作目錄外的檔案，請回傳 'NEEDS_ACCESS: <path>'；若已完成請回傳 'DONE'。只回覆必要內容與程式碼區塊。`;
-        await new Promise((resolve) => setTimeout(resolve, 600));
-      } catch (error) {
-        this._callbacks.postToWebview({ type: 'error', text: `Auto-run error: ${error instanceof Error ? error.message : String(error)}` });
-        break;
+      if (!this._autoCancel && !completedNormally) {
+        completedNormally = this._checkProactiveDone();
+      }
+    } finally {
+      const wasCancelled = this._autoCancel;
+      this._autoRunning = false;
+      this._autoCancel = false;
+      this._callbacks.postToWebview({ type: 'autoStatus', running: false });
+      if (!wasCancelled) {
+        vscode.window.showInformationMessage(completedNormally ? '✅ 自主模式：任務完成' : '⏹️ 自主模式結束（已達最大輪次）');
       }
     }
+  }
 
-    const wasCancelled = this._autoCancel;
-    this._autoRunning = false;
-    this._autoCancel = false;
-    this._callbacks.postToWebview({ type: 'autoStatus', running: false });
-    vscode.window.showInformationMessage(wasCancelled ? '自動執行已被中止。' : '自動執行已結束。');
+  /** 檢查最後一則有內容的 assistant 訊息是否包含完成訊號 */
+  private _checkProactiveDone(): boolean {
+    for (let i = this._agentMessages.length - 1; i >= 0; i--) {
+      const m = this._agentMessages[i];
+      if (m.role === 'user') break; // 上一個使用者訊息之後的回應才算
+      if (m.role === 'assistant' && m.content && !m.tool_calls?.length) {
+        const txt = typeof m.content === 'string' ? m.content : '';
+        return /任務.{0,4}完成|DONE\b|all done|finished\b|已完成|完成了|大功告成/i.test(txt);
+      }
+    }
+    return false;
   }
 
   /**
@@ -1070,12 +1394,22 @@ export class AgentExecutor {
 
     if (totalTokens < threshold) { return; }
 
+    // Helper: post structured compact progress (replaces scattered agentStep calls)
+    const postCompact = (phase: string, extra: Record<string, unknown> = {}) =>
+      this._callbacks.postToWebview({ type: 'compactUpdate', phase, tokensBefore: totalTokens, threshold, ...extra });
+
+    const stages: string[] = [];
+
     // ① Microcompact（零 LLM）
     const freed = this._microcompact(5);
     if (freed > 0) {
       const newTokens = this._services.estimateTokens((systemMessage?.content ?? '') + this._agentMessages.slice(1).map(m => m.content ?? '').join(''));
-      this._callbacks.postToWebview({ type: 'agentStep', icon: '\uD83D\uDDDC\uFE0F', title: `Microcompact\uFF1A\u6E05\u9664\u820A\u5DE5\u5177\u7D50\u679C\uFF0C\u91CB\u51FA\u2248${freed} tokens\uFF08\u5269 \u2248${newTokens}\uFF09`, fullPath: '' });
-      if (newTokens < threshold) { return; }
+      stages.push('microcompact');
+      postCompact('microcompact', { freed, tokensNow: newTokens });
+      if (newTokens < threshold) {
+        postCompact('done', { tokensAfter: newTokens, stages, messagesBefore: remainingMessages.length, messagesAfter: this._agentMessages.length - 1 });
+        return;
+      }
     }
 
     // ② L2: 去噪——regex 清理工具輸出（零 LLM，提高 Token 密度）
@@ -1105,8 +1439,12 @@ export class AgentExecutor {
       }
       if (l23Saved > 0) {
         const nowTokens = this._services.estimateTokens((systemMessage?.content ?? '') + this._agentMessages.slice(1).map(m => m.content ?? '').join(''));
-        this._callbacks.postToWebview({ type: 'agentStep', icon: '🧹', title: `L2/L3：去噪+Outline 釋出 ≈${l23Saved} chars（剩 ≈${nowTokens} tokens）`, fullPath: '' });
-        if (nowTokens < threshold) { return; }
+        stages.push('l2l3');
+        postCompact('l2l3', { freed: l23Saved, tokensNow: nowTokens });
+        if (nowTokens < threshold) {
+          postCompact('done', { tokensAfter: nowTokens, stages, messagesBefore: remainingMessages.length, messagesAfter: this._agentMessages.length - 1 });
+          return;
+        }
       }
     } // end !_isOllamaModel
 
@@ -1118,6 +1456,14 @@ export class AgentExecutor {
         trimmed = trimmed.slice(dropCount);
         while (trimmed.length > 0 && trimmed[0].role === 'tool') { trimmed = trimmed.slice(1); }
       }
+      // If still over threshold with ≤2 messages, truncate large tool results
+      if (this._services.estimateTokens((systemMessage?.content ?? '') + trimmed.map(m => m.content ?? '').join('')) >= threshold) {
+        for (const msg of trimmed) {
+          if (msg.role === 'tool' && (msg.content?.length ?? 0) > 4000) {
+            msg.content = msg.content!.slice(0, 4000) + '\n…（截斷）';
+          }
+        }
+      }
       // 部分模型（Qwen3、Llama4 等）的 Jinja 模板要求至少一則 user 訊息
       if (!trimmed.some(m => m.role === 'user')) {
         trimmed = [{ role: 'user', content: '[上下文已壓縮，請繼續執行任務]' }, ...trimmed];
@@ -1126,7 +1472,10 @@ export class AgentExecutor {
       this._agentMessagesBySession[this._callbacks.getActiveSessionId()] = this._agentMessages;
     };
 
-    if (!enabled) { dropFallback(remainingMessages); return; }
+    if (!enabled) { dropFallback(remainingMessages);
+      postCompact('done', { tokensAfter: this._services.estimateTokens(this._agentMessages.map(m => m.content ?? '').join('')), stages: ['drop'], messagesBefore: remainingMessages.length, messagesAfter: this._agentMessages.length - 1 });
+      return;
+    }
 
     // 保留最新 4 則，對前面的進行 LLM 摘要
     let splitAt = Math.max(remainingMessages.length - 4, 0);
@@ -1153,7 +1502,7 @@ export class AgentExecutor {
       return;
     }
 
-    this._callbacks.postToWebview({ type: 'agentStep', icon: '📝', title: `對話歷史過長（≈${totalTokens} tokens），自動摘要舊訊息中…`, fullPath: '' });
+    this._callbacks.postToWebview({ type: 'compactUpdate', phase: 'llm-running', tokensBefore: totalTokens, threshold, messagesBefore: toSummarize.length });
 
     // ② 結構化 9-段摘要 Prompt（仿 OpenHarness BASE_COMPACT_PROMPT）
     const compactPrompt = `**重要：只能輸出純文字，禁止呼叫任何工具。**
@@ -1208,7 +1557,7 @@ export class AgentExecutor {
 
     if (!summary) {
       dropFallback(remainingMessages);
-      this._callbacks.postToWebview({ type: 'agentStep', icon: '⚠️', title: '摘要失敗，改用裁剪模式', fullPath: '' });
+      postCompact('done', { tokensAfter: this._services.estimateTokens(this._agentMessages.map(m => m.content ?? '').join('')), stages: [...stages, 'drop'], messagesBefore: remainingMessages.length, messagesAfter: this._agentMessages.length - 1, error: true });
       return;
     }
 
@@ -1217,6 +1566,12 @@ export class AgentExecutor {
 
     // Fix 3: rebase——將摘要非同步進行期間並行 push 的訊息重播到新歷史末尾
     const _rebase = this._agentMessages.slice(snapshotLen);
+    // Truncate large tool results in keepTail before reinserting to prevent overflow
+    for (const msg of keepTail) {
+      if (msg.role === 'tool' && msg.content !== MC_CLEARED && (msg.content?.length ?? 0) > 8000) {
+        msg.content = msg.content!.slice(0, 8000) + '\n…（keepTail 工具結果已截斷以釋放 context）';
+      }
+    }
     this._agentMessages = [
       systemMessage,
       { role: 'user', content: `[自動摘要 — 先前 ${toSummarize.length} 則對話重點]\n${summary}${carryoverText}` },
@@ -1226,11 +1581,12 @@ export class AgentExecutor {
     ];
     this._agentMessagesBySession[this._callbacks.getActiveSessionId()] = this._agentMessages;
     const newTokens = this._services.estimateTokens(this._agentMessages.map(m => m.content ?? '').join(''));
-    this._callbacks.postToWebview({
-      type: 'agentStep',
-      icon: '✅',
-      title: `摘要完成：${toSummarize.length} 則壓縮為 1 則摘要，釋出≈${totalTokens - newTokens} tokens`,
-      fullPath: '',
+    postCompact('done', {
+      tokensAfter: newTokens,
+      stages: [...stages, 'llm'],
+      messagesBefore: toSummarize.length,
+      messagesAfter: 1,
+      summaryPreview: summary.slice(0, 300),
     });
   }
 }

@@ -5,6 +5,21 @@
 // 以及顯示用的 icon / title 格式化函式。純資料模組，無副作用、無 vscode 依賴。
 import * as path from 'path';
 
+// ── Core tool names — always sent to LLM on every request ────────────────────
+const CORE_TOOL_NAMES = new Set([
+  'get_active_file','read_file','read_files','write_file','replace_in_file',
+  'list_dir','run_command','search_workspace','manage_todo','run_python',
+  'jira_fetch','jira_search','git_status','git_diff','memory_read',
+  'search_tools','workflow_run',  // discovery + workflow meta-tools
+]);
+
+// ── search_tools — lets the model discover and unlock extra tools ─────────────
+const SEARCH_TOOLS_TOOL = { type: 'function', function: { name: 'search_tools', description: 'Search for additional tools by capability keyword. Returns matching tool definitions that will be available for this turn.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'What capability you need, e.g. "browser automation", "git commit", "jira transition", "diff files"' }, top_k: { type: 'number', description: 'Max tools to return (default 5)' } }, required: ['query'] } } };
+
+// ── workflow_run — execute a saved workflow ───────────────────────────────────
+const WORKFLOW_RUN_TOOL = { type: 'function', function: { name: 'workflow_run', description: 'Execute a saved named workflow (sequence of agent tasks). Use workflow_list first to see available workflows.', parameters: { type: 'object', properties: { name: { type: 'string', description: 'Workflow name to run' } }, required: ['name'] } } };
+const WORKFLOW_LIST_TOOL = { type: 'function', function: { name: 'workflow_list', description: 'List all saved workflows with their descriptions and step counts.', parameters: { type: 'object', properties: {} } } };
+
 export const AGENT_TOOLS = [
   { type: 'function', function: { name: 'get_active_file', description: '取得目前編輯器開啟的檔案路徑與內容', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'read_file', description: '讀取工作區內檔案的完整內容。**僅用於確實需要整個檔案的小型檔案（< 30KB）**。較大的程式碼檔案請優先：① outline_file 了解結構與行號 → ② read_file_smart(start_line/end_line) 只讀所需區段，避免載入過多無關 context。', parameters: { type: 'object', properties: { path: { type: 'string', description: '相對或絕對路徑' } }, required: ['path'] } } },
@@ -72,8 +87,47 @@ export const AGENT_TOOLS = [
   { type: 'function', function: { name: 'organize_photos', description: '批次辨識並整理照片：給「一個照片目錄」（可遞迴含子目錄），用 Ollama 視覺模型逐張辨識。若提供「一張參考人臉照片」，會逐張判斷是否為同一個人，再辨識其行為/場景，將符合者依「人物/行為」兩層資料夾複製（或移動）到輸出目錄；未提供參考人臉時改為只依「行為/場景」分類。需要 Ollama 視覺模型（如 llava、llama3.2-vision、qwen2.5vl，需先 ollama pull）。', parameters: { type: 'object', properties: { source_dir: { type: 'string', description: '要掃描的照片來源目錄（遞迴含子目錄）' }, reference_image: { type: 'string', description: '參考人臉照片路徑（可選）。提供時依「人物/行為」兩層整理；未提供時只依行為/場景分類' }, output_dir: { type: 'string', description: '整理後輸出目錄（可選，預設為來源目錄下的 _organized）' }, person_name: { type: 'string', description: '人物資料夾名稱（可選，預設取參考照片檔名）' }, behaviors: { type: 'array', items: { type: 'string' }, description: '行為/場景分類選項（可選），例如 ["用餐","戶外","運動","工作"]；提供時模型只能從中擇一，未提供則由模型自由命名簡短標籤' }, vision_model: { type: 'string', description: 'Ollama 視覺模型名稱（可選，預設讀設定 amiAiClaw.visionModel）' }, mode: { type: 'string', enum: ['copy','move'], description: 'copy=複製並保留原檔（預設）、move=移動原檔' }, min_confidence: { type: 'number', description: '人物比對最低信心 0~100（預設 60，僅在有 reference_image 時生效）' }, max_images: { type: 'number', description: '最多處理張數（預設 200，最多 1000）' } }, required: ['source_dir'] } } },
 ];
 
+// ── Derived exports ───────────────────────────────────────────────────────────
+/** Tools always loaded in every agent request. */
+export const CORE_TOOLS = (AGENT_TOOLS as { type: string; function: { name: string } }[])
+  .filter(t => CORE_TOOL_NAMES.has(t.function.name));
+
+/** Tools loaded on-demand via search_tools. */
+export const EXTRA_TOOLS = (AGENT_TOOLS as { type: string; function: { name: string; description: string } }[])
+  .filter(t => !CORE_TOOL_NAMES.has(t.function.name));
+
+/** Full set including meta-tools (for execution dispatch). */
+export const ALL_TOOLS = [...AGENT_TOOLS, SEARCH_TOOLS_TOOL, WORKFLOW_RUN_TOOL, WORKFLOW_LIST_TOOL];
+
+/** LLM-facing toolset: core tools + meta-tools. */
+export const LLM_TOOLS = [...CORE_TOOLS, SEARCH_TOOLS_TOOL, WORKFLOW_RUN_TOOL, WORKFLOW_LIST_TOOL];
+
+/**
+ * Simple keyword-based search over EXTRA_TOOLS.
+ * Returns up to topK matching tool definitions.
+ */
+export function searchExtraTools(query: string, topK = 5): typeof EXTRA_TOOLS {
+  const terms = query.toLowerCase().split(/\W+/).filter(t => t.length > 2);
+  if (terms.length === 0) return EXTRA_TOOLS.slice(0, topK);
+  const scored = EXTRA_TOOLS.map(tool => {
+    const text = `${tool.function.name} ${tool.function.description}`.toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      // Exact name match is a strong signal
+      if (tool.function.name.includes(term)) score += 3;
+      else if (text.includes(term)) score += 1;
+    }
+    return { tool, score };
+  });
+  return scored
+    .filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK)
+    .map(s => s.tool);
+}
+
 export function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', read_files: '📚', write_file: '💾', replace_in_file: '✏️', insert_in_file: '📌', glob: '📂', outline_file: '📑', todo_write: '✅', memory_read: '🧠', memory_write: '📝', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_search: '🔍', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_log_time: '⏱️', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', agentic_file_search: '🧠', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_connect: '📱', whatsapp_disconnect: '📵', whatsapp_status: '📶', whatsapp_save_credentials: '🔐', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊', read_workspace: '🗂️', agent_run_tool: '🔁', 'agent:run_tool': '🔁', read_file_smart: '🔬', rename_file: '✂️', copy_file: '📋', diff_files: '🔀', replace_all_in_file: '✏️', batch_replace: '🔁', file_info: 'ℹ️', organize_photos: '🖼️' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', read_files: '📚', write_file: '💾', replace_in_file: '✏️', insert_in_file: '📌', glob: '📂', outline_file: '📑', todo_write: '✅', memory_read: '🧠', memory_write: '📝', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_search: '🔍', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_log_time: '⏱️', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', agentic_file_search: '🧠', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_connect: '📱', whatsapp_disconnect: '📵', whatsapp_status: '📶', whatsapp_save_credentials: '🔐', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊', read_workspace: '🗂️', agent_run_tool: '🔁', 'agent:run_tool': '🔁', read_file_smart: '🔬', rename_file: '✂️', copy_file: '📋', diff_files: '🔀', replace_all_in_file: '✏️', batch_replace: '🔁', file_info: 'ℹ️', organize_photos: '🖼️', search_tools: '🔭', workflow_run: '⚙️', workflow_list: '📋' };
   return m[name] ?? '🔧';
 }
 

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 YCHsu. All rights reserved.
+﻿// Copyright (c) 2026 YCHsu. All rights reserved.
 // Licensed under the MIT License.
 
 import * as vscode from 'vscode';
@@ -69,7 +69,7 @@ export class NetworkProvider implements IToolProvider {
       const options = {
         hostname: parsedUrl.hostname, port: parsedUrl.port || (parsedUrl.protocol==='https:'?443:80),
         path: parsedUrl.pathname + parsedUrl.search, method,
-        headers: { 'User-Agent':'AMI-AiClaw-Agent/1.0', 'Accept':'application/json, text/plain, */*', ...(bodyBuf?{'Content-Type':'application/json','Content-Length':bodyBuf.length}:{}), ...reqHeaders },
+        headers: { 'User-Agent':'AmiClaw-Agent/1.0', 'Accept':'application/json, text/plain, */*', ...(bodyBuf?{'Content-Type':'application/json','Content-Length':bodyBuf.length}:{}), ...reqHeaders },
       };
       let buf = '';
       const req = protocol.request(options, res => {

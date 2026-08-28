@@ -1,4 +1,4 @@
-// Copyright (c) 2026 YCHsu. All rights reserved.
+﻿// Copyright (c) 2026 YCHsu. All rights reserved.
 // Licensed under the MIT License.
 import * as vscode from 'vscode';
 import * as http from 'http';
@@ -2423,7 +2423,7 @@ export class ToolExecutor {
             path: parsedUrl.pathname + parsedUrl.search,
             method: reqMethod,
             headers: {
-              'User-Agent': 'AMI-AiClaw-Agent/1.0',
+              'User-Agent': 'AmiClaw-Agent/1.0',
               'Accept': 'application/json, text/plain, */*',
               ...(bodyBuf ? { 'Content-Type': 'application/json', 'Content-Length': bodyBuf.length } : {}),
               ...reqHeaders,

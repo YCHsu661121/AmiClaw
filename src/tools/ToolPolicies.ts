@@ -5,6 +5,7 @@ import {
   decideAutoPilotAction,
 } from '../autopilot/AutoPilotPolicy';
 import { isAutoPilotActive } from '../autopilot/AutoPilotState';
+import { recordAutoPilotDenial, recordAutoPilotSuccess } from '../autopilot/AutoPilotDenials';
 import type { AutoPilotClassifierServices, AutoPilotTranscriptMessage } from '../autopilot/AutoPilotClassifier';
 
 /** 與 AutoPilotClassifierServices 相同結構，單獨 export 避免模組循環依賴 */
@@ -79,7 +80,7 @@ export class ToolPolicies {
       try {
         const decision = await decideAutoPilotAction({
           toolName,
-          toolArgs: {},             // category-level；詳細 args 由 ToolExecutor 升級點傳入
+          toolArgs: diff ? { filePath: diff.filePath } : {},
           toolDisplay: description,
           recentTranscript: transcript,
           workspaceFolders: wsFolders,
@@ -87,10 +88,12 @@ export class ToolPolicies {
         });
         if (decision.kind === 'allow') {
           this._cb.log(`AutoPilot allow: ${toolName} — ${decision.reason}`);
+          recordAutoPilotSuccess();
           return true;
         }
         if (decision.kind === 'deny') {
           this._cb.log(`AutoPilot deny: ${toolName} — ${decision.reason}`);
+          recordAutoPilotDenial({ toolName: toolName || category, display: description, reason: decision.reason, timestamp: Date.now() });
           this._cb.postToWebview({ type: 'autoPilotDenied', tool: toolName, reason: decision.reason });
           return false;
         }

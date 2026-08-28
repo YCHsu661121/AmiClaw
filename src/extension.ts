@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+﻿import * as vscode from 'vscode';
 import { exec as nodeExec } from 'child_process';
 import { promisify } from 'util';
 const exec = promisify(nodeExec);
@@ -46,7 +46,7 @@ function openAndSend(context: vscode.ExtensionContext, msg: object) {
     } catch (e) {
       OllamaChatPanel.reportDiagnostic('openAndSend failed', e);
       OllamaChatPanel.revealDiagnostics();
-      void vscode.window.showErrorMessage('AMI-AiClaw 無法開啟，請查看輸出視窗「AMI-AiClaw Diagnostics」。');
+      void vscode.window.showErrorMessage('AmiClaw 無法開啟，請查看輸出視窗「AmiClaw Diagnostics」。');
     }
   })();
 }
@@ -73,7 +73,7 @@ export function activate(context: vscode.ExtensionContext) {
       } catch (e) {
         OllamaChatPanel.reportDiagnostic('resolveWebviewView failed', e);
         OllamaChatPanel.revealDiagnostics();
-        void vscode.window.showErrorMessage('AMI-AiClaw 側邊欄初始化失敗，請查看輸出視窗「AMI-AiClaw Diagnostics」。');
+        void vscode.window.showErrorMessage('AmiClaw 側邊欄初始化失敗，請查看輸出視窗「AmiClaw Diagnostics」。');
       }
     }
   };
@@ -529,7 +529,7 @@ export function activate(context: vscode.ExtensionContext) {
         const uris = await vscode.workspace.findFiles('**/*', exclude);
         const count = uris.length;
         const msg = `Workspace file count: ${count.toLocaleString()} (excludes node_modules, .git, dist, out)`;
-        const chan = vscode.window.createOutputChannel('AMI-AiClaw');
+        const chan = vscode.window.createOutputChannel('AmiClaw');
         chan.appendLine(msg);
         chan.show(true);
         vscode.window.showInformationMessage(msg);
@@ -558,7 +558,7 @@ export function activate(context: vscode.ExtensionContext) {
           cmd = `sh -c "ls -R '${root.replace(/'/g, "'\\''")}' | wc -l"`;
         }
 
-        const oc = vscode.window.createOutputChannel('AMI-AiClaw');
+        const oc = vscode.window.createOutputChannel('AmiClaw');
         oc.appendLine(`Running: ${cmd}`);
         oc.show(true);
         try {

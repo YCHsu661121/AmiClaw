@@ -19,19 +19,24 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data: https:;">    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AMI-AiClaw</title>
+    <title>AmiClaw</title>
     <style>
       *{box-sizing:border-box}
       body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;margin:0;padding:0;height:100vh;display:flex;flex-direction:column;background:var(--vscode-editor-background);color:var(--vscode-editor-foreground)}
-      #chat{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
-      .msg{max-width:100%;word-break:break-word}
-      .msg.user .bubble{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border-radius:14px 14px 4px 14px;padding:7px 12px;display:inline-block;max-width:88%}
+      #chat{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px;scrollbar-width:thin;scrollbar-color:rgba(128,128,128,0.22) transparent}
+      #chat::-webkit-scrollbar{width:4px}
+      #chat::-webkit-scrollbar-track{background:transparent}
+      #chat::-webkit-scrollbar-thumb{background:rgba(128,128,128,0.22);border-radius:2px}
+      #chat::-webkit-scrollbar-thumb:hover{background:rgba(128,128,128,0.42)}
+      .msg{max-width:100%;word-break:break-word;animation:msgIn 0.18s ease-out}
+      @keyframes msgIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+      .msg.user .bubble{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border-radius:16px 16px 4px 16px;padding:8px 13px;display:inline-block;max-width:88%;box-shadow:0 1px 4px rgba(0,0,0,0.18)}
       .msg.user{display:flex;justify-content:flex-end}
-      .msg.assistant .bubble{background:var(--vscode-editorWidget-background,rgba(128,128,128,0.12));border-radius:4px 14px 14px 14px;padding:7px 12px;display:inline-block;max-width:96%}
+      .msg.assistant .bubble{background:var(--vscode-editorWidget-background,rgba(128,128,128,0.1));border-radius:4px 16px 16px 16px;padding:8px 13px;display:inline-block;max-width:96%;border-left:2px solid rgba(128,128,128,0.2)}
       .msg.assistant{display:flex;justify-content:flex-start}
-      pre{background:rgba(0,0,0,0.08);padding:8px;border-radius:4px;white-space:pre-wrap;margin:4px 0;font-size:0.88em}
+      pre{background:rgba(0,0,0,0.1);padding:10px 12px;border-radius:6px;white-space:pre-wrap;margin:6px 0;font-size:0.87em;border:1px solid rgba(128,128,128,0.12);font-family:Consolas,'Courier New',monospace}
       .bubble button{font-size:11px;padding:2px 7px;margin:3px 3px 0 0;cursor:pointer;border-radius:4px;background:rgba(128,128,128,0.15);border:1px solid rgba(128,128,128,0.25);color:inherit}
-      #bottomBar{border-top:1px solid rgba(128,128,128,0.15);background:var(--vscode-editor-background);padding:6px 8px;display:flex;flex-direction:column;gap:4px}
+      #bottomBar{border-top:1px solid rgba(128,128,128,0.12);background:var(--vscode-sideBar-background,var(--vscode-editor-background));padding:7px 9px;display:flex;flex-direction:column;gap:5px}
       #topBar{display:flex;flex-direction:column;gap:0;padding:0}
       #topBarPrimary{display:flex;align-items:center;gap:5px;padding:0 2px 3px;flex-wrap:nowrap}
       #topBarAdvanced{display:none;flex-wrap:wrap;gap:4px;padding:4px 2px 2px;border-top:1px solid rgba(128,128,128,0.12)}
@@ -40,7 +45,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       #topBarToggle:hover,#topBarToggle.open{opacity:1;background:rgba(128,128,128,0.2)}
       #shadowKeywordsInput{font-size:11px;padding:2px 6px;border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));min-width:110px;max-width:200px;outline:none;flex:1}
       #shadowKeywordsInput:focus{border-color:var(--vscode-focusBorder,#007fd4)}
-      .toolbar-group{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 6px;border:1px solid rgba(128,128,128,0.16);border-radius:8px;background:rgba(128,128,128,0.05)}
+      .toolbar-group{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 7px;border:1px solid rgba(128,128,128,0.14);border-radius:8px;background:rgba(128,128,128,0.04);transition:background 0.15s}
+      .toolbar-group:hover{background:rgba(128,128,128,0.09)}
       .toolbar-spacer{flex:1 1 auto}
       #chatSessionSelect{max-width:170px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
       #chatSearchBar{display:none;align-items:center;gap:4px;padding:2px 0}
@@ -53,8 +59,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .search-hit-snippet{opacity:0.65;font-size:11px;white-space:pre-wrap;word-break:break-all}
       .session-tag{font-size:10px;padding:1px 5px;border-radius:9px;background:rgba(79,193,255,0.18);color:var(--vscode-editorInfo-foreground,#4fc1ff);margin-left:3px;vertical-align:middle}
       #modelSelect{flex:1;min-width:180px;max-width:260px;font-size:12px;padding:3px 6px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border,rgba(128,128,128,0.4));border-radius:4px}
-      .icon-btn{background:none;border:none;cursor:pointer;padding:3px 6px;border-radius:4px;font-size:15px;color:var(--vscode-editor-foreground);opacity:0.7;line-height:1}
-      .icon-btn:hover{opacity:1;background:rgba(128,128,128,0.15)}
+      .icon-btn{background:none;border:none;cursor:pointer;padding:3px 6px;border-radius:5px;font-size:15px;color:var(--vscode-editor-foreground);opacity:0.68;line-height:1;transition:opacity 0.12s,background 0.12s}
+      .icon-btn:hover{opacity:1;background:rgba(128,128,128,0.18)}
       .icon-btn.active{color:var(--vscode-button-background,#0e639c);opacity:1}
       #fileModPanel{display:none;flex-direction:column;border:1px solid rgba(128,128,128,0.2);border-radius:6px;background:var(--vscode-editorWidget-background,rgba(0,0,0,0.1));margin:4px 0;overflow:hidden}
       #fileModPanel.visible{display:flex}
@@ -88,12 +94,16 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       [data-provider="copilot"] .provider-badge,[data-provider="copilot"].provider-badge,.provider-label[data-provider="copilot"]{color:#f7cc65}
       [data-provider="openai"] .provider-badge,[data-provider="openai"].provider-badge,.provider-label[data-provider="openai"]{color:#89d185}
       #inputRow{display:flex;align-items:flex-end;gap:6px}
-      #prompt{flex:1;min-height:36px;max-height:160px;resize:none;padding:7px 10px;font-size:13px;font-family:inherit;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.4));border-radius:8px;outline:none;overflow-y:auto;line-height:1.4}
-      #prompt:focus{border-color:var(--vscode-focusBorder,#007fd4)}
-      #sendBtn{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;border-radius:8px;padding:7px 13px;cursor:pointer;font-size:16px;line-height:1;align-self:flex-end;flex-shrink:0}
-      #sendBtn:disabled{opacity:0.4;cursor:default}
-/* TEST_MODIFICATION: Added active scale effect */
+      #prompt{flex:1;min-height:38px;max-height:180px;resize:none;padding:8px 11px;font-size:13px;font-family:inherit;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,rgba(128,128,128,0.35));border-radius:9px;outline:none;overflow-y:auto;line-height:1.45;transition:border-color 0.15s,box-shadow 0.15s}
+      #prompt:focus{border-color:var(--vscode-focusBorder,#007fd4);box-shadow:0 0 0 2px rgba(0,127,212,0.1)}
+      #sendBtn{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;border-radius:9px;padding:8px 14px;cursor:pointer;font-size:16px;line-height:1;align-self:flex-end;flex-shrink:0;transition:opacity 0.15s,transform 0.1s,filter 0.15s}
+      #sendBtn:not(:disabled):hover{filter:brightness(1.12)}
+      #sendBtn:disabled{opacity:0.38;cursor:default}
 #sendBtn:active{transform:scale(0.95);transition:transform 0.1s}
+      #sendBtn.stop-mode{background:var(--vscode-statusBarItem-errorBackground,#c72e0f);color:var(--vscode-statusBarItem-errorForeground,#fff);animation:sendBtnPulse 1.4s ease-in-out infinite}
+      @keyframes sendBtnPulse{0%,100%{opacity:1}50%{opacity:0.65}}
+      @keyframes proactiveSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+      #proactiveBtn.proactive-active{color:var(--vscode-progressBar-background,#0e639c);opacity:1;animation:proactiveSpin 2s linear infinite}
       #breathLight{position:relative;width:18px;height:18px;align-self:center;flex-shrink:0}
       #breathLight .bl-ring{position:absolute;inset:1px;border:1px solid var(--vscode-button-background,#0e639c);border-radius:50%;transform:rotate(-28deg) scaleY(0.55);opacity:0.3;transition:opacity 0.5s,border-color 0.5s}
       #breathLight .bl-core{position:absolute;left:50%;top:50%;width:5px;height:5px;margin:-2.5px 0 0 -2.5px;border-radius:50%;background:var(--vscode-button-background,#0e639c);animation:blCoreIdle 3s ease-in-out infinite;transition:background 0.5s}
@@ -105,32 +115,36 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       #breathLight.thinking .bl-core{background:var(--vscode-progressBar-background,var(--vscode-button-background,#0e639c));animation:blCoreActive 1.1s ease-in-out infinite}
       #breathLight.thinking .bl-e{background:var(--vscode-progressBar-background,var(--vscode-button-background,#0e639c));animation-duration:0.85s;box-shadow:0 0 4px var(--vscode-progressBar-background,var(--vscode-button-background,#0e639c))}
       @keyframes blCoreActive{0%,100%{transform:scale(1);opacity:0.9}50%{transform:scale(1.55);opacity:1;box-shadow:0 0 6px var(--vscode-progressBar-background,var(--vscode-button-background,#0e639c))}}
-      #statusBar{font-size:11px;opacity:0.75;padding:1px 4px;text-align:center;min-height:14px}
-      #contextBar{display:flex;align-items:center;gap:5px;padding:1px 4px;font-size:10px;opacity:0.6;height:12px}
+      #statusBar{font-size:11px;opacity:0.72;padding:2px 5px;text-align:center;min-height:15px;transition:color 0.3s,opacity 0.3s;letter-spacing:0.01em}
+      #contextBar{display:flex;align-items:center;gap:6px;padding:2px 5px;font-size:10px;opacity:0.58;height:13px}
       #contextBar .ctx-label{white-space:nowrap;letter-spacing:0.03em}
-      #contextBar .ctx-track{flex:1;height:3px;background:rgba(128,128,128,0.2);border-radius:2px;overflow:hidden}
-      #contextBar .ctx-fill{height:100%;border-radius:2px;transition:width 0.4s,background 0.4s}
+      #contextBar .ctx-track{flex:1;height:3px;background:rgba(128,128,128,0.18);border-radius:2px;overflow:hidden}
+      #contextBar .ctx-fill{height:100%;border-radius:2px;transition:width 0.5s cubic-bezier(0.4,0,0.2,1),background 0.5s}
       #contextBar .ctx-pct{white-space:nowrap;font-variant-numeric:tabular-nums}
       #attachedFiles{padding:2px 8px;display:flex;flex-wrap:wrap;gap:4px;min-height:0}
       .file-chip{display:inline-flex;align-items:center;gap:3px;background:rgba(0,120,215,0.14);border:1px solid rgba(0,120,215,0.3);border-radius:999px;padding:1px 8px;font-size:11px}
       .file-chip .rm{padding:0 2px;font-size:11px;background:none;border:none;cursor:pointer;opacity:0.6;color:inherit;line-height:1}
-      details.think { border:1px solid rgba(79,193,255,0.5); margin:8px 0 4px; padding:0; background:rgba(79,193,255,0.06); border-radius:6px; overflow:hidden; width:100% }
-      details.think summary { background:rgba(79,193,255,0.2); padding:5px 10px; cursor:pointer; color:var(--vscode-editorInfo-foreground,#4fc1ff); font-size:0.83em; font-weight:600; user-select:none; list-style:none; display:flex; align-items:center; gap:6px }
+      details.think { border:1px solid rgba(79,193,255,0.35); margin:8px 0 4px; padding:0; background:rgba(79,193,255,0.04); border-radius:8px; overflow:hidden; width:100%; transition:border-color 0.2s }
+      details.think:hover { border-color:rgba(79,193,255,0.55) }
+      details.think summary { background:rgba(79,193,255,0.14); padding:6px 10px; cursor:pointer; color:var(--vscode-editorInfo-foreground,#4fc1ff); font-size:0.82em; font-weight:600; user-select:none; list-style:none; display:flex; align-items:center; gap:6px; border-radius:7px 7px 0 0 }
       details.think summary .think-icon { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--vscode-editorInfo-foreground,#4fc1ff); flex-shrink:0 }
       details.think summary .think-icon.pulse { animation: pulse 1.2s ease-in-out infinite }
       @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.3;transform:scale(0.6)} }
       details.think summary::before { content:none }
       details.think[open] summary::before { content:none }
-      details.think pre { margin:0; padding:6px 10px; white-space:pre-wrap; color:var(--vscode-editor-foreground); opacity:0.85; font-size:0.82em; max-height:96px; overflow-y:auto; background:transparent }
+      details.think pre { margin:0; padding:8px 12px; white-space:pre-wrap; color:var(--vscode-editor-foreground); opacity:0.85; font-size:0.82em; max-height:96px; overflow-y:auto; background:transparent }
       .img-chip{display:inline-flex;align-items:center;gap:4px;background:rgba(180,100,215,0.12);border:1px solid rgba(180,100,215,0.35);border-radius:4px;padding:2px 4px 2px 2px;font-size:11px;margin:2px}
       .img-chip img{width:36px;height:36px;object-fit:cover;border-radius:3px;display:block}
       .img-chip .rm{padding:0 2px;font-size:11px;background:none;border:none;cursor:pointer;opacity:0.6;color:inherit;line-height:1}
-      @keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
-      .loading-dots{display:inline-flex;align-items:center;gap:4px;padding:4px 2px}
+      @keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+      .loading-dots{display:inline-flex;align-items:center;gap:5px;padding:5px 2px}
       .loading-dots span{animation:blink 1.4s infinite both;display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor}
-      .loading-dots span:nth-child(2){animation-delay:.16s}
-      .loading-dots span:nth-child(3){animation-delay:.32s}
-      .tool-step{border-left:3px solid var(--vscode-debugConsole-warningForeground,#cca700);margin:3px 0;padding:2px 8px;background:rgba(128,128,128,0.05);border-radius:2px;font-size:0.85em}
+      .loading-dots span:nth-child(2){animation-delay:.2s}
+      .loading-dots span:nth-child(3){animation-delay:.4s}
+      .tool-step{border-left:3px solid var(--vscode-debugConsole-warningForeground,#cca700);margin:4px 0;padding:3px 9px;background:rgba(128,128,128,0.04);border-radius:0 4px 4px 0;font-size:0.85em;transition:background 0.12s}
+      .tool-step:hover{background:rgba(128,128,128,0.09)}
+      .tool-step.shadow-step{border-left-color:#c586c0;background:rgba(197,134,192,0.05)}
+      .tool-step.shadow-step summary{color:#c586c0}
       .tool-step summary{cursor:pointer;color:var(--vscode-descriptionForeground,#999);list-style:none;padding:2px 0;user-select:none;display:flex;align-items:center;gap:4px}
       .tool-step summary::before{content:'▶  ';font-size:0.7em;flex-shrink:0}
       .tool-step[open] summary::before{content:'▼  ';font-size:0.7em}
@@ -140,6 +154,17 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .tool-step[data-s=error] .step-status{color:var(--vscode-errorForeground,red)}
       .tool-step[data-s=error] .step-status::after{content:' ✗'}
       .tool-step pre{margin:3px 0;white-space:pre-wrap;font-size:0.82em;max-height:140px;overflow:auto;color:var(--vscode-descriptionForeground,#999);background:transparent}
+      /* Compact bar — 對話壓縮視覺化 */
+      .compact-bar{border:1px solid rgba(78,201,176,0.35);border-left:3px solid #4ec9b0;background:rgba(78,201,176,0.05);border-radius:0 5px 5px 0;margin:5px 0;padding:6px 10px 7px;font-size:0.82em;cursor:pointer;transition:background 0.12s}
+      .compact-bar:hover{background:rgba(78,201,176,0.09)}
+      .compact-bar .cb-header{display:flex;align-items:center;gap:6px;color:#4ec9b0;font-weight:600}
+      .compact-bar .cb-spin{display:inline-block;animation:proactiveSpin 1s linear infinite;opacity:0.8}
+      .compact-bar .cb-stages{font-size:0.88em;opacity:0.65;margin-top:2px}
+      .compact-bar .cb-track{height:5px;background:rgba(128,128,128,0.15);border-radius:3px;margin:6px 0 4px;overflow:hidden}
+      .compact-bar .cb-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,#4ec9b0,#89d185);transition:width 0.7s cubic-bezier(0.4,0,0.2,1)}
+      .compact-bar .cb-stats{display:flex;justify-content:space-between;opacity:0.7;font-size:0.9em}
+      .compact-bar .cb-preview{margin-top:5px;padding:4px 8px;background:rgba(0,0,0,0.08);border-radius:3px;font-size:0.82em;max-height:80px;overflow-y:auto;white-space:pre-wrap;display:none}
+      .compact-bar.expanded .cb-preview{display:block}
       .code-block-wrap{margin:4px 0}
       .code-actions{display:flex;gap:4px;margin:2px 0 1px;flex-wrap:wrap}
       /* 團隊討論模式 */
@@ -180,7 +205,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       .team-todo-item.t-done .team-todo-task { text-decoration:line-through; opacity:0.42 }
       .team-todo-item.t-running .team-todo-task { color:#4fc1ff }
       .team-todo-worker { font-size:0.72em; opacity:0.5; margin-left:3px; font-style:italic; white-space:nowrap }
-      .agent-todos-panel{background:rgba(128,128,128,0.06);border:1px solid rgba(247,204,101,0.3);border-radius:0;padding:8px 14px;width:100%;box-sizing:border-box;border-left:none;border-right:none;border-top:1px solid rgba(247,204,101,0.3);border-bottom:1px solid rgba(128,128,128,0.15);max-height:180px;overflow-y:auto}
+      .agent-todos-panel{background:rgba(247,204,101,0.04);border:1px solid rgba(247,204,101,0.28);border-radius:0;padding:8px 14px;width:100%;box-sizing:border-box;border-left:none;border-right:none;border-top:1px solid rgba(247,204,101,0.28);border-bottom:1px solid rgba(128,128,128,0.12);max-height:180px;overflow-y:auto}
       .agent-todos-header{font-size:0.8em;font-weight:700;color:#f7cc65;margin-bottom:6px;display:flex;align-items:center;gap:8px}
       .agent-todos-progress-track{flex:1;height:3px;background:rgba(128,128,128,0.2);border-radius:2px;min-width:40px}
       .agent-todos-progress-fill{height:100%;background:#f7cc65;border-radius:2px;transition:width 0.4s}
@@ -436,7 +461,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             <option value="compare">🆚 Compare</option>
             <option value="debate">⚔️ Debate</option>
           </select>
-          <button class="icon-btn" id="stopAgent" title="停止目前執行中的 Agent / Team / Debate" aria-label="停止執行">⏹</button>
+
           <button class="icon-btn" id="clear" title="清除對話" aria-label="清除對話">🗑</button>
           <span class="toolbar-spacer"></span>
           <span id="connStatus" style="font-size:11px;opacity:0.8;flex-shrink:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\u9023\u7dda\uff1a\u6aa2\u67e5\u4e2d\u2026</span>
@@ -486,6 +511,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             <button class="icon-btn" id="fileModBtn" title="顯示/隱藏修改記錄清單" aria-label="修改記錄">📋</button>
             <button class="icon-btn" id="organizePhotosBtn" title="整理照片（辨識人物 / 行為並分類）" aria-label="整理照片">🖼️</button>
             <button class="icon-btn" id="debugBtn" title="Debug Console" aria-label="Debug Console" style="font-size:12px;">🐛</button>
+            <button class="icon-btn" id="proactiveBtn" title="自主連續模式：啟動後 AI 持續執行 tick，直到任務完成或手動停止" aria-label="自主連續模式">🔄</button>
           </div>
         </div>
       </div>
@@ -563,7 +589,6 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       <div id="inputRow">
         <div id="slashPopup"></div>
         <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
-        <div id="breathLight" title="AI 思考狀態" aria-label="AI 思考狀態"><div class="bl-ring"></div><div class="bl-core"></div><div class="bl-ewrap"><div class="bl-e"></div></div></div>
         <button id="sendBtn" title="送出">&#9658;</button>
       </div>
       <div id="permissionBar">
@@ -738,6 +763,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       // ── 使用者訊息計數 / 歷史長度追蹤 ────
       var _userMsgCount = 0;   // 已加入的 user message 數（用於 editMessage / forkSession）
       var _lastTokenInfo = ''; // streamEnd 設定的 token 資訊文字（供 agentStatus restore 用）
+      var _pendingTitleInfo = null; // { sessionId, userText } — 等第一次 assistant 回應後觸發 LLM 標題生成
+      var _currentStreamText = ''; // 串流模式累積文字（供標題生成用）
       var _providerInfo = { id: 'ollama', label: 'Ollama', modelId: '', displayName: '' };
 
       function getProviderAppearance(providerId) {
@@ -896,12 +923,12 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           const msg = event.data;
           dbg('MSG: ' + msg.type + (msg.ok !== undefined ? ' ok=' + msg.ok : '') + (msg.url ? ' url=' + msg.url : '') + (msg.message ? ' msg=' + msg.message : ''));
           if (debugPanel && debugPanel.style.display === 'block') { debugPanel.textContent = window._debugLog.join('\\n'); debugPanel.scrollTop = debugPanel.scrollHeight; }
-          if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); if (statusBar && msg.tokens) { var _aML = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F'); statusBar.textContent = _aML + '\u2003\u2014\u2003~' + msg.tokens + ' tokens'; } }
-          else if (msg.type === 'streamStart')   { setBreathState(true); if (msg.thinking !== false) { startStreamThinkingPlaceholder(); } else { clearPendingBubble(); getOrCreateStreamNode(); } }
+          if (msg.type === 'assistant')          { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setRunningState(false); appendMessage('assistant', msg.text, msg.thinking, msg.tokens); if (statusBar && msg.tokens) { var _aML = agentMode ? '\uD83E\uDD16 Agent \u6A21\u5F0F' : (teamMode ? '\uD83D\uDC65 Team \u6A21\u5F0F' : '\uD83D\uDCAC Ask \u6A21\u5F0F'); statusBar.textContent = _aML + '\u2003\u2014\u2003~' + msg.tokens + ' tokens'; } if (_pendingTitleInfo) { var _pti = _pendingTitleInfo; _pendingTitleInfo = null; vscode.postMessage({ type: 'generateChatTitle', sessionId: _pti.sessionId, userMsg: _pti.userText, assistantMsg: (msg.text || '').slice(0, 500) }); } }
+          else if (msg.type === 'streamStart')   { _currentStreamText = ''; setBreathState(true); if (msg.thinking !== false) { startStreamThinkingPlaceholder(); } else { clearPendingBubble(); getOrCreateStreamNode(); } }
           else if (msg.type === 'thinkChunk')    { clearStreamThinkingPlaceholder(); appendThinkChunk(msg.chunk, msg.model); }
-          else if (msg.type === 'assistantChunk'){ clearStreamThinkingPlaceholder(); appendChunk(msg.chunk); }
+          else if (msg.type === 'assistantChunk'){ clearStreamThinkingPlaceholder(); _currentStreamText += msg.chunk; appendChunk(msg.chunk); }
           else if (msg.type === 'streamAbort')   { setBreathState(false); clearStreamThinkingPlaceholder(); if (_streamNode && chat.contains(_streamNode)) { _streamNode.remove(); } _streamNode = null; }
-          else if (msg.type === 'streamEnd')     { setBreathState(false); clearStreamThinkingPlaceholder(); _agentStepNode = null; setSendEnabled(true);
+          else if (msg.type === 'streamEnd')     { setBreathState(false); clearStreamThinkingPlaceholder(); _agentStepNode = null; setRunningState(false);
             var _sbE = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null;
             if (_sbE) {
               var _tb = _sbE.querySelector('.stream-token-badge');
@@ -938,6 +965,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               }
             }
             _streamNode = null; _lastStreamTokens = 0; _lastStreamTps = 0;
+            if (_pendingTitleInfo) { var _ptiS = _pendingTitleInfo; _pendingTitleInfo = null; vscode.postMessage({ type: 'generateChatTitle', sessionId: _ptiS.sessionId, userMsg: _ptiS.userText, assistantMsg: _currentStreamText.slice(0, 500) }); }
+            _currentStreamText = '';
           }
           else if (msg.type === 'streamStats')   {
             _lastStreamTokens = msg.tokens; _lastStreamTps = msg.tps;
@@ -948,8 +977,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               var _tb2 = _sb.querySelector('.stream-token-badge'); if (!_tb2) { _tb2 = document.createElement('span'); _tb2.className = 'stream-token-badge'; _tb2.style.cssText = 'font-size:10px;opacity:0.5;margin-top:3px;display:block'; _sb.appendChild(_tb2); } _tb2.textContent = '~' + msg.tokens + ' tokens  ' + msg.tps.toFixed(1) + ' t/s';
             }
           }
-          else if (msg.type === 'error')         { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setSendEnabled(true); appendMessage('assistant', '\u932f\u8aa4\uff1a' + msg.text); }
-          else if (msg.type === 'organizePhotosPicked') { appendMessage('user', msg.label); vscode.postMessage({ type: 'agentSend', prompt: msg.prompt, model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setSendEnabled(false); appendLoadingBubble(); }
+          else if (msg.type === 'error')         { clearPendingBubble(); _agentStepNode = null; _streamNode = null; setRunningState(false); appendMessage('assistant', '\u932f\u8aa4\uff1a' + msg.text); }
+          else if (msg.type === 'organizePhotosPicked') { appendMessage('user', msg.label); vscode.postMessage({ type: 'agentSend', prompt: msg.prompt, model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setRunningState(true); appendLoadingBubble(); }
           else if (msg.type === 'teamMemberStart') { createTeamMember(msg.id, msg.model, msg.color, msg.task); }
           else if (msg.type === 'teamThinkChunk')  { appendTeamThinkChunk(msg.id, msg.color, msg.chunk); }
           else if (msg.type === 'teamResponseChunk'){ appendTeamResponseChunk(msg.id, msg.chunk); }
@@ -967,7 +996,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'teamTodoListEnd')    { /* bubble stays */ }
           else if (msg.type === 'teamSynthStart')  { createTeamSynthBubble(); }
           else if (msg.type === 'teamSynthChunk')  { appendTeamSynthChunk(msg.chunk); }
-          else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setSendEnabled(true); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
+          else if (msg.type === 'teamEnd')         { if (!msg.agentFollows) { setRunningState(false); if (statusBar) statusBar.textContent = '\u5718隊討論完成'; } else { if (statusBar) statusBar.textContent = '\u5718隊討論完成，交棒給 Agent\u2026'; } }
           else if (msg.type === 'teamAgentStart')  { var tah = document.createElement('div'); tah.className = 'team-agent-header'; tah.textContent = '\uD83E\uDD16 Agent \u63A5\u529B\u57F7\u884C\u8A08\u5283\uFF08' + (msg.model||'') + '\uFF09'; chat.appendChild(tah); chat.scrollTop = chat.scrollHeight; }
           else if (msg.type === 'teamModelList')   { populateTeamPicker(msg.models); populateDebatePicker(msg.models); populateComparePicker(msg.models); }
           else if (msg.type === 'teamRolesConfig') { if (msg.roles && msg.roles.length) _teamRolesConfig = msg.roles; }
@@ -979,7 +1008,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'debateChunk')   { appendDebateChunk(msg.speaker, msg.chunk); }
           else if (msg.type === 'debateThinkChunk') { appendDebateThinkChunk(msg.speaker, msg.chunk); }
           else if (msg.type === 'debateTurnEnd') { finalizeDebateTurn(msg.speaker, msg.tokens, msg.tps); }
-          else if (msg.type === 'debateEnd')     { _debateRunning = false; var _dsBar2 = document.getElementById('debateSwapBar'); if (_dsBar2) _dsBar2.style.display = 'none'; finalizeDebate(msg.consensus); setSendEnabled(true); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f'; }
+          else if (msg.type === 'debateEnd')     { _debateRunning = false; var _dsBar2 = document.getElementById('debateSwapBar'); if (_dsBar2) _dsBar2.style.display = 'none'; finalizeDebate(msg.consensus); setRunningState(false); if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u7d50\u675f'; }
           else if (msg.type === 'agentStatus')   {
             if (msg.running) {
               setBreathState(true);
@@ -989,9 +1018,10 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               setBreathState(false);
               if (statusBar) statusBar.textContent = _lastTokenInfo || (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             }
-            setSendEnabled(!msg.running);
+            setRunningState(msg.running);
           }
-          else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath); }
+          else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath, !!msg.isShadow); }
+          else if (msg.type === 'compactUpdate')  { handleCompactUpdate(msg); }
           else if (msg.type === 'agentStepDone') { finalizeAgentStep(msg.result, msg.isError); }
           else if (msg.type === 'agentStepProgress') {
             // 輕量級進度訊息：直接更新狀態列，不建立新氣泡
@@ -1055,7 +1085,18 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'waIncoming') {
             appendMessage('assistant', '\uD83D\uDCF2 WhatsApp \u4f86\u81ea \u300c' + (msg.sender||'') + '\u300d\uff1a ' + (msg.text||''));
           }
-          else if (msg.type === 'autoStatus')    { if (statusBar) statusBar.textContent = msg.running ? '\u23f3 \u81ea\u52d5\u57f7\u884c\u4e2d\u2026' : ''; setSendEnabled(!msg.running); }
+          else if (msg.type === 'autoStatus')    {
+            var pb = document.getElementById('proactiveBtn');
+            if (msg.running) {
+              var _tick = msg.tick || 0;
+              if (statusBar) statusBar.textContent = _tick > 0 ? '⚙️ 自主模式 Tick ' + _tick + '…' : '🔄 自主模式啟動中…';
+              if (pb) pb.classList.add('proactive-active');
+            } else {
+              if (statusBar) statusBar.textContent = '';
+              if (pb) pb.classList.remove('proactive-active');
+            }
+            setRunningState(msg.running);
+          }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); streamMode = !!msg.enabled; if (t) t.classList.toggle('active', streamMode); }
           else if (msg.type === 'autoPilotState'){ if (permModeSelect) { applyPermModeFromFlags(!!msg.enabled, permModeSelect.value === 'yolo'); } }
@@ -1077,7 +1118,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             applyProviderInfo(msg.providerInfo || { modelId: msg.current, id: inferProviderFromModelId(msg.current) });
             if (normalizedModels.length) { populateTeamPicker(normalizedModels); populateDebatePicker(normalizedModels); populateComparePicker(normalizedModels); }
           }
-          else if (msg.type === 'initialState')  { if (msg.providerInfo) applyProviderInfo(msg.providerInfo); if (msg.streamMode) { streamMode = true; var ts = document.getElementById('toggleStream'); if (ts) ts.classList.add('active'); } applyPermModeFromFlags(!!msg.autoPilotEnabled, !!msg.autoApproveWrite); if (msg.thinkLevel) setThinkLevelUi(msg.thinkLevel); if (msg.contextDepth) setContextDepthUi(msg.contextDepth); if (Array.isArray(msg.shadowTriggerKeywords)) { var skEl = document.getElementById('shadowKeywordsInput'); if (skEl) skEl.value = msg.shadowTriggerKeywords.join(', '); } }
+          else if (msg.type === 'initialState')  { if (msg.providerInfo) applyProviderInfo(msg.providerInfo); if (msg.streamMode) { streamMode = true; var ts = document.getElementById('toggleStream'); if (ts) ts.classList.add('active'); } applyPermModeFromFlags(!!msg.autoPilotEnabled, !!msg.autoApproveWrite); if (msg.thinkLevel) setThinkLevelUi(msg.thinkLevel); if (msg.contextDepth) setContextDepthUi(msg.contextDepth); if (Array.isArray(msg.shadowTriggerKeywords)) { var skEl = document.getElementById('shadowKeywordsInput'); if (skEl) skEl.value = msg.shadowTriggerKeywords.join(', '); } if (_needsStateRestore && msg.webviewSessions && Array.isArray(msg.webviewSessions.sessions) && msg.webviewSessions.sessions.length) { _needsStateRestore = false; _chatSessions = msg.webviewSessions.sessions; _activeChatSessionId = msg.webviewSessions.activeId || _activeChatSessionId; _chatSeq = typeof msg.webviewSessions.seq === 'number' ? msg.webviewSessions.seq : _chatSeq; renderChatSessionSelect(); var _rs = getActiveSession(); resetTransientNodes(); chat.innerHTML = (_rs && _rs.html) || ''; if (_rs && _rs.scrollTop) requestAnimationFrame(function() { chat.scrollTop = _rs.scrollTop; }); vscode.setState({ sessions: _chatSessions, activeId: _activeChatSessionId, seq: _chatSeq }); } }
           else if (msg.type === 'providerInfo')  { applyProviderInfo(msg.providerInfo); }
           else if (msg.type === 'connectionStatus') { dbg('connectionStatus received ok=' + msg.ok + ' url=' + msg.url); updateConnStatus(msg.ok, msg.url, msg.message); }
           else if (msg.type === 'fileAttached')  { addFileChip(msg.name, msg.content); }
@@ -1116,6 +1157,11 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           }
           // --- Messages FROM extension host (sidebar commands) ---
           else if (msg.type === 'newChatSession') { createNewSession(); }
+          else if (msg.type === 'chatTitleGenerated') {
+            var _tSess = null;
+            for (var _ti = 0; _ti < _chatSessions.length; _ti++) { if (_chatSessions[_ti].id === msg.sessionId) { _tSess = _chatSessions[_ti]; break; } }
+            if (_tSess && !_tSess.manualTitle && msg.title) { _tSess.title = msg.title; renderChatSessionSelect(); persistSessionState(); }
+          }
           else if (msg.type === 'switchChatSessionFromHost') { if (msg.sessionId) switchChatSession(msg.sessionId); }
           else if (msg.type === 'renameChatSessionFromHost') {
             var rnSess = null;
@@ -1218,7 +1264,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       let _lastStreamTokens = 0;
       let _lastStreamTps = 0;
       let _pendingBubble = null;
-      let agentMode = true;
+      let agentMode = true;  // agent mode is now Coordinator+Worker
       let teamMode = false;
       let compareMode = false;
       let debateMode = false;
@@ -1262,6 +1308,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       }
 
       const savedState = vscode.getState && vscode.getState();
+      var _needsStateRestore = !(savedState && Array.isArray(savedState.sessions) && savedState.sessions.length);
       let _chatSessions = (savedState && Array.isArray(savedState.sessions) && savedState.sessions.length) ? savedState.sessions : defaultSessionState().sessions;
       let _activeChatSessionId = (savedState && savedState.activeId) ? savedState.activeId : 'default';
       let _chatSeq = (savedState && typeof savedState.seq === 'number') ? savedState.seq : 1;
@@ -1276,6 +1323,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       function persistSessionState() {
         if (!vscode.setState) return;
         vscode.setState({ sessions: _chatSessions, activeId: _activeChatSessionId, seq: _chatSeq });
+        vscode.postMessage({ type: 'saveWebviewState', sessions: _chatSessions, activeId: _activeChatSessionId, seq: _chatSeq });
         // Notify extension host (sidebar) of the current session list
         vscode.postMessage({
           type: 'notifySessionsChanged',
@@ -1288,6 +1336,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         var s = getActiveSession();
         if (!s) return;
         s.html = chat.innerHTML;
+        s.scrollTop = chat.scrollTop;
         persistSessionState();
       }
 
@@ -1323,6 +1372,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         resetTransientNodes();
         chat.innerHTML = s.html || '';
         clearFiles();
+        // 用 rAF 等 DOM paint 後再還原捲軸位置
+        if (s.scrollTop) { requestAnimationFrame(function() { chat.scrollTop = s.scrollTop; }); }
         // 恢復該 session 的模型選擇
         if (s.model && modelSelect) {
           var found = false;
@@ -1343,6 +1394,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           var t = (text || '').replace(/\s+/g, ' ').trim();
           if (!t) return;
           s.title = t.length > 18 ? t.slice(0, 18) + '…' : t;
+          _pendingTitleInfo = { sessionId: s.id, userText: t.slice(0, 400) };
           renderChatSessionSelect();
           persistSessionState();
         }
@@ -1585,14 +1637,14 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
             var maxParVal = maxParEl ? parseInt(maxParEl.value) : 3;
             var tModeLabel = teamExecMode === 'manager' ? '\\uD83C\\uDFE2 \u4e3b\u7ba1\u6a21\u5f0f\u57f7\u884c\u4e2d\u2026' : '\u26A1 \u5e73\u884c\u5354\u4f5c\u4e2d\u2026';
             vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: selModels, roles: getTeamModelRoles(), rounds: roundsVal, teamExecMode: teamExecMode, maxParallel: maxParVal, sessionId: _activeChatSessionId });
-            prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
+            prompt.value = ''; resizePrompt(); clearFiles(); setRunningState(true);
             if (statusBar) statusBar.textContent = tModeLabel;
             return;
         }
         if (compareMode) {
             var cmpSel = getSelectedCompareModels();
             vscode.postMessage({ type: 'teamSend', prompt: buildPromptWithFiles(text), models: cmpSel, teamExecMode: 'compare', sessionId: _activeChatSessionId });
-            prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
+            prompt.value = ''; resizePrompt(); clearFiles(); setRunningState(true);
             if (statusBar) statusBar.textContent = '\uD83C\uDD9A \u6bd4\u8f03\u4e2d\u2026';
             return;
         }
@@ -1605,7 +1657,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               roundsValD = (customRoundsEl && customRoundsEl.value) ? customRoundsEl.value : '20';
             }
             vscode.postMessage({ type: 'debateSend', prompt: buildPromptWithFiles(text), models: debSel, rounds: roundsValD, sessionId: _activeChatSessionId });
-            prompt.value = ''; resizePrompt(); clearFiles(); setSendEnabled(false);
+            prompt.value = ''; resizePrompt(); clearFiles(); setRunningState(true);
             if (statusBar) statusBar.textContent = '\u2694\ufe0f \u5c0d\u8a71\u4e2d\u2026';
             return;
         }
@@ -1620,12 +1672,28 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         dbg('[Send] type=' + _msgType + ' agentMode=' + agentMode + ' modeSelect=' + _modeSelVal + ' model=' + m + ' teamMode=' + teamMode);
         vscode.postMessage({ type: _msgType, prompt: buildPromptWithFiles(text), model: m, sessionId: _activeChatSessionId, shadowModel: _shadowM || undefined, images: _imgs.length ? _imgs : undefined, _dbgModeSelect: _modeSelVal, _dbgAgentMode: agentMode });
         prompt.value = ''; resizePrompt(); clearFiles();
-        setSendEnabled(false);
+        setRunningState(true);
         appendLoadingBubble();
       }
 
+      var _agentRunning = false;
+      function setRunningState(running) {
+        _agentRunning = running;
+        if (!sendBtn) return;
+        if (running) {
+          sendBtn.innerHTML = '&#x23F9;';
+          sendBtn.title = '\u505c\u6b62\u57f7\u884c';
+          sendBtn.disabled = false;
+          sendBtn.classList.add('stop-mode');
+        } else {
+          sendBtn.innerHTML = '&#9658;';
+          sendBtn.title = '\u9001\u51fa';
+          sendBtn.disabled = prompt.value.trim().length === 0;
+          sendBtn.classList.remove('stop-mode');
+        }
+      }
       function setSendEnabled(on) {
-        if (sendBtn) sendBtn.disabled = !on;
+        if (!_agentRunning && sendBtn) sendBtn.disabled = !on;
       }
       prompt.addEventListener('input', function() { setSendEnabled(prompt.value.trim().length > 0); });
       setSendEnabled(true);
@@ -1644,6 +1712,9 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         { cmd: '/wa',             icon: '&#x1F4F1;', desc: '\u986f\u793a WhatsApp \u9023\u7dda\u72c0\u614b' },
         { cmd: '/jenkins',        icon: '&#x1F6E0;', desc: '\u67e5\u8a62 Jenkins \u5efa\u7f6e\u72c0\u614b' },
         { cmd: '/compact',        icon: '&#x1F5DC;', desc: '\u58d3\u7e2e\u5c0d\u8a71\u6b77\u53f2\uff08\u91cb\u653e context \u7a7a\u9593\uff09' },
+        { cmd: '/workflow list',  icon: '&#x2699;&#xFE0F;', desc: '\u5217\u51fa\u6240\u6709\u5df2\u5132\u5b58\u7684\u5de5\u4f5c\u6d41\u7a0b' },
+        { cmd: '/workflow save',  icon: '&#x1F4BE;', desc: '\u5c07\u76ee\u524d\u5c0d\u8a71\u5132\u5b58\u70ba\u5de5\u4f5c\u6d41\u7a0b\uff08/workflow save \u540d\u7a31\uff09' },
+        { cmd: '/workflow run',   icon: '&#x25B6;&#xFE0F;', desc: '\u57f7\u884c\u5df2\u5132\u5b58\u7684\u5de5\u4f5c\u6d41\u7a0b\uff08/workflow run \u540d\u7a31\uff09' },
         { cmd: '/audit',          icon: '&#x1F4CB;', desc: '\u986f\u793a\u5de5\u5177\u7a3d\u6838\u65e5\u8a8c' },
         { cmd: '/photos',         icon: '&#x1F5BC;&#xFE0F;', desc: '整理照片：辨識人物 / 行為並分類到資料夾' },
       ];
@@ -1702,8 +1773,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           vscode.postMessage({ type: 'exportChat', format: 'markdown', sessionId: _activeChatSessionId, title: '對話-' + new Date().toISOString().slice(0,10) });
           return;
         }
-        if (cmd === '/jira') { appendMessage('user', '/jira'); vscode.postMessage({ type: 'agentSend', prompt: '請立即呼叫 jira_list 顯示我目前指派的 Issues 清單，並以清晰格式輸出。', model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setSendEnabled(false); appendLoadingBubble(); return; }
-        if (cmd === '/jenkins') { appendMessage('user', '/jenkins'); vscode.postMessage({ type: 'agentSend', prompt: '請立即呼叫 jenkins_status 查詢 Jenkins 最近建置狀態並回報結果。', model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setSendEnabled(false); appendLoadingBubble(); return; }
+        if (cmd === '/jira') { appendMessage('user', '/jira'); vscode.postMessage({ type: 'agentSend', prompt: '請立即呼叫 jira_list 顯示我目前指派的 Issues 清單，並以清晰格式輸出。', model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setRunningState(true); appendLoadingBubble(); return; }
+        if (cmd === '/jenkins') { appendMessage('user', '/jenkins'); vscode.postMessage({ type: 'agentSend', prompt: '請立即呼叫 jenkins_status 查詢 Jenkins 最近建置狀態並回報結果。', model: modelSelect ? modelSelect.value : undefined, sessionId: _activeChatSessionId }); setRunningState(true); appendLoadingBubble(); return; }
         if (cmd === '/photos') { var _pb = document.getElementById('organizePhotosBtn'); if (_pb) _pb.click(); return; }
         if (cmd === '/wa') { appendMessage('user', '/wa'); vscode.postMessage({ type: 'slashCommand', cmd: 'wa' }); return; }
         // 其餘由 extension host 處理
@@ -1718,7 +1789,9 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         return false;
       }
 
-      sendBtn.addEventListener('click', doSend);
+      sendBtn.addEventListener('click', function() {
+        if (_agentRunning) { vscode.postMessage({ type: 'agentStop' }); vscode.postMessage({ type: 'teamStop' }); } else { doSend(); }
+      });
 
       // Enter/Ctrl+Enter 送出設定由 cfgSendKey 控制
       prompt.addEventListener('keydown', function(e) {
@@ -1841,13 +1914,32 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         });
       });
 
-      document.getElementById('stopAgent').addEventListener('click', function() { vscode.postMessage({ type: 'agentStop' }); vscode.postMessage({ type: 'teamStop' }); });
+
 
       document.getElementById('toggleStream').addEventListener('click', function() {
         streamMode = !streamMode;
         vscode.postMessage({ type: 'toggleStream', enabled: streamMode });
         document.getElementById('toggleStream').classList.toggle('active', streamMode);
         if (statusBar) statusBar.textContent = streamMode ? '\u26a1 \u4e32\u6d41\u6a21\u5f0f\u958b\u555f' : '';
+      });
+
+      document.getElementById('proactiveBtn').addEventListener('click', function() {
+        var pb = document.getElementById('proactiveBtn');
+        if (pb && pb.classList.contains('proactive-active')) {
+          // 停止
+          vscode.postMessage({ type: 'stopAuto' });
+          pb.classList.remove('proactive-active');
+          if (statusBar) statusBar.textContent = '\u23f9 \u81ea\u4e3b\u6a21\u5f0f\u505c\u6b62';
+        } else {
+          // 啟動：以目前 prompt 框的文字為初始任務（可為空）
+          var p = document.getElementById('prompt');
+          var initTask = p ? p.value.trim() : '';
+          if (!initTask) { if (statusBar) statusBar.textContent = '\u8acb\u5148\u8f38\u5165\u4efb\u52d9\u5167\u5bb9'; return; }
+          if (p) { p.value = ''; resizePrompt(); clearFiles(); }
+          appendMessage('user', initTask);
+          setRunningState(true);
+          vscode.postMessage({ type: 'startAuto', prompt: initTask, model: modelSelect ? modelSelect.value : undefined });
+        }
       });
 
       document.getElementById('pickFile').addEventListener('click', function() {
@@ -2332,9 +2424,9 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         node.appendChild(bub); chat.appendChild(node); return bub;
       }
 
-      function appendAgentStep(icon, title, fullPath) {
+      function appendAgentStep(icon, title, fullPath, isShadow) {
         var bub = ensureLastAssistantBubble();
-        var d = document.createElement('details'); d.className = 'tool-step'; d.dataset.s = 'running';
+        var d = document.createElement('details'); d.className = 'tool-step' + (isShadow ? ' shadow-step' : ''); d.dataset.s = 'running';
         var s = document.createElement('summary');
         var span = document.createElement('span'); span.textContent = (icon || '\uD83D\uDD27') + '\u00A0' + title;
         if (fullPath) { span.title = fullPath; }
@@ -2349,6 +2441,86 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         _agentStepNode.dataset.s = isError ? 'error' : 'done';
         if (result) { var pre = document.createElement('pre'); pre.textContent = result; _agentStepNode.appendChild(pre); }
         _agentStepNode = null; chat.scrollTop = chat.scrollHeight;
+      }
+
+      // ── Compact bar 視覺化 ───────────────────────────────────────────────────
+      var _compactBarNode = null;
+      var _compactTokensBefore = 0;
+
+      function handleCompactUpdate(msg) {
+        var phase = msg.phase || '';
+        if (phase === 'microcompact' || phase === 'l2l3') {
+          // Intermediate stages: just show a transient progress step (reuses agentStep styling)
+          var stageName = phase === 'microcompact' ? '\uD83D\uDDDC\uFE0F Microcompact' : '\uD83E\uDDF9 L2/L3';
+          appendAgentStep(phase === 'microcompact' ? '\uD83D\uDDDC\uFE0F' : '\uD83E\uDDF9',
+            stageName + '\uFF1A\u91CB\u51FA \u2248' + (msg.freed || 0) + ' chars\uFF08\u5269 \u2248' + (msg.tokensNow || 0) + ' tok\uFF09', '', false);
+          finalizeAgentStep(null, false);
+          return;
+        }
+        if (phase === 'llm-running') {
+          _compactTokensBefore = msg.tokensBefore || 0;
+          _compactBarNode = appendCompactBar(msg.tokensBefore, msg.threshold, msg.messagesBefore);
+          return;
+        }
+        if (phase === 'done' || phase === 'error') {
+          if (!_compactBarNode) {
+            // done without llm-running (microcompact/drop only) — create bar now
+            _compactBarNode = appendCompactBar(msg.tokensBefore, msg.threshold, msg.messagesBefore);
+          }
+          finalizeCompactBar(_compactBarNode, msg);
+          _compactBarNode = null;
+          chat.scrollTop = chat.scrollHeight;
+        }
+      }
+
+      function appendCompactBar(tokensBefore, threshold, messagesBefore) {
+        var bub = ensureLastAssistantBubble();
+        var bar = document.createElement('div'); bar.className = 'compact-bar';
+        var header = document.createElement('div'); header.className = 'cb-header';
+        var spin = document.createElement('span'); spin.className = 'cb-spin'; spin.textContent = '\uD83D\uDDDC\uFE0F';
+        var title = document.createElement('span'); title.textContent = ' Context \u58d3\u7e2e\u4e2d\u2026';
+        header.appendChild(spin); header.appendChild(title);
+        var stages = document.createElement('div'); stages.className = 'cb-stages'; stages.textContent = '\u2248' + (tokensBefore || 0) + ' tokens \u2192 \u58d3\u7e2e\u4e2d';
+        var track = document.createElement('div'); track.className = 'cb-track';
+        var fill = document.createElement('div'); fill.className = 'cb-fill'; fill.style.width = '0%';
+        track.appendChild(fill);
+        var stats = document.createElement('div'); stats.className = 'cb-stats';
+        var preview = document.createElement('div'); preview.className = 'cb-preview';
+        bar.appendChild(header); bar.appendChild(stages); bar.appendChild(track); bar.appendChild(stats); bar.appendChild(preview);
+        bar.addEventListener('click', function() { bar.classList.toggle('expanded'); });
+        bub.appendChild(bar); chat.scrollTop = chat.scrollHeight;
+        return bar;
+      }
+
+      function finalizeCompactBar(bar, msg) {
+        if (!bar) return;
+        var isError = msg.error || msg.phase === 'error';
+        var before = msg.tokensBefore || 0;
+        var after = msg.tokensAfter || 0;
+        var freed = before - after;
+        var pct = before > 0 ? Math.max(0, Math.round(freed / before * 100)) : 0;
+        var stageNames = { microcompact: 'Microcompact', l2l3: 'L2/L3', llm: 'LLM \u6458\u8981', drop: '\u88c1\u526a\u6a21\u5f0f' };
+        var stageLabel = (msg.stages || []).map(function(s) { return stageNames[s] || s; }).join(' \u2192 ');
+
+        var header = bar.querySelector('.cb-header');
+        if (header) {
+          var spin = header.querySelector('.cb-spin');
+          if (spin) { spin.textContent = isError ? '\u26a0\ufe0f' : '\u2705'; spin.className = ''; }
+          var t = header.querySelector('span:last-child');
+          if (t) t.textContent = isError ? ' \u58d3\u7e2e\u5931\u6557\uff0c\u6539\u7528\u88c1\u526a\u6a21\u5f0f' : ' Context \u58d3\u7e2e\u5b8c\u6210';
+        }
+        var stages = bar.querySelector('.cb-stages');
+        if (stages) stages.textContent = stageLabel + (\u00a0msg.messagesBefore ? ' \u00b7 ' + msg.messagesBefore + ' \u5247 \u2192 ' + (msg.messagesAfter || 1) + ' \u5247\u6458\u8981' : '');
+        var fill = bar.querySelector('.cb-fill');
+        if (fill) { fill.style.width = pct + '%'; if (isError) fill.style.background = '#f14c4c'; }
+        var stats = bar.querySelector('.cb-stats');
+        if (stats) {
+          stats.innerHTML = '<span>before \u2248' + before + ' tok</span><span style="color:#4ec9b0;font-weight:700">-' + pct + '% (' + freed + ' freed)</span><span>after \u2248' + after + ' tok</span>';
+        }
+        if (msg.summaryPreview) {
+          var preview = bar.querySelector('.cb-preview');
+          if (preview) { preview.textContent = msg.summaryPreview; }
+        }
       }
 
       // ── 團隊模式 ──────────────────────────────────────────────────────────
