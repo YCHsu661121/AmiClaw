@@ -1,0 +1,24 @@
+==========================================================================================
+FILE: .vscode\settings.json
+LINE COUNT: 18
+SIZE: 668 bytes
+==========================================================================================
+       1| {
+       2|     "amiAiClaw.urls": [
+       3|         "http://ai:11434",
+       4|         "http://intelnode2:11434"
+       5|     ],
+       6|     "amiAiClaw.openaiUrls": [
+       7|         "http://intelnode2:1234"
+       8|     ],
+       9|     "amiAiClaw.openaiCompatApiKey": "sk-lm-irIOgPx7:fEkQTku0od4n3y6EueJn",
+      10|     "amiAiClaw.model": "openai::http://intelnode2:1234||deepseek/deepseek-v4-flash",
+      11|     "amiAiClaw.models": ["openai::http://intelnode2:1234||deepseek/deepseek-v4-flash"],
+      12|     "amiAiClaw.thinkingLevel": "high",
+      13|     "amiAiClaw.contextDepth": "file",
+      14|     "amiAiClaw.visionModel": "llava",
+      15|     "amiAiClaw.autoPilotEnabled": true,
+      16|     "amiAiClaw.agentAutoApproveWrite": false,
+      17|     "amiAiClaw.enableDebugLog": true
+      18| }
+

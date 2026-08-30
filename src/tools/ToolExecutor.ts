@@ -24,6 +24,9 @@ import { AtlassianProvider } from './providers/AtlassianProvider';
 import { NetworkProvider } from './providers/NetworkProvider';
 import { IntegrationProvider } from './providers/IntegrationProvider';
 import { DevToolsProvider } from './providers/DevToolsProvider';
+import { LspProvider } from './providers/LspProvider';
+import { BackgroundProvider } from './providers/BackgroundProvider';
+import { ComputerUseProvider } from './providers/ComputerUseProvider';
 import { SandboxManager, SHADOW_WRITE_TOOLS } from './SandboxManager';
 
 // 對外保留型別重新匯出，避免改動 consumer
@@ -126,6 +129,25 @@ export class ToolExecutor {
   private _cache = new ToolCache(30_000);
   private _audit: ToolAuditLog;
   private _policy: ToolPolicies;
+  // Tracks mtime at last read — used to detect external modifications before write
+  private _fileReadTimes = new Map<string, number>();
+
+  /** Block obviously destructive commands before even prompting the user. */
+  private static _checkDangerousCommand(cmd: string): string | null {
+    if (/rm\s+-[rfRF]+\s*(\s*['"`]?(\/|~\/|\*)['"`]?|\s*\/\*)/.test(cmd))
+      return '危険命令：rm -rf 根目錄 / 家目錄，已阻擋';
+    if (/\|\s*(bash|sh|zsh|ksh|fish|csh)\b/.test(cmd))
+      return '危険命令：管道到 shell（遠程代碼執行），已阻擋；請先下載腳本再執行';
+    if (/:\(\)\s*\{/.test(cmd))
+      return '危険命令：fork bomb，已阻擋';
+    if (/\bdd\b.*\bof=\/dev\/(sd|hd|nvme|xvd)/.test(cmd))
+      return '危険命令：dd 寫入磁碟，已阻擋';
+    if (/[>|]\s*\/etc\/(passwd|shadow|sudoers)/.test(cmd))
+      return '危険命令：覆寫系統認證檔，已阻擋';
+    if (/\bformat\s+[a-z]:/i.test(cmd))
+      return '危険命令：格式化磁碟，已阻擋';
+    return null;
+  }
   private static _toolOutput: vscode.OutputChannel | undefined;
   private static _out(): vscode.OutputChannel {
     if (!ToolExecutor._toolOutput) ToolExecutor._toolOutput = vscode.window.createOutputChannel('AmiClaw');
@@ -172,6 +194,9 @@ export class ToolExecutor {
       new NetworkProvider(),
       new IntegrationProvider(),
       new DevToolsProvider(),
+      new LspProvider(),
+      new BackgroundProvider(),
+      new ComputerUseProvider(),
     ] as IToolProvider[]) {
       for (const tool of provider.tools) {
         this._providerMap.set(tool, provider);
@@ -835,6 +860,8 @@ export class ToolExecutor {
 
         const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fpath));
         const text = Buffer.from(bytes).toString('utf8');
+        // Track read time for conflict detection on subsequent writes
+        try { const s = await vscode.workspace.fs.stat(vscode.Uri.file(fpath)); this._fileReadTimes.set(fpath, s.mtime); } catch { /* ignore */ }
         const rfResult = text.length > 50000 ? text.slice(0, 50000) + '\n…（已截斷至 50KB）' : text;
         if (text.length <= 10000) { this._cache.set(rfKey, rfResult); }
         return rfResult;
@@ -1194,11 +1221,22 @@ export class ToolExecutor {
         const content = (args.content as string) ?? '';
         let wfBefore = '';
         try { wfBefore = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(fpath))).toString('utf8'); } catch { /* new file */ }
+        // Conflict detection: file modified externally since last read
+        const wfReadTime = this._fileReadTimes.get(fpath);
+        if (wfReadTime !== undefined && wfBefore) {
+          try {
+            const wfStat = await vscode.workspace.fs.stat(vscode.Uri.file(fpath));
+            if (wfStat.mtime > wfReadTime) {
+              return `⚠️ 衝突：${path.basename(fpath)} 自上次讀取後已被外部程式修改（可能是 linter）。請先重新呼叫 read_file 再編輯。`;
+            }
+          } catch { /* file might be new */ }
+        }
         const wfDiff = { filePath: fpath, before: wfBefore, after: content, mode: 'write' as const };
         const allowed = await this.requestPermission('write', `寫入檔案: ${path.basename(fpath)}（${content.length} 字元）`, 'write_file', wfDiff);
         if (!allowed) { return '使用者已拒絕寫入操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(content, 'utf8'));
         this._cache.delete(`rf:${fpath}`);
+        this._fileReadTimes.delete(fpath);
         const wfStats = computeDiffStatsAndPatch(wfDiff.before, wfDiff.after, fpath);
         this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'write', ts: Date.now(), ...wfStats });
         return `已寫入 ${fpath}（${content.length} 字元）`;
@@ -1209,12 +1247,39 @@ export class ToolExecutor {
         const original = Buffer.from(bytes).toString('utf8');
         const oldStr = args.old_str as string;
         const newStr = (args.new_str as string) ?? '';
-        if (!original.includes(oldStr)) { return `錯誤：在 ${fpath} 中找不到指定的字串`; }
+        // Conflict detection
+        const rifReadTime = this._fileReadTimes.get(fpath);
+        if (rifReadTime !== undefined) {
+          try {
+            const rifStat = await vscode.workspace.fs.stat(vscode.Uri.file(fpath));
+            if (rifStat.mtime > rifReadTime) {
+              return `⚠️ 衝突：${path.basename(fpath)} 自上次讀取後已被外部程式修改。請先重新呼叫 read_file 再編輯。`;
+            }
+          } catch { /* ignore */ }
+        }
+        if (!original.includes(oldStr)) {
+          // Fuzzy hint: find lines sharing keywords with old_str
+          const keywords = oldStr.split(/\s+/).filter(w => w.length > 3).slice(0, 3);
+          const hints = original.split('\n')
+            .map((l, i) => ({ i: i + 1, t: l.trim(), hits: keywords.filter(k => l.toLowerCase().includes(k.toLowerCase())).length }))
+            .filter(l => l.hits > 0)
+            .sort((a, b) => b.hits - a.hits)
+            .slice(0, 3)
+            .map(l => `  第 ${l.i} 行: ${l.t.slice(0, 100)}`)
+            .join('\n');
+          const hintText = hints ? `\n\n類似內容可能在：\n${hints}` : '';
+          return `錯誤：在 ${path.basename(fpath)} 中找不到指定的字串。請先呼叫 outline_file 或 read_file_smart 確認確切內容再編輯。${hintText}`;
+        }
+        const matchCount = original.split(oldStr).length - 1;
+        if (matchCount > 1) {
+          return `錯誤：在 ${path.basename(fpath)} 中找到 ${matchCount} 處相符字串。old_str 必須在檔案中唯一。請加入更多前後文字來唯一定位，或用 replace_all_in_file 取代所有 ${matchCount} 處。`;
+        }
         const rifDiff = { filePath: fpath, before: original, after: original.replace(oldStr, newStr), mode: 'replace' as const, oldStr, newStr };
         const allowed = await this.requestPermission('write', `編輯檔案: ${path.basename(fpath)}`, 'replace_in_file', rifDiff);
         if (!allowed) { return '使用者已拒絕編輯操作'; }
         await vscode.workspace.fs.writeFile(vscode.Uri.file(fpath), Buffer.from(original.replace(oldStr, newStr), 'utf8'));
         this._cache.delete(`rf:${fpath}`);
+        this._fileReadTimes.delete(fpath);
         const rifStats = computeDiffStatsAndPatch(rifDiff.before, rifDiff.after, fpath);
         this._callbacks.postToWebview({ type: 'fileModified', filePath: fpath, op: 'replace', ts: Date.now(), ...rifStats });
         return `已更新 ${fpath}`;
@@ -1615,6 +1680,9 @@ export class ToolExecutor {
       case 'run_command': {
         const cmd = args.command as string;
         const cwd = (args.cwd as string) ? resolvePath(args.cwd as string) : (folders[0]?.uri.fsPath ?? process.cwd());
+        // Security gate before permission prompt
+        const dangerReason = ToolExecutor._checkDangerousCommand(cmd);
+        if (dangerReason) { return dangerReason; }
         const allowed = await this.requestPermission('run', `執行指令: ${cmd}`, 'run_command');
         if (!allowed) { return '使用者已拒絕執行操作'; }
         const rcCfg = vscode.workspace.getConfiguration('amiAiClaw');

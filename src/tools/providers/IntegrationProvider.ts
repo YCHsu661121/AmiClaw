@@ -6,6 +6,7 @@ import type { IToolProvider, ToolExecutionContext } from './IToolProvider';
 const TOOLS = new Set([
   'whatsapp_connect','whatsapp_status','whatsapp_disconnect',
   'whatsapp_save_credentials','whatsapp_send','whatsapp_send_template',
+  'whatsapp_list_chats',
 ]);
 
 /** WhatsApp 所有工具均委派至 callbacks.handleWhatsAppTool，本 Provider 是純路由層。 */

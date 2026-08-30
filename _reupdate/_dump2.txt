@@ -1,0 +1,108 @@
+ 913|                 return `${role}\n\n${m.content ?? ''}\n`;
+ 914|               }).join('\n---\n\n');
+ 915|             } else {
+ 916|               exportContent = JSON.stringify({ title: exportTitle, sessionId: exportSid, exportedAt: new Date().toISOString(), messages: exportHist },
+ 917|             }
+ 918|             const exportUri = await vscode.window.showSaveDialog({
+ 919|               defaultUri: vscode.Uri.file(`${exportTitle.replace(/[/\\?%*:|"<>]/g, '_')}.${exportFmt === 'markdown' ? 'md' : 'json'}`),
+ 920|               filters: exportFmt === 'markdown' ? { 'Markdown': ['md'] } : { 'JSON': ['json'] }
+ 921|             });
+ 922|             if (exportUri) {
+ 923|               await vscode.workspace.fs.writeFile(exportUri, Buffer.from(exportContent, 'utf-8'));
+ 924|               this._panel.webview.postMessage({ type: 'exportDone', path: exportUri.fsPath });
+ 925|             }
+ 926|             break;
+ 927|           }
+ 928|           case 'importChat': {
+ 929|             const importUris = await vscode.window.showOpenDialog({
+ 930|               canSelectMany: false,
+ 931|               filters: { 'JSON 對話': ['json'] },
+ 932|               title: '匯入對話 JSON'
+ 933|             });
+ 934|             if (!importUris || !importUris[0]) { break; }
+ 935|             try {
+ 936|               const raw = Buffer.from(await vscode.workspace.fs.readFile(importUris[0])).toString('utf-8');
+ 937|               const parsed = JSON.parse(raw) as { title?: string; sessionId?: string; messages?: { role: string; content?: string }[] };
+ 938|               if (!Array.isArray(parsed.messages)) { throw new Error('無效的 JSON 格式：缺少 messages 陣列'); }
+ 939|               const importId = 'chat-import-' + Date.now();
+ 940|               const importTitle = (parsed.title ?? '匯入的對話').slice(0, 30);
+ 941|               this._chatHistories[importId] = this.createHistoryProxy(parsed.messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.con
+ 942|               this._panel.webview.postMessage({ type: 'importDone', sessionId: importId, title: importTitle });
+ 943|             } catch (e) {
+ 944|               this._panel.webview.postMessage({ type: 'error', text: '匯入失敗：' + (e instanceof Error ? e.message : String(e)) });
+ 945|             }
+ 946|             break;
+ 947|           }
+ 948|           case 'searchConversations': {
+ 949|             const q = ((message.query as string) || '').toLowerCase().trim();
+ 950|             if (!q) { this._panel.webview.postMessage({ type: 'searchResults', results: [] }); break; }
+ 951|             const results: { sessionId: string; title: string; snippet: string }[] = [];
+ 952|             for (const [sid, hist] of Object.entries(this._chatHistories)) {
+ 953|               for (const m of hist) {
+ 954|                 const text = (m.content ?? '').toLowerCase();
+ 955|                 const idx = text.indexOf(q);
+ 956|                 if (idx !== -1) {
+ 957|                   const start = Math.max(0, idx - 30);
+ 958|                   const snippet = (idx > 30 ? '\u2026' : '') + (m.content ?? '').slice(start, start + 120) + (start + 120 < (m.content ?? '').length ?
+ 959|                   results.push({ sessionId: sid, title: sid, snippet });
+ 960|                   break; // one hit per session
+ 961|                 }
+ 962|               }
+ 963|             }
+ 964|             this._panel.webview.postMessage({ type: 'searchResults', results });
+ 965|             break;
+ 966|           }
+ 967|           case 'resetUsage':
+ 968|             this._usageStats = {};
+ 969|             this._latencyLog = [];
+ 970|             this._context.globalState.update('amiAiClaw.usageStats', {});
+ 971|             this._panel.webview.postMessage({ type: 'usageUpdate', stats: {} });
+ 972|             this._panel.webview.postMessage({ type: 'latencyUpdate', log: [] });
+ 973|             break;
+ 974|           case 'statsOpen':
+ 975|             this._panel.webview.postMessage({ type: 'usageUpdate', stats: this._usageStats });
+ 976|             this._panel.webview.postMessage({ type: 'latencyUpdate', log: this._latencyLog });
+ 977|             break;
+ 978|           case 'debateSwapModel':
+ 979|             if (message.speaker === 'A' || message.speaker === 'B' || message.speaker === 'J') {
+ 980|               this._debate.swapModel(message.speaker as 'A' | 'B' | 'J', message.modelId);
+ 981|             }
+ 982|             break;
+ 983|           case 'memoryConsolidate':
+ 984|             await this.handleMemoryConsolidate(message.sessionId);
+ 985|             break;
+ 986|           case 'saveModel': {
+ 987|             const newModel = message.model as string;
+ 988|             if (newModel) {
+ 989|               const cfg3 = vscode.workspace.getConfiguration('amiAiClaw');
+ 990|               await cfg3.update('model', newModel, vscode.ConfigurationTarget.Global);
+ 991|               OllamaChatPanel.log('saveModel: ' + newModel);
+ 992|               this._panel.webview.postMessage({
+ 993|                 type: 'providerInfo',
+ 994|                 providerInfo: this.buildProviderInfo(newModel),
+ 995|               });
+ 996|             }
+ 997|             break;
+ 998|           }
+ 999|           case 'openSettings':
+1000|             vscode.commands.executeCommand('workbench.action.openSettings', 'amiAiClaw.systemPrompt');
+1001|             break;
+1002|           case 'editMessage': {
+1003|             // 訊息編輯：截斷歷史到第 userIdx 個 user 訊息之前，再重新送出
+1004|             this.switchChatSession(message.sessionId);
+1005|             const editUserIdx = message.userIdx as number;
+1006|             let uc2 = 0, histCut = 0;
+1007|             for (let i = 0; i < this._chatHistory.length; i++) {
+1008|               if (this._chatHistory[i].role === 'user') {
+1009|                 if (uc2 === editUserIdx) { histCut = i; break; }
+1010|                 uc2++;
+1011|               }
+1012|             }
+1013|             this._chatHistory = this._chatHistory.slice(0, histCut);
+1014|             this._chatHistories[this._activeSessionId] = this._chatHistory;
+1015|             this._agentExecutor.clearSessionMessages(this._activeSessionId);
+1016|             await this._queryEngine.handleSend(message.newText as string, message.model as string | undefined, message.sessionId);
+1017|             break;
+1018|           }
+1019|           case 'forkSession': {
+1020|             // 對話分支：依 userCount 複製歷史，建立新 session

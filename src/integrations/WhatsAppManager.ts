@@ -49,6 +49,8 @@ export class WhatsAppManager {
   private _wa440RetryCount = 0;
   /** 最後一個可回覆的 sendJid，用於主動推送通知（心跳 / Agent 完成） */
   private _lastActiveSendJid = '';
+  /** 所有已知職天對話之記錄，供 whatsapp_list_chats 使用 */
+  private _chatList = new Map<string, { jid: string; phone: string; name: string; lastMsg: string; lastTs: number; msgCount: number }>();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -361,6 +363,18 @@ export class WhatsAppManager {
     this._cb.log(`WA incoming from ${displaySender}${fromMe ? ' [note-to-self]' : ''}: ${text} (sendJid=${sendJid})`);
     // 記住最後可回覆的 JID，供 notifyOwner 主動推送使用
     if (sendJid) this._lastActiveSendJid = sendJid;
+    // 更新職天對話清單
+    const chatKey = sendJid || remoteJid;
+    if (chatKey) {
+      const existing = this._chatList.get(chatKey);
+      this._chatList.set(chatKey, {
+        jid: chatKey, phone: senderPhone,
+        name: pushName || existing?.name || '',
+        lastMsg: text.slice(0, 80),
+        lastTs: Date.now(),
+        msgCount: (existing?.msgCount ?? 0) + 1,
+      });
+    }
     // 在聊天視窗顯示收到的訊息（panel 可能已關閉，try-catch 防止拋出）
     try { this._cb.postToWebview({ type: 'waIncoming', sender: displaySender, text, remoteJid }); } catch { /* disposed */ }
     // 白名單過濾：fromMe+@lid 必然是本人，直接放行；其他號碼需比對白名單
@@ -403,7 +417,7 @@ export class WhatsAppManager {
           .sendMessage(sendJid, { text: thinkingText });
       }
     } catch (e) { this._cb.log('WA thinking-reply error: ' + String(e)); }
-    const agentPrompt = `[WhatsApp 指令，來自 ${displaySender}]\n${text}\n\n請處理此指令。處理完後，使用 whatsapp_send 將結果回覆給 +${senderPhone}。`;
+    const agentPrompt = `[WhatsApp 指令，來自 ${displaySender}]\n${text}\n\n請處理此指令，完成後給出精簡清晰的結果調。結果將自動回傳給 ${displaySender}。`;
     // waTriggered=true：工具執行時自動允許（不等待 UI 點擊）
     this._cb.onAgentTrigger(agentPrompt, waAgentModel).catch(e => this._cb.log('WA agent error: ' + String(e)));
   }
@@ -920,6 +934,9 @@ export class WhatsAppManager {
         });
       }
 
+      case 'whatsapp_list_chats':
+        return this._listChats();
+
       case 'whatsapp_send_template': {
         const wtCfg = vscode.workspace.getConfiguration('amiAiClaw');
         // 優先從 globalState 讀（QR 連線後自動儲存），其次才看 settings
@@ -986,6 +1003,27 @@ export class WhatsAppManager {
       default:
         return `未知 WhatsApp 工具: ${name}`;
     }
+  }
+
+  // ── whatsapp_list_chats ───────────────────────────────────────────────────
+
+  private _listChats(): string {
+    if (!this._waConnected) {
+      return '⚠️ WhatsApp Web 未連線。請先呼叫 whatsapp_connect。';
+    }
+    if (this._chatList.size === 0) {
+      return '（尚無已知職天）——有訊息互動後會自動建立清單';
+    }
+    const sorted = Array.from(this._chatList.values())
+      .sort((a, b) => b.lastTs - a.lastTs);
+    const now = Date.now();
+    const rows = sorted.map((c, i) => {
+      const elapsed = Math.round((now - c.lastTs) / 60000);
+      const age = elapsed < 60 ? `${elapsed}m ago` : elapsed < 1440 ? `${Math.round(elapsed / 60)}h ago` : `${Math.round(elapsed / 1440)}d ago`;
+      const name = c.name ? `${c.name} (+${c.phone})` : `+${c.phone}`;
+      return `${i + 1}. ${name}\n   JID: ${c.jid}\n   最後: ${c.lastMsg} (${age}, ${c.msgCount} 則)`;
+    });
+    return `已知職天 ${sorted.length} 個（依最新活動排序）：\n\n${rows.join('\n\n')}`;
   }
 
   // ── Private static utilities (copied from ollama-chat.ts to avoid circular imports) ──

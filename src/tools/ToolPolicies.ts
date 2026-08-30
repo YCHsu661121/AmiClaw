@@ -35,6 +35,68 @@ const AUTO_WRITE_TOOLS = new Set([
   'batch_replace', 'rename_file', 'copy_file', 'todo_write', 'memory_write',
 ]);
 
+// ── Effect-based rule DSL ──────────────────────────────────────────────────────────────────────
+
+export type ToolEffect = 'write' | 'shell' | 'network' | 'delete' | 'any';
+
+/**
+ * Single ACL rule. Stored in `amiAiClaw.toolPolicyRules` (VS Code setting).
+ * Rules are evaluated top-to-bottom; first match wins.
+ * Effects: write=file mutations, shell=commands, network=HTTP/browser, delete=destructive.
+ * Pattern: glob for write/delete (file path); substring for shell (command) / network (URL).
+ */
+export interface PolicyRule {
+  effect: ToolEffect;
+  action: 'allow' | 'deny' | 'ask';
+  pattern?: string;
+}
+
+const _WRITE_EFFECT = new Set([
+  'write_file','replace_in_file','insert_in_file','replace_all_in_file',
+  'batch_replace','rename_file','copy_file','todo_write','memory_write','lsp_rename_symbol',
+]);
+const _SHELL_EFFECT  = new Set(['run_command','run_terminal','run_python']);
+const _NET_EFFECT    = new Set(['http_request','fetch_url','browser_navigate','browser_screenshot','browser_script']);
+
+function _getEffect(toolName: string): ToolEffect | null {
+  if (_WRITE_EFFECT.has(toolName)) return 'write';
+  if (_SHELL_EFFECT.has(toolName)) return 'shell';
+  if (_NET_EFFECT.has(toolName))   return 'network';
+  if (toolName === 'delete_file')  return 'delete';
+  return null;
+}
+
+/** Minimal glob: * = any non-separator chars, ** = anything including /. */
+function _globMatch(pattern: string, value: string): boolean {
+  const v = value.replace(/\\/g, '/');
+  const re = pattern
+    .replace(/\\/g, '/')
+    .replace(/[.+^${}()|[\]]/g, '\\$&')
+    .replace(/\*\*/g, '\x00')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\x00/g, '.*');
+  // match against full path or path suffix (allows `src/**` to match `C:/ws/src/foo.ts`)
+  return new RegExp(`(^|/)${re}$`, 'i').test(v) || new RegExp(`^${re}$`, 'i').test(v);
+}
+
+/** Evaluate ordered rules; returns first matching action or null. */
+export function evaluatePolicyRules(
+  rules: PolicyRule[],
+  effect: ToolEffect,
+  value: string,
+): 'allow' | 'deny' | 'ask' | null {
+  for (const rule of rules) {
+    if (rule.effect !== effect && rule.effect !== 'any') continue;
+    if (!rule.pattern) return rule.action;
+    if (effect === 'write' || effect === 'delete') {
+      if (_globMatch(rule.pattern, value)) return rule.action;
+    } else {
+      if (value.toLowerCase().includes(rule.pattern.toLowerCase())) return rule.action;
+    }
+  }
+  return null;
+}
+
 /**
  * 工具權限政策：alwaysAllow 集合 + 一次性確認佇列（pending promise）。
  * 把 forceConfirm / WA agent auto-allow / agentAutoApproveWrite / config alwaysAllowList
@@ -72,15 +134,52 @@ export class ToolPolicies {
     toolName = '',
     diff?: ToolPermissionDiff,
   ): Promise<boolean> {
-    // ── AutoPilot gateway（最優先，短路後續所有邏輯）───────────────────────
+    // ── Effect-based rule DSL（最優先）───────────────────────────────────────
+    if (toolName) {
+      const ruleCfg = vscode.workspace.getConfiguration('amiAiClaw');
+      const rules = ruleCfg.get<PolicyRule[]>('toolPolicyRules') ?? [];
+      if (rules.length > 0) {
+        const effect = _getEffect(toolName);
+        if (effect) {
+          let matchValue = description;
+          if (effect === 'write' || effect === 'delete') {
+            matchValue = diff?.filePath ?? '';
+          } else if (effect === 'network') {
+            const m = description.match(/https?:\/\/[^\s]+/);
+            if (m) matchValue = m[0];
+          }
+          const ruleDecision = evaluatePolicyRules(rules, effect, matchValue);
+          if (ruleDecision === 'allow') { this._cb.log(`Rule DSL allow: ${toolName} [${effect}] ${matchValue.slice(0,60)}`); return true; }
+          if (ruleDecision === 'deny')  { this._cb.log(`Rule DSL deny: ${toolName} [${effect}] ${matchValue.slice(0,60)}`);  return false; }
+          // 'ask' 跳過 AutoPilot，直接展示對話框
+          if (ruleDecision === 'ask') return new Promise<boolean>((resolve) => {
+            this._pendingPermission = resolve;
+            this._cb.postToWebview({ type: 'permissionRequest', category, description, forceConfirm: true, diff });
+          });
+        }
+      }
+    }
+    // ── AutoPilot gateway（次優先，短路後續所有邏輯）───────────────────────
     if (isAutoPilotActive() && this._cb.getAutoPilotServices) {
       const services = this._cb.getAutoPilotServices();
       const transcript = this._cb.getRecentTranscript?.() ?? [];
       const wsFolders = (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
       try {
+        // Build full toolArgs for classifier (was: only filePath)
+        const apArgs: Record<string, unknown> = {};
+        if (diff) {
+          apArgs.path = diff.filePath;
+          if (diff.oldStr) apArgs.old_str = diff.oldStr;
+          if (diff.newStr) apArgs.new_str = diff.newStr;
+          if (diff.mode)   apArgs.mode    = diff.mode;
+        }
+        if ((toolName === 'run_command' || toolName === 'run_terminal') && !apArgs.command) {
+          apArgs.command = description.replace(/^[^:：]+[：:]\s*/, '');
+        }
+        if (!apArgs.url) { const urlM = description.match(/https?:\/\/\S+/); if (urlM) apArgs.url = urlM[0]; }
         const decision = await decideAutoPilotAction({
           toolName,
-          toolArgs: diff ? { filePath: diff.filePath } : {},
+          toolArgs: apArgs,
           toolDisplay: description,
           recentTranscript: transcript,
           workspaceFolders: wsFolders,

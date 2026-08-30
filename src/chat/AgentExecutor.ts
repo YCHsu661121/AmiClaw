@@ -6,6 +6,7 @@ import { buildWorkspaceDigest, getCurrentContextDepth, fmtSize } from '../contex
 import { buildAgentSystemPrompt, buildShadowSupervisorPrompt } from '../context/SystemPromptBuilder';
 import { AgentCarryover } from './AgentCarryover';
 import { isRefusalResponse, isChoiceConfirmation } from './RefusalDetector';
+import { TaskStore } from './TaskStore';
 import { HeartbeatService } from '../services/HeartbeatService';
 import {
   buildSessionNotes,
@@ -47,6 +48,10 @@ export interface AgentExecutorCallbacks {
   getAgentTodos?: () => Array<{id: number; text: string; done: boolean}>;
   /** Session Notes — Agent 執行中每 N 次工具呼叫後自動呼叫，持久化筆記 */
   onSessionNotesUpdate: (notes: string) => Promise<void>;
+  /** 專案規則層（RULES.md）——必常注入，優先級高於記憶 */
+  getProjectRules?: () => string;
+  /** WA 觸發完成後自動回傳精簡結果（取代模型手動呼叫 whatsapp_send） */
+  notifyWaOwner?: (text: string) => void;
 }
 
 export interface AgentExecutorServices {
@@ -181,18 +186,43 @@ export class AgentExecutor {
 
     await this._callbacks.ensureModelReady(baseUrl, model);
 
-    // Coordinator 只有兩個工具
+    // Coordinator 4 tools: task lifecycle + worker spawn
     const coordinatorTools = [
       {
         type: 'function',
         function: {
+          name: 'create_task',
+          description: 'Create a tracked task before spawning a worker. Builds a visible task plan. Returns the task_id to pass to spawn_worker.',
+          parameters: {
+            type: 'object',
+            properties: {
+              id:          { type: 'string',  description: 'Short stable identifier, e.g. "explore-auth", "implement-login" (auto-generated if omitted)' },
+              description: { type: 'string',  description: 'What the worker should accomplish' },
+              context:     { type: 'string',  description: 'Background info / constraints for the worker (optional)' },
+            },
+            required: ['description'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'list_tasks',
+          description: 'Show all tasks and their current status (created/claimed/completed/failed/blocked). Call after spawning workers to review progress.',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+      {
+        type: 'function',
+        function: {
           name: 'spawn_worker',
-          description: 'Spawn a Worker agent that has access to all tools (read, write, execute). The worker will independently complete the subtask and report back. Use this to delegate concrete work.',
+          description: 'Spawn a Worker agent to execute a subtask. If you created a task with create_task, pass its id via task_id to link them.',
           parameters: {
             type: 'object',
             properties: {
               task:    { type: 'string', description: 'Clear description of the specific subtask for the worker' },
               context: { type: 'string', description: 'Optional background context or constraints for the worker' },
+              task_id: { type: 'string', description: 'Optional: ID of a task created with create_task (transitions it created→claimed)' },
             },
             required: ['task'],
           },
@@ -202,7 +232,7 @@ export class AgentExecutor {
         type: 'function',
         function: {
           name: 'coordinator_done',
-          description: 'Signal that all subtasks have been delegated and completed. Provide a summary of what was accomplished.',
+          description: 'Signal that all subtasks are complete. Provide a summary of what was accomplished.',
           parameters: {
             type: 'object',
             properties: {
@@ -216,9 +246,10 @@ export class AgentExecutor {
 
     const systemPrompt = [
       '你是任務協調員（Coordinator）。你的職責是：',
-      '1. 分析使用者的任務，規劃執行步驟',
+      '1. 分析使用者的任務，先呼叫 create_task 建立計劃（可選，但建議）',
       '2. 使用 spawn_worker 將具體工作委派給 Worker agent（Worker 有完整工具存取）',
-      '3. 收到 Worker 回傳結果後，決定下一步或使用 coordinator_done 完成',
+      '3. 收到 Worker 回傳結果後，可用 list_tasks 查看全局進度，再決定下一步',
+      '4. 全部完成後呼叫 coordinator_done',
       '',
       '規則：',
       '- 你自己不執行任何工具操作，只做規劃和協調',
@@ -233,6 +264,7 @@ export class AgentExecutor {
     ];
 
     let workerCount = 0;
+    const taskStore = new TaskStore();
     const MAX_STEPS = 20;
 
     try {
@@ -276,22 +308,51 @@ export class AgentExecutor {
           if (fn.name === 'coordinator_done') {
             const summary = String(args.summary ?? '');
             this._callbacks.postToWebview({ type: 'agentStep', icon: '✅', title: `協調完成：${summary.slice(0, 80)}`, fullPath: '' });
+            this._callbacks.postToWebview({ type: 'taskUpdate', tasks: taskStore.getAll() });
             coordinatorMessages.push({ role: 'tool', content: 'done', tool_call_id: toolCall.id ?? fn.name });
             allDone = true;
             break;
+          }
+
+          if (fn.name === 'create_task') {
+            const t = taskStore.create(
+              String(args.description ?? ''),
+              String(args.context ?? '') || undefined,
+              String(args.id ?? '') || undefined,
+            );
+            this._callbacks.postToWebview({ type: 'taskUpdate', tasks: taskStore.getAll() });
+            coordinatorMessages.push({ role: 'tool', content: `任務 [${t.id}] 已建立：${t.description}`, tool_call_id: toolCall.id ?? fn.name });
+            continue;
+          }
+
+          if (fn.name === 'list_tasks') {
+            coordinatorMessages.push({ role: 'tool', content: taskStore.format(), tool_call_id: toolCall.id ?? fn.name });
+            continue;
           }
 
           if (fn.name === 'spawn_worker') {
             workerCount++;
             const task    = String(args.task    ?? '');
             const context = String(args.context ?? '');
-            this._callbacks.postToWebview({ type: 'agentStep', icon: '🔧', title: `Worker #${workerCount}：${task.slice(0, 80)}`, fullPath: '' });
+            const taskId  = String(args.task_id ?? '').trim();
 
-            const workerResult = await this._runWorker(task, context, model, baseUrl, workerCount);
+            // Ensure task is tracked: link to existing or auto-create
+            const trackId = taskId && taskStore.get(taskId)
+              ? taskId
+              : taskStore.create(task, context || undefined, taskId || undefined).id;
+            taskStore.claim(trackId, workerCount);
+            this._callbacks.postToWebview({ type: 'taskUpdate', tasks: taskStore.getAll() });
+            this._callbacks.postToWebview({ type: 'agentStep', icon: '🔧', title: `Worker #${workerCount} [${trackId}]：${task.slice(0, 70)}`, fullPath: '' });
 
-            const preview = workerResult.length > 300 ? workerResult.slice(0, 300) + '…' : workerResult;
-            this._callbacks.postToWebview({ type: 'agentStepDone', result: preview, isError: false });
-            coordinatorMessages.push({ role: 'tool', content: workerResult, tool_call_id: toolCall.id ?? fn.name });
+            const result = await this._runWorker(task, context, model, baseUrl, workerCount);
+
+            const resolveStatus = result.status === 'error' ? 'failed' : result.status as 'completed' | 'failed' | 'blocked';
+            taskStore.resolve(trackId, resolveStatus, result.text);
+            this._callbacks.postToWebview({ type: 'taskUpdate', tasks: taskStore.getAll() });
+
+            const preview = result.text.length > 300 ? result.text.slice(0, 300) + '…' : result.text;
+            this._callbacks.postToWebview({ type: 'agentStepDone', result: preview, isError: result.status !== 'completed' });
+            coordinatorMessages.push({ role: 'tool', content: result.text, tool_call_id: toolCall.id ?? fn.name });
           }
         }
 
@@ -313,14 +374,17 @@ export class AgentExecutor {
     model: string,
     baseUrl: string,
     workerIdx: number,
-  ): Promise<string> {
-    const { LLM_TOOLS, searchExtraTools } = await import('../tools/ToolRegistry');
+  ): Promise<{ text: string; status: 'completed' | 'failed' | 'blocked' | 'error' }> {
+    const { LLM_TOOLS, REPORT_RESULT_TOOL, searchExtraTools } = await import('../tools/ToolRegistry');
     const { loadWorkflow, listWorkflows, buildWorkflowCoordinatorPrompt } = await import('../services/WorkflowEngine');
 
     const workerSystemPrompt = [
       `你是 Worker Agent #${workerIdx}。你有 CORE 工具集；如需其他工具，呼叫 search_tools(query) 找到後即可使用。`,
-      '你的職責：接收協調員委派的子任務，使用工具完成後回傳結果文字。',
-      '規則：直接用工具完成工作，完成後輸出清晰的結果摘要。',
+      '你的職責：使用工具完成協調員委派的子任務，最後**必須**呼叫 report_result 回報。',
+      '規則：',
+      '1. 直接用工具完成任務，勿過多解說',
+      '2. 完成後呼叫 report_result(status, summary, files_changed?)，summary 限 500 字',
+      '3. 協調員只看 report_result 的摘要，不看工具輸出詳情',
       `工作區：${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()}`,
     ].join('\n');
 
@@ -329,12 +393,14 @@ export class AgentExecutor {
       { role: 'user', content: context ? `任務：${task}\n\n背景：${context}` : `任務：${task}` },
     ];
 
-    // Dynamically extended tool set — starts with LLM_TOOLS, grows as model calls search_tools
-    let activeLlmTools: unknown[] = [...LLM_TOOLS];
+    // Dynamically extended tool set — starts with LLM_TOOLS + report_result
+    let activeLlmTools: unknown[] = [...LLM_TOOLS, REPORT_RESULT_TOOL];
     const MAX_WORKER_STEPS = 30;
     let finalText = '';
+    let finalStatus: 'completed' | 'failed' | 'blocked' | 'error' = 'completed';
+    let workerDone = false;
 
-    for (let step = 0; step < MAX_WORKER_STEPS && !this._agentCancel; step++) {
+    for (let step = 0; step < MAX_WORKER_STEPS && !this._agentCancel && !workerDone; step++) {
       let response: AgentExecutorChatMessage;
       try {
         if (model.startsWith('copilot::')) {
@@ -351,7 +417,7 @@ export class AgentExecutor {
           );
         }
       } catch (err) {
-        return `Worker 錯誤：${err instanceof Error ? err.message : String(err)}`;
+        return { text: `Worker 錯誤：${err instanceof Error ? err.message : String(err)}`, status: 'error' };
       }
 
       workerMessages.push({ role: 'assistant', content: response.content ?? null, tool_calls: response.tool_calls });
@@ -361,6 +427,26 @@ export class AgentExecutor {
       for (const toolCall of response.tool_calls) {
         const fn = toolCall.function;
         const args = (typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments) as Record<string, unknown>;
+
+        // ── report_result: Worker summary → Coordinator (only visible output) ──
+        if (fn.name === 'report_result') {
+          const status       = String(args.status ?? 'completed');
+          const summary      = String(args.summary ?? '').slice(0, 500);
+          const filesChanged = Array.isArray(args.files_changed) ? (args.files_changed as string[]) : [];
+          const errors       = String(args.errors ?? '');
+          const icon         = status === 'completed' ? '✅' : status === 'failed' ? '❌' : '⚠️';
+
+          const parts = [`[Worker #${workerIdx} ${icon} ${status}]`, `摘要：${summary}`];
+          if (filesChanged.length) parts.push(`修改檔案：${filesChanged.join(', ')}`);
+          if (errors) parts.push(`錯誤：${errors}`);
+          finalText = parts.join('\n');
+          finalStatus = status as 'completed' | 'failed' | 'blocked';
+
+          this._callbacks.postToWebview({ type: 'agentStepDone', result: summary.slice(0, 200), isError: status !== 'completed' });
+          workerMessages.push({ role: 'tool', content: 'done', tool_call_id: toolCall.id ?? fn.name });
+          workerDone = true;
+          break; // exits inner for-loop; outer loop exits via !workerDone
+        }
 
         // ── search_tools: TF-IDF deferred tool discovery ─────────────────────
         if (fn.name === 'search_tools') {
@@ -428,7 +514,7 @@ export class AgentExecutor {
       }
     }
 
-    return finalText || '（Worker 完成但無文字輸出）';
+    return { text: finalText || '（Worker 完成但無文字輸出）', status: finalStatus };
   }
 
   public switchSession(sessionId: string): void {
@@ -582,6 +668,7 @@ export class AgentExecutor {
 
       this._callbacks.clearAgentTodos();
       const ltm = this._callbacks.getLongTermMemory();
+      const projectRules = this._callbacks.getProjectRules?.() ?? '';
       // Session Notes：載入上次筆記（若有），注入 system prompt 讓模型知道上次進度
       const sessionNotes = await this._callbacks.getSessionNotes();
       if (sessionNotes) {
@@ -599,6 +686,7 @@ export class AgentExecutor {
           activeFileBlock,
           workspaceDigestBlock,
           longTermMemory: ltm,
+          projectRules: projectRules || undefined,
           sessionNotes: sessionNotes || undefined,
         }),
       });
@@ -618,6 +706,7 @@ export class AgentExecutor {
       });
     }
 
+    let _waLastFinalText = ''; // tracks last agent answer for auto WA reply
     try {
       this._shadowInterventions = 0;
         this._shadowJustInjected = false;
@@ -1016,6 +1105,19 @@ export class AgentExecutor {
             this._shadowInterventions = AgentExecutor.SHADOW_MAX;
           }
         }
+        // Hard guard: never stop while manage_todo items are still uncompleted
+        if (_pendingTodos.length > 0 && !this._agentCancel) {
+          const undoneTasks = _pendingTodos.map(t => `  #${t.id}: ${t.text}`).join('\n');
+          this._callbacks.postToWebview({
+            type: 'agentStepProgress',
+            text: `⚠️ 尚有 ${_pendingTodos.length} 個任務清單項目未完成，強制繼續…`,
+          });
+          this._agentMessages.push({
+            role: 'user',
+            content: `【強制繼續】以下任務清單項目尚未標記完成，你必須逐一呼叫 manage_todo(action="done", id=N) 結案，不得停止：\n${undoneTasks}\n\n禁止給純文字說明，立即呼叫工具。`,
+          });
+          continue;
+        }
         break;
       }
     } catch (error) {
@@ -1043,6 +1145,10 @@ export class AgentExecutor {
       this._agentRunning = false;
       this._agentCancel = false;
       this._callbacks.setWaAgentMode(false);
+      // Auto-send concise result back to WA without relying on model to call whatsapp_send
+      if (waTriggered && _waLastFinalText) {
+        this._callbacks.notifyWaOwner?.(AgentExecutor._condenseForWa(_waLastFinalText));
+      }
       this._callbacks.postToWebview({ type: 'agentStatus', running: false });
       HeartbeatService.getInstance().setAgentInfo({ running: false, shadowRunning: false, lastActivity: '已完成' });
     }
@@ -1172,6 +1278,25 @@ export class AgentExecutor {
     const CODE_SIGNALS = ['```', '函式', '函數', 'function', 'class ', 'interface ', '.ts', '.js', '.py', 'import ', '模組', 'module', '路徑', '檔案', '行號'];
     return TASK_TRIGGERS.some(k => task.toLowerCase().includes(k.toLowerCase()))
         || CODE_SIGNALS.some(k => response.includes(k));
+  }
+
+  /** Condense text for WhatsApp: strip code blocks, keep head+tail paragraphs, max 3000 chars. */
+  private static _condenseForWa(text: string, maxLen = 3000): string {
+    // Strip markdown code blocks — unreadable in WhatsApp
+    let t = text.replace(/```[\s\S]*?```/g, '[程式碼區塊]');
+    // Strip markdown headings and excess blank lines
+    t = t.replace(/^#{1,6}\s+/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+
+    if (t.length <= maxLen) return t;
+
+    // Preserve first 2/3 (context + answer) and last 1/3 (conclusion)
+    const headLen = Math.floor(maxLen * 2 / 3);
+    const tailLen = maxLen - headLen;
+    const head = t.slice(0, headLen);
+    const tail = t.slice(-tailLen);
+    // Snap to paragraph boundary so sentences aren't cut mid-way
+    const snapHead = head.lastIndexOf('\n\n') > headLen / 2 ? head.slice(0, head.lastIndexOf('\n\n')) : head;
+    return `${snapHead}\n\n…[內容已精簡]\n\n${tail}`;
   }
   /**
    * 影子督促人格（Monitor）：以同一模型單次審查主人格是否真正完成分析。

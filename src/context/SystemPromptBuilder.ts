@@ -22,6 +22,8 @@ export interface BuildSystemPromptInput {
   persona?: string;
   /** Hard policy rules（如 Atlassian / 不要修改某些檔案） */
   policy?: string;
+  /** 專案規則層（RULES.md）——必常注入，優先級高於記憶索引 */
+  rules?: string;
   /** MEMORY.md index 內容（短期 + 長期記憶索引） */
   memoryIndex?: string;
   /** Workspace 概況（git status, project root, open files 計數等） */
@@ -48,6 +50,10 @@ export function buildSystemPrompt(input: BuildSystemPromptInput): string {
 
   if (input.policy?.trim()) {
     parts.push(`## Policy\n\n${input.policy.trim()}`);
+  }
+
+  if (input.rules?.trim()) {
+    parts.push(`## Project Rules\n\n${input.rules.trim()}`);
   }
 
   if (input.memoryIndex?.trim()) {
@@ -219,8 +225,10 @@ export interface BuildAgentSystemPromptInput {
   activeFileBlock?: string;
   /** 工作區深度解析摘要區塊（可空） */
   workspaceDigestBlock?: string;
-  /** 長期記憶內容（可空） */
+  /** 長期記憶內容（可空）——惰性第2層 */
   longTermMemory?: string;
+  /** 專案規則層（RULES.md）——必常注入，優先級高於記憶 */
+  projectRules?: string;
   /** Webview 当前狀態資訊（任務進度、面板名稱等） */
   webviewContext?: string;
   /**
@@ -248,6 +256,7 @@ export function buildAgentSystemPrompt(input: BuildAgentSystemPromptInput): stri
   const ltm = (input.longTermMemory ?? '').trim();
   const sn = (input.sessionNotes ?? '').trim();
   const wv = (input.webviewContext ?? '').trim();
+  const pr = (input.projectRules ?? '').trim();
   return `【AGENT 模式 — 非 Ask/Chat 模式】你是 AmiClaw Agent，一個在 VS Code 內直接呼叫工具、自主執行任務的程式開發代理人，不是被動問答助手。你的職責是：呼叫工具取得資訊 → 執行操作 → 回報結果。絕對不能說「你可以執行…」「建議你…」「以下步驟…」——這些是 Ask 模式才有的行為；在此模式下你必須自己呼叫工具。
 工作區資料夾: ${input.folderList}。${activeFileText}${openFilesText}${input.activeFileBlock ?? ''}${input.workspaceDigestBlock ?? ''}
 
@@ -258,6 +267,7 @@ ${CODE_ANALYSIS_METHOD}
 ${AGENT_TOOLS_OVERVIEW}
 
 ${AGENT_ATLASSIAN_RULES}
+${pr ? `\n## Project Rules (RULES.md)\n\n${pr}` : ''}
 ${ltm ? `\n## 長期記憶\n${ltm}` : ''}
 ${sn ? `\n## 上次 Session 記錄\n\n> 以下是你上次執行時自動儲存的筆記，請據此繼續未完成的工作。\n\n${sn}` : ''}
 ${wv ? `\n## Webview 当前狀態\n\n${wv}` : ''}

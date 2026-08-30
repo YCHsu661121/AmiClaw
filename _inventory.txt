@@ -1,0 +1,167 @@
+AmiClaw File Inventory
+Generated for line-by-line code analysis re-update
+Excluded: node_modules, out, dist, .git, .vscode, .research, logs, media
+
+[root]
+  .dockerignore  (14 lines)
+  .gitignore  (7 lines)
+  .vscodeignore  (22 lines)
+  Dockerfile  (25 lines)
+  agent-training.jsonl  (33 lines)
+  build.bat  (174 lines)
+  docker-compose.yml  (93 lines)
+  knip.json  (11 lines)
+  package-lock.json  (4495 lines)
+  package.json  (486 lines)
+  tsconfig.json  (16 lines)
+
+[.github]/
+  .github/UEFI Code review.agent.md  (2 lines)
+  .github/copilot-instructions.md  (6 lines)
+  .github/uefi-code-review-skills.instructions.md  (21 lines)
+
+[.github/instructions]/
+  .github/instructions/mermaid.instructions.md  (85 lines)
+
+[.github/skills/ami-firmware-coding-standards]/
+  .github/skills/ami-firmware-coding-standards/Firmware_Coding_Standards.md  (924 lines)
+  .github/skills/ami-firmware-coding-standards/SKILL.md  (163 lines)
+
+[.github/skills/ami-module-developer-standards]/
+  .github/skills/ami-module-developer-standards/Module_Developer_Standards.md  (603 lines)
+  .github/skills/ami-module-developer-standards/SKILL.md  (327 lines)
+
+[.github/skills/build-log-analyzer]/
+  .github/skills/build-log-analyzer/SKILL.md  (82 lines)
+
+[.github/skills/build-log-analyzer/scripts]/
+  .github/skills/build-log-analyzer/scripts/find-errors.ps1  (117 lines)
+
+[.github/skills/sdl-handling]/
+  .github/skills/sdl-handling/SKILL.md  (1 lines)
+
+[.github/skills/unit-test-review]/
+  .github/skills/unit-test-review/SKILL.md  (1 lines)
+
+[scripts]/
+  scripts/Dockerfile.tailscale  (22 lines)
+  scripts/WhatsAppManager.ts  (0 lines)
+  scripts/auto_cleanup_todo.py  (45 lines)
+  scripts/clean_ollama_chat.py  (0 lines)
+  scripts/create_chat_modules.js  (0 lines)
+  scripts/get_instant_status.py  (54 lines)
+  scripts/health-check.js  (153 lines)
+  scripts/log_agent_activity.py  (21 lines)
+  scripts/mk-integrations.js  (0 lines)
+  scripts/ollama-codex-proxy.js  (266 lines)
+  scripts/split_webview_renderer.py  (121 lines)
+  scripts/status_reporter.py  (70 lines)
+
+[src]/
+  src/chat-AgentExecutor.txt  (0 lines)
+  src/chat-QueryEngine.txt  (0 lines)
+  src/extension.ts  (593 lines)
+  src/ollama-chat.ts  (3052 lines)
+
+[src/autopilot]/
+  src/autopilot/AutoPilotClassifier.ts  (126 lines)
+  src/autopilot/AutoPilotDenials.ts  (70 lines)
+  src/autopilot/AutoPilotPolicy.ts  (176 lines)
+  src/autopilot/AutoPilotPrompt.ts  (123 lines)
+  src/autopilot/AutoPilotState.ts  (46 lines)
+  src/autopilot/index.ts  (68 lines)
+  src/autopilot/safeAllowlist.ts  (40 lines)
+
+[src/chat]/
+  src/chat/AgentCarryover.ts  (107 lines)
+  src/chat/AgentExecutor.ts  (1717 lines)
+  src/chat/QueryEngine.ts  (1032 lines)
+  src/chat/RefusalDetector.ts  (347 lines)
+  src/chat/TaskQueue.ts  (63 lines)
+  src/chat/TaskStore.ts  (77 lines)
+
+[src/context]/
+  src/context/HistoryCompactor.ts  (225 lines)
+  src/context/MicroCompactor.ts  (128 lines)
+  src/context/SystemPromptBuilder.ts  (313 lines)
+  src/context/TokenBudgetManager.ts  (118 lines)
+  src/context/WorkspaceDigest.ts  (264 lines)
+
+[src/debate]/
+  src/debate/DebateEngine.ts  (345 lines)
+
+[src/integrations]/
+  src/integrations/WhatsAppManager.ts  (1101 lines)
+
+[src/memdir]/
+  src/memdir/findRelevantMemories.ts  (40 lines)
+  src/memdir/memdir.ts  (134 lines)
+  src/memdir/memoryScan.ts  (20 lines)
+  src/memdir/memoryTypes.ts  (87 lines)
+  src/memdir/paths.ts  (58 lines)
+
+[src/panels]/
+  src/panels/ChatPanelAdapter.ts  (34 lines)
+
+[src/providers]/
+  src/providers/ProviderRegistry.ts  (79 lines)
+
+[src/services]/
+  src/services/HeartbeatService.ts  (114 lines)
+  src/services/SessionNotes.ts  (157 lines)
+  src/services/WorkflowEngine.ts  (70 lines)
+
+[src/services/extractMemories]/
+  src/services/extractMemories/extractMemories.ts  (281 lines)
+
+[src/team]/
+  src/team/TeamCallModel.ts  (127 lines)
+  src/team/TeamContextStore.ts  (43 lines)
+  src/team/TeamManager.ts  (1619 lines)
+  src/team/TeamShared.ts  (57 lines)
+  src/team/TeamWorkspaceScanner.ts  (153 lines)
+
+[src/tools]/
+  src/tools/AmiClaw.code-workspace  (15 lines)
+  src/tools/SandboxManager.ts  (222 lines)
+  src/tools/SandboxTypes.ts  (56 lines)
+  src/tools/ToolAuditLog.ts  (45 lines)
+  src/tools/ToolCache.ts  (33 lines)
+  src/tools/ToolExecutor.ts  (3333 lines)
+  src/tools/ToolPolicies.ts  (227 lines)
+  src/tools/ToolRegistry.ts  (328 lines)
+  src/tools/ToolTypes.ts  (18 lines)
+
+[src/tools/providers]/
+  src/tools/providers/AtlassianProvider.ts  (354 lines)
+  src/tools/providers/BackgroundProvider.ts  (166 lines)
+  src/tools/providers/ComputerUseProvider.ts  (201 lines)
+  src/tools/providers/DevToolsProvider.ts  (248 lines)
+  src/tools/providers/DockerHelpers.ts  (39 lines)
+  src/tools/providers/FileSystemProvider.ts  (597 lines)
+  src/tools/providers/GitProvider.ts  (75 lines)
+  src/tools/providers/IToolProvider.ts  (47 lines)
+  src/tools/providers/IntegrationProvider.ts  (20 lines)
+  src/tools/providers/JenkinsProvider.ts  (189 lines)
+  src/tools/providers/LspProvider.ts  (193 lines)
+  src/tools/providers/NetworkProvider.ts  (171 lines)
+  src/tools/providers/ProcessProvider.ts  (128 lines)
+  src/tools/providers/SearchProvider.ts  (109 lines)
+  src/tools/providers/VscodeProvider.ts  (90 lines)
+
+[src/webview]/
+  src/webview/WebviewRenderer.test.js  (136 lines)
+  src/webview/WebviewRenderer.ts  (4127 lines)
+
+[tools]/
+  tools/check_html.js  (18 lines)
+  tools/check_newline.js  (13 lines)
+  tools/check_return.js  (8 lines)
+  tools/check_return2.js  (5 lines)
+  tools/check_return3.js  (10 lines)
+  tools/check_surr.js  (11 lines)
+  tools/check_wai.js  (14 lines)
+  tools/decode_atlascode.py  (120 lines)
+  tools/find_l144.js  (15 lines)
+
+Total files: 110

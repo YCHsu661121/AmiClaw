@@ -1,0 +1,498 @@
+==========================================================================================
+FILE: .research\amiclawn_inventory.md
+LINE COUNT: 82
+SIZE: 6594 bytes
+==========================================================================================
+       1| # AmiClaw Project Inventory
+       2| 
+       3| > Generated: coordination inventory step (auto-generated)
+       4| 
+       5| ## 1. File Tree (top 2 levels, build artifacts omitted)
+       6| 
+       7| ```
+       8| d:\Tools\AmiClaw\
+       9| ├── .amiclaw/                    # Runtime state (agent memory)
+      10| │   └── memory/                  # MEMORY.md, session-notes.md
+      11| ├── .github/                     # copilot-instructions.md, UEFI Code review.agent.md,
+      12| │                                #   uefi-code-review-skills.instructions.md, instructions/, skills/
+      13| ├── .research/                   # (created by this step)
+      14| ├── .vscode/                     # settings.json
+      15| ├── docs/
+      16| │   └── HEARTBEAT_DESIGN.md      # HeartbeatService design doc
+      17| ├── media/
+      18| │   └── ami-ai-claw-activity.svg # Activity bar icon
+      19| ├── scripts/                     # Health checks, Ollama/Codex proxy, WA manager (standalone),
+      20| │                                #   cleanup/status Python helpers (Dockerfile.tailscale)
+      21| ├── tools/                       # Ad-hoc JS/Python debug & check scripts
+      22| ├── src/                         # All application source (TypeScript, ~61 files)
+      23| │   ├── extension.ts             # VS Code extension activation (593 lines)
+      24| │   ├── ollama-chat.ts           # Main chat panel + agent wiring (3047 lines, "God Class")
+      25| │   ├── autopilot/               # AutoPilotClassifier/Policy/Denials/State/Prompt, safeAllowlist
+      26| │   ├── chat/                    # AgentExecutor (1592 L), QueryEngine (1032 L),
+      27| │   │                            #   AgentCarryover, RefusalDetector (+ .txt backups)
+      28| │   ├── context/                 # HistoryCompactor, MicroCompactor, SystemPromptBuilder,
+      29| │   │                            #   TokenBudgetManager, WorkspaceDigest
+      30| │   ├── debate/                  # DebateEngine (two-model debate + judge)
+      31| │   ├── integrations/            # WhatsAppManager (Baileys)
+      32| │   ├── memdir/                  # Memory dir: memdir, memoryScan, findRelevantMemories, paths
+      33| │   ├── panels/                  # ChatPanelAdapter
+      34| │   ├── providers/               # ProviderRegistry (model provider abstraction)
+      35| │   ├── services/                # HeartbeatService, SessionNotes, WorkflowEngine,
+      36| │   │                            #   extractMemories/
+      37| │   ├── team/                    # TeamManager (1619 L), TeamCallModel, TeamContextStore,
+      38| │   │                            #   TeamShared, TeamWorkspaceScanner
+      39| │   ├── tools/                   # ToolExecutor (3327 L), ToolRegistry, ToolPolicies,
+      40| │   │   └── providers/           #   ToolCache, ToolAuditLog, SandboxManager/Types +
+      41| │   │                            #   FileSystem/Process/Search/Git/Network/DevTools/
+      42| │   │                            #   Vscode/Jenkins/Atlassian/Integration providers
+      43| │   └── webview/                 # WebviewRenderer (4127 L) + test.js
+      44| ├── dist/                        # Packaged .vsix output
+      45| ├── logs/                        # Runtime logs
+      46| ├── out/                         # tsc build output (main: out/extension.js)
+      47| ├── node_modules/
+      48| ├── AmiClawToDo.md               # Strategic roadmap vs claude-code (en)
+      49| ├── Consolidated_Notes.md        # Deep comparison & refactor priorities (zh-TW, 2026-08-10)
+      50| ├── Dockerfile                   # Docker packaging
+      51| ├── docker-compose.yml
+      52| ├── build.bat / build.log        # Build script + last build log
+      53| ├── agent-training.jsonl         # Training data (JSONL)
+      54| ├── package.json                 # VS Code extension manifest (ami-ai-claw v1.0.1)
+      55| ├── tsconfig.json
+      56| ├── knip.json                    # Unused-code checker config
+      57| └── LICENSE (MIT)
+      58| ```
+      59| 
+      60| ## 2. Tech Stack Summary
+      61| 
+      62| - **Language:** TypeScript (~57 .ts files in src/, compiled with `tsc -p .`); a few ad-hoc JS/Python helper scripts.
+      63| - **Framework / platform:** VS Code extension (`@types/vscode` ^1.90, packaged with `vsce`), webview-based UI.
+      64| - **Runtime deps:** `@whiskeysockets/baileys` (WhatsApp integration), `qrcode`.
+      65| - **AI backend:** Ollama (primary, `ollama-chat.ts`), OpenAI-compatible endpoints (LM Studio/vLLM), GitHub Copilot routing (`copilot::`), model registry in `src/providers/`.
+      66| - **Agent infra:** tool registry with Provider Pattern (10+ tool providers), AutoPilot safety classifier, Docker sandboxing (Playwright image for browser tools, ubuntu/python images for command sandbox), workflow engine, multi-agent Team/Debate modes, WhatsApp-triggered agent (voice via Whisper).
+      67| - **Tooling:** knip (dead-code), `node --test` (WebviewRenderer.test.js), Docker (Dockerfile + compose, incl. Tailscale variant).
+      68| 
+      69| ## 3. Entry Points
+      70| 
+      71| | Entry | Path | Role |
+      72| |---|---|---|
+      73| | Extension activation | `src/extension.ts` → `out/extension.js` (package.json `main`) | VS Code extension lifecycle; registers views/commands (chat, Jira, UEFI review, memory, file-count commands) |
+      74| | Chat/agent panel | `src/ollama-chat.ts` | Main chat UI + agent orchestration wiring (God Class, ~3000 L) |
+      75| | Webview UI | `src/webview/WebviewRenderer.ts` | Renderer for chat webview (~4100 L) |
+      76| | Agent execution | `src/chat/AgentExecutor.ts`, `src/chat/QueryEngine.ts` | Coordinator/Worker agent runtime |
+      77| | Tool execution | `src/tools/ToolExecutor.ts` | Giant tool dispatch switch (~3300 L) |
+      78| | Dev scripts | `scripts/health-check.js`, `scripts/ollama-codex-proxy.js` | Health checks, proxy server |
+      79| 
+      80| ## 4. Project Overview
+      81| 
+      82| AmiClaw (`ami-ai-claw` v1.0.1, MIT, author Y.C. Hsu) is a **local AI assistant VS Code extension** built around Ollama and OpenAI-compatible endpoints, focused on code generation, agent automation, and multi-model collaboration. It provides Ask/Agent/Team/Debate/Compare chat modes with a tool-calling agent runtime (file/git/search/process/network/Jenkins/Atlassian/browser tools), an AutoPilot safety classifier with Docker sandboxing, layered context compression (MicroCompactor/HistoryCompactor/token budgets), file-based memory (`MEMORY.md`, session notes), a Workflow Engine, and integrations for WhatsApp (Baileys), Jira, Jenkins, and UEFI/BIOS firmware code review. Root docs `AmiClawToDo.md` and `Consolidated_Notes.md` are strategic roadmaps comparing AmiClaw against Claude Code (claude-code) and defining refactor priorities (CORE_TOOLS expansion, TF-IDF tool search upgrade, worker role isolation, workflow resume, LSP tools, USD cost display). The `ollama-chat.ts` God Class and the `ToolExecutor.ts` giant switch are the acknowledged primary technical debt.
+
+==========================================================================================
+FILE: .research\claude_code_analysis.md
+LINE COUNT: 404
+SIZE: 43630 bytes
+==========================================================================================
+       1| # Claude Code (Anthropic) — Structured Technical Analysis
+       2| 
+       3| > Purpose: feed a deep comparison of **AmiClaw** (local project) vs **Claude Code**, and inform a refactor priority roadmap.
+       4| > Scope: architecture, tools, permissions, context, subagents, extensibility, CLI/UX, integration surface, strengths/weaknesses.
+       5| 
+       6| ## 0. Evidence Base & Method (read this first)
+       7| 
+       8| **How this was produced.** Claude Code is **installed locally** on this machine. The primary evidence is the on-disk state under `~/.claude` (`C:\Users\YCHsu\.claude`), not just public docs.
+       9| 
+      10| **Verified locally (directly observed):**
+      11| 
+      12| | Artifact | What it tells us |
+      13| |---|---|
+      14| | `~/.claude/cache/changelog.md` | Full version history, **294 version entries**, from `0.2.21` up to **`2.1.148`** (installed/last-fetched). This is a *primary* source for feature introductions and fixes. |
+      15| | `~/.claude/settings.json` | Active config: `defaultMode: bypassPermissions`, `model: claude-opus-4-7`, `effort: max`, `theme: dark`, `language: chinese`, `desktopNotificationsEnabled: true`. |
+      16| | `~/.claude/backups/.claude.json.backup.*` | Global config schema: `numStartups`, `customApiKeyResponses`, `tipsHistory`, `migrationVersion`, `userID`, `hasCompletedOnboarding`, per-project `projects{allowedTools, mcpServers, hasTrustDialogAccepted, hasClaudeMdExternalIncludesApproved}`, `githubRepoPaths`, `officialMarketplaceAutoInstall*`. |
+      17| | `~/.claude/cc-haha/providers.json` + `settings.json` | Provider abstraction config: `apiFormat: anthropic`, `runtimeKind: anthropic_compatible`, `models{main,haiku,sonnet,opus}`, `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL`. (Local instance is pointed at Ollama / custom endpoints.) |
+      18| | `~/.claude/plugins/marketplaces/claude-plugins-official` | Official marketplace repo **checked out locally**: `anthropics/claude-plugins-official`, `marketplace.json` lists **203 plugins**, plus `external_plugins/` (github, gitlab, playwright, asana, linear, context7, etc.). |
+      19| | `~/.claude/{projects,sessions,file-history,history.jsonl,adapters.json}` | Session persistence model, per-project dirs, file-history snapshots, prompt history, IDE/desktop pairing (`adapters.json` pairing code). |
+      20| | `~/.claude/.runtime/` | Bundled runtime: `requirements.txt` + `venv` + `win_helper.py` (Windows helper). |
+      21| 
+      22| **Version note.** Installed/last-fetched version is **`2.1.148`**. This is far beyond most public documentation and well beyond typical training cutoffs. Feature descriptions below are grounded in the changelog where possible; where I rely on general knowledge of the public docs / `anthropics/claude-code` repo, I mark it **[memory]**. Where a detail is version-dependent I note the version.
+      23| 
+      24| **Not observed locally** (no binary on PATH at time of check; `claude` command not resolvable via `where`): the actual JS runtime/binary and exact system-prompt text. System-prompt construction is therefore described from public docs + behavior inference, marked **[memory/inferred]**.
+      25| 
+      26| ---
+      27| 
+      28| ## 1. Architecture Overview
+      29| 
+      30| ### 1.1 Core agent loop
+      31| Claude Code is a **terminal-native agentic coding tool** built around a single core **agent loop** (a.k.a. the "agentic harness"):
+      32| 
+      33| ```
+      34| user prompt
+      35|    → build context (system prompt + CLAUDE.md + tools + conversation)
+      36|    → LLM call (Anthropic Messages API, streaming)
+      37|    → parse assistant response (text + tool_use blocks)
+      38|    → for each tool_use: permission check → execute tool → append tool_result
+      39|    → loop until model emits a final text turn with no pending tool_use
+      40|    → render to TTY (streaming)
+      41| ```
+      42| 
+      43| Key characteristics:
+      44| - **Tool-use driven**: the model emits structured `tool_use` blocks; the client executes them locally and feeds `tool_result` back. The loop is a standard *ReAct*-style plan→act→observe cycle, but with rich local tooling and a permission gate on every mutating action.
+      45| - **Streaming-first**: responses stream token-by-token to the terminal; tool calls are surfaced as they arrive.
+      46| - **Stateless per-call, stateful session**: the model itself is stateless; session state (conversation, todos, file edits, checkpoints) lives client-side and is persisted to `~/.claude/projects/<project>/` and `file-history/`.
+      47| - **Sub-loop / subagent isolation**: the `Task` tool (and agent teams) spawn child agent loops that run in their own context window and return a single summarized result to the parent (see §4).
+      48| 
+      49| ### 1.2 LLM provider usage
+      50| - **Primary provider**: Anthropic **Messages API** (`api.anthropic.com`), via Claude models. Model tiers map to the roles `main` / `sonnet` / `opus` / `haiku` (fast/cheap model used for background classification, summarization, compaction, and the small-model "haiku" path; larger `sonnet`/`opus` for the main reasoning path).
+      51| - **Model selection**: interactive `/model` picker; default per plan. Changelog shows `/model` changing the current session vs. default (`d` to set default). A `CLAUDE_CODE_SUBAGENT_MODEL` env var lets subagents use a different (often cheaper) model.
+      52| - **Provider abstraction** (verified locally): `providers.json` supports `apiFormat: anthropic` and `runtimeKind: anthropic_compatible`, and the env-var surface (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL`) means **any Anthropic-compatible endpoint** can be used — including Ollama / self-hosted / LiteLLM-style gateways. The local instance points `ANTHROPIC_BASE_URL` at `http://ai:11434` (Ollama) with `gemma4`/`qwen3.6` models.
+      53| - **Cloud providers** (changelog `[memory]`-corroborated): Bedrock, Vertex, and "Foundry" (Azure) are supported and propagate API-provider env vars to spawned processes (agent teams / tmux).
+      54| - **1M context** variants exist (changelog: `1M` appears across many versions, e.g. `sonnet1m45MigrationComplete`, `opus1mMergeNoticeSeenCount` in local config) — long-context model variants are first-class.
+      55| 
+      56| ### 1.3 System prompt construction **[memory/inferred]**
+      57| The effective system prompt is assembled at session start from layered sources:
+      58| 1. **Base system prompt** — Anthropic-maintained harness prompt describing the agent loop, tool usage, output conventions, safety/permissions behavior, and "Claude Code" persona.
+      59| 2. **Output style** (if set) — overrides tone/format instructions (see §5.4).
+      60| 3. **CLAUDE.md memory hierarchy** (see §3.3) — injected as project/personal/enterprise instructions.
+      61| 4. **Tool definitions** — the JSON schemas for the active tool set (Bash, Read, Write, Edit, Grep, Glob, TodoWrite, WebFetch, WebSearch, Task, NotebookEdit, etc.).
+      62| 5. **Environment context** — current directory, OS, platform, git status awareness, etc.
+      63| 6. **Session resume / compaction summaries** — when resuming or after auto-compaction, a summary replaces earlier turns.
+      64| 
+      65| The exact text is proprietary and not shipped as a plain file in `~/.claude` (no `*.prompt` artifact was observed locally); the above is reconstructed from public docs and observed behavior.
+      66| 
+      67| ---
+      68| 
+      69| ## 2. Tool System
+      70| 
+      71| ### 2.1 Built-in tool inventory
+      72| 
+      73| Tools are the model's "hands". Each is a JSON-schema tool definition the harness executes locally. Inventory (core set + notable additions):
+      74| 
+      75| | Tool | Purpose | Notes |
+      76| |---|---|---|
+      77| | **Bash** | Run shell commands | Persistent shell session; supports `!` prefix for user-forced runs; shell snapshot captures user aliases/functions (changelog: fixed snapshot dropping `_`-prefixed user functions). Exit codes returned to model. On Windows runs PowerShell (changelog 2.1.147: "PowerShell tool" fixes — output formatter, `pwsh` via winget/Store). |
+      78| | **Read** | Read file contents | Returns **truncated first page with a "PARTIAL view" notice** when a whole-file read exceeds the token limit (added 2.1.145). Supports PDFs/images (multimodal). Offset/limit for paging. |
+      79| | **Write** | Create/overwrite files | Goes through permission gate. |
+      80| | **Edit** | Targeted string replacement in files | Requires exact-match old string; auto-fallback to create-if-missing in some versions. Changelog 2.1.147: "Improved diff rendering performance for large file edits". |
+      81| | **Grep** | Regex search (Ripgrep-backed) | Flags for context lines, file types, exclude patterns. |
+      82| | **Glob** | Filename pattern search | Fast file discovery. |
+      83| | **LS / list** | Directory listing | (Historically a dedicated tool; newer versions fold listing into Glob/Bash in some builds.) |
+      84| | **NotebookEdit** | Edit Jupyter notebook cells | Cell-level JSON edits. |
+      85| | **TodoWrite** | Manage task list | In-context task list for multi-step work; changelog 2.1.145: "Fixed task lists rendering in random order when several tasks are created at once". Backed by `TaskCreate/TaskUpdate` in newer agent-teams builds. |
+      86| | **WebFetch** | Fetch URL → markdown | Preflight fetch (can be skipped via `skipWebFetchPreflight`, seen in local `cc-haha/settings.json`); renders page to text for the model. |
+      87| | **WebSearch** | Web search | Provider-backed search returning snippets. |
+      88| | **Task** | Spawn subagent | Runs a sub-agent loop with its own context window; returns a summary. (See §4.) |
+      89| | **Agent / agent teams** | Multi-agent orchestration | See §4. |
+      90| | **AskUserQuestion** | Structured user question | Changelog 2.1.147: "auto mode suppressing AskUserQuestion when the user or a skill explicitly relies on it" — confirms a first-class ask-user tool. |
+      91| | **KillShell / background Bash** | Manage long-running processes | Background jobs, `Ctrl+T` pinned background sessions. |
+      92| | **MCP tools** | Any `mcp__server__tool` | Dynamically discovered from connected MCP servers (§5.2). |
+      93| | **Skill tools / `Skill`** | Invoke agent skills | Skills are prompt+script bundles; changelog 2.1.147: "a skill using `context: fork` could repeatedly re-invoke itself" — confirms Skill tool with context-fork semantics. |
+      94| | **LSP tools** | Language-server queries | Via LSP plugins (clangd-lsp, gopls-lsp, csharp-lsp, jdtls-lsp, kotlin-lsp, lua-lsp all in official marketplace). |
+      95| 
+      96| The tool set is **configurable**: `allowedTools`/`disallowedTools` per project (verified in local `.claude.json`: `"allowedTools": []`), permission rules can scope tools, and MCP tools are namespaced.
+      97| 
+      98| ### 2.2 Permission system
+      99| 
+     100| This is Claude Code's most distinctive design surface.
+     101| 
+     102| **Permission modes** (selectable via `Shift+Tab` cycling or `/permissions`; persisted per project/user):
+     103| - **default** — safe reads auto-approved; mutating tools (Write, Edit, Bash side-effects) prompt.
+     104| - **acceptEdits** — auto-approve file edits; other prompts remain.
+     105| - **plan** (plan mode) — read-only exploration; model plans, user approves before execution. Changelog: "plan-mode-for-complex-tasks" tip (verified in local `tipsHistory`).
+     106| - **bypassPermissions** (a.k.a. `--dangerously-skip-permissions`) — skip prompts; local config has `defaultMode: bypassPermissions`.
+     107| - **auto mode** (newer) — an LLM classifier auto-approves/denies prompts; changelog 2.1.141: "Auto mode permission dialog now explains when a `permissions.ask` rule caused the prompt"; 2.1.147: auto-mode classifier sees user answers as intent signal.
+     108| - **sandbox** mode — Bash sandboxing (below) can be combined with modes.
+     109| 
+     110| **Allow/deny/ask rules** — rule-based lists evaluated per tool invocation:
+     111| - Syntax: `Tool`, `Tool(specifier)`, e.g. `Bash(git push*)`, `Edit(src/**)`, `WebFetch(domain:example.com)`, `PowerShell(git push*)` (changelog 2.1.147: hook `if` conditions like `PowerShell(git push*)` now match).
+     112| - Three rule tiers: **allow**, **ask**, **deny**. Precedence: deny > ask > allow (roughly; deny wins).
+     113| - Stored at multiple scopes: user (`~/.claude/settings.json`), project (`.claude/settings.json`), local project (`.claude/settings.local.json`), enterprise/managed settings (changelog: `forceLoginOrgUUID` / `forceLoginMethod` managed-settings; enterprise login restrictions).
+     114| - **"Yes, and don't ask again"** writes a persistent rule (changelog 2.1.147: Windows PowerShell script rule fix).
+     115| - Security hardening: changelog 2.1.145: "Fixed a permission-prompt bypass where bare variable assignments to non-allowlisted environment variables in Bash commands were auto-approved" — shows prompt-injection-aware rule matching.
+     116| 
+     117| **Sandboxing**:
+     118| - Bash sandbox released 2.0.24 for Linux & macOS (bubblewrap/Firejail-style network+FS isolation); `/sandbox` menu (changelog 2.1.147: layout fixes to `/sandbox` menu). Windows sandboxing arrived later via different mechanics (version-dependent).
+     119| - Sandboxing is orthogonal to permission modes: sandbox constrains what Bash can touch even when auto-approved.
+     120| 
+     121| **Hooks for permission prompts**:
+     122| - Hooks (see §5.1) can intercept **PreToolUse** (can deny/modify before execution), **PostToolUse**, **PermissionRequest** (hook-driven permission prompts), **Stop**, **SubagentStop**, **SessionStart**, **UserPromptSubmit**, etc.
+     123| - Changelog 2.1.145: "Stop and SubagentStop hook input now includes `background_tasks` and `session_crons` fields" — hook inputs are JSON-rich and evolving.
+     124| - Hook `if` conditions (e.g. `PowerShell(git push*)`) filter when hooks fire (2.1.147).
+     125| - Prompt- and agent-type hooks allowed on most events, but `SessionStart`/`Setup`/`SubagentStart` require command-type hooks (2.1.142-era fix).
+     126| 
+     127| **Trust dialog**: per-project trust on first run (verified locally: `hasTrustDialogAccepted: true` in `.claude.json` for `D:/Tools/AmiClaw`) — gates loading project-level settings/hooks.
+     128| 
+     129| **File-history / checkpoints**: every file mutation is snapshotted under `~/.claude/file-history/` (verified: 11 session dirs locally). Rewind capability: changelog 2.1.141 "Rewind menu: added 'Summarize up to here' to compress earlier context while keeping recent turns intact" — rewind both code state and conversation.
+     130| 
+     131| ---
+     132| 
+     133| ## 3. Context Management
+     134| 
+     135| ### 3.1 Context window limits
+     136| - Standard Claude models: **200K token** context window (Sonnet/Opus); **1M context** variants for Sonnet (and merged Opus 1M per local `opus1mMergeNoticeSeenCount`) — changelog `1M` mentions span `2.0.58`→`2.1.144`, with `sonnet1m45MigrationComplete` in local config.
+     137| - Effective usable context is smaller: system prompt + tool schemas + CLAUDE.md + conversation + tool results must all fit. Tool results are individually capped (Read truncation with "PARTIAL view" notice, 2.1.145; large Bash outputs are truncated/summarized).
+     138| - The context bar in the UI shows remaining context percentage; near-limit triggers compaction prompts.
+     139| 
+     140| ### 3.2 Auto-compaction
+     141| - Introduced early: changelog `0.2.47` — "**Automatic conversation compaction for infinite conversation length** (toggle with /config)".
+     142| - When context nears the limit, Claude Code summarizes the earlier conversation into a compact summary, keeping recent turns verbatim. Multiple compaction passes possible for very long sessions.
+     143| - Improvements across versions: 2.1.0 "Improved compaction reliability"; 2.1.142-era: "the first summarize attempt now seeds from the original request's overflow size, avoiding a wasted near-full-context retry" (avoids retrying at near-full context).
+     144| - **Manual compaction**: `/compact` (with optional focus instruction).
+     145| - **Rewind + summarize**: "Summarize up to here" (2.1.141) — compress earlier context while keeping recent turns, i.e. on-demand partial compaction tied to the rewind menu.
+     146| - **Micro-compaction**: older tool results are pruned/summarized before full compaction (version-dependent, from public docs **[memory]**).
+     147| - `context: fork` in skills: a skill can fork its own context to avoid polluting the main context (2.1.147 infinite-loop fix confirms the feature).
+     148| 
+     149| ### 3.3 CLAUDE.md memory hierarchy
+     150| Claude Code loads `CLAUDE.md` files from multiple scopes, **aggregated at session start** (most specific wins on conflicts by convention):
+     151| 
+     152| | Scope | Location | Purpose |
+     153| |---|---|---|
+     154| | **Enterprise** | `/etc/claude-code/managed-settings.json` (macOS: `/Library/Application Support/ClaudeCode/`), managed policy settings | Org-wide policy; can enforce login methods, permission rules, disable features (changelog: `forceLoginOrgUUID`, `forceLoginMethod`). |
+     155| | **Project (shared)** | `<repo>/CLAUDE.md`, `<repo>/.claude/CLAUDE.md` | Team-shared instructions; committed to repo. |
+     156| | **Project (local)** | `<repo>/CLAUDE.local.md` (convention; not in official docs) / `.claude/settings.local.json` for settings | Personal project notes. |
+     157| | **Personal** | `~/.claude/CLAUDE.md` | Cross-project user preferences. |
+     158| | **Subdirectory** | `subdir/CLAUDE.md` | Scoped to that subtree; loaded on demand when working there. |
+     159| 
+     160| Features (verified via changelog):
+     161| - **Imports**: `CLAUDE.md` files can import other files via `@path/to/file.md` (added `0.2.107`).
+     162| - **External include approval**: `hasClaudeMdExternalIncludesApproved` / `hasClaudeMdExternalIncludesWarningShown` (verified in local `.claude.json`) — @-imports outside the project root are gated by a warning/approval (prompt-injection defense).
+     163| - **`/init`** generates a starter CLAUDE.md for the repo **[memory]**.
+     164| - Changelog 2.1.90/2.1.89/2.1.86: ongoing CLAUDE.md behavior fixes.
+     165| - **Memory tool** (newer versions): an explicit `Memory` tool writes to a persistent memory store for long-term recall beyond CLAUDE.md (changelog `memory` mentions across 48 versions; `2.1.117`+ adds memory management features **[memory]** — version-dependent).
+     166| 
+     167| ### 3.4 Context editing
+     168| - **`/rewind`**: restore code state and/or conversation to earlier checkpoints (file-history snapshots). Changelog 2.1.141 added "Summarize up to here" to the rewind menu.
+     169| - **`/clear`**: reset conversation (keeps CLAUDE.md + tools).
+     170| - **Context trimming**: tool results are the largest context consumers; Claude Code truncates old tool outputs (micro-compaction) and keeps file reads re-fetchable (the model can re-Read files rather than holding them).
+     171| - **`/code-review`** (renamed from `/simplify`, 2.1.147): correctness review at chosen effort level; `--comment` posts inline GitHub PR comments — runs in forked context.
+     172| - **Paste/upload**: large pasted text is handled (2.1.147 fixed `[Pasted text #N]` placeholder bug); `uploads/` dir in `~/.claude` (verified locally) stores attached files.
+     173| - **Images/media**: multimodal inputs supported; 2.1.147: "Fixed stripped images prompting the model to repeatedly re-read media that was no longer present" — context-editing of media references.
+     174| 
+     175| ---
+     176| 
+     177| ## 4. Subagents and Parallelism
+     178| 
+     179| ### 4.1 Task tool (subagents)
+     180| - **`Task`** spawns a sub-agent with its **own context window** and its own tool loop; the parent receives a single summary result. This isolates noisy exploration (e.g. "search this 50k-line codebase") from the main context.
+     181| - Default subagent types: **Explore** (read-only, cheap/fast model, for searching), **Plan** (planning), and general-purpose.
+     182| - **`CLAUDE_CODE_SUBAGENT_MODEL`** env var sets the model for subagents (changelog 2.1.147: now applies to teammate processes spawned by agent teams).
+     183| - Subagent completion notifications include elapsed duration (2.1.144: "Agent completed — 3h 2m 5s").
+     184| - **Background subagents**: subagents can run in the background (pinned via `Ctrl+T` in `claude agents`, 2.1.147: pinned sessions stay alive when idle, restarted in place for updates, shed only under memory pressure).
+     185| - **SubagentStop hook** fires on subagent completion (input includes `background_tasks` and `session_crons`, 2.1.145).
+     186| - **OTEL tracing**: `claude_code.tool` spans carry `agent_id` / `parent_agent_id`; background subagent spans nest under the dispatching Agent tool span (2.1.145) — observability is first-class.
+     187| 
+     188| ### 4.2 Custom subagent definitions
+     189| - Defined as **Markdown files with YAML frontmatter**: `~/.claude/agents/*.md` (user) or `.claude/agents/*.md` (project).
+     190| - Frontmatter fields: `name`, `description` (when-to-use, model-driven selection), `tools` (allowlist), `model` (haiku/sonnet/opus/inherit), plus the markdown body = the subagent's system prompt.
+     191| - Plugins can ship agents (changelog 2.1.147: "plugin agents that declare multiple `Agent(...)` types in `tools:` frontmatter" — confirms `tools:` frontmatter syntax).
+     192| - Invoked explicitly ("Use the test-runner agent...") or **automatically** when the model delegates matching work; `@agent-name` mentions also work.
+     193| 
+     194| ### 4.3 Agent teams (multi-agent collaboration)
+     195| - **Introduced `2.1.32`**: "Added research preview agent teams feature for multi-agent collaboration (token-intensive feature, requires setting `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`)".
+     196| - A **team lead** spawns **teammates** (each a full Claude Code session, run in tmux panes on Unix); teammates communicate via message passing, share a task list, and report back to the lead.
+     197| - Evolved through 2.1.x: tmux message send/receive (2.1.33), plan availability fixes (2.1.33), Bedrock/Vertex/Foundry provider env propagation (2.1.45), memory-leak fix for completed teammate tasks (2.1.50), permission-mode inheritance with `--dangerously-skip-permissions` (2.1.98), permission-dialog crash fix (2.1.114), non-ASCII teammate name fix (2.1.145).
+     198| - `CLAUDE_CODE_SUBAGENT_MODEL` now applies to teammates (2.1.147).
+     199| - This is the most experimental surface: token-intensive, tmux-dependent, Windows support maturing (2.1.144 "macOS background sessions crashing... exit 1 before init when the project..." — platform-specific session management).
+     200| 
+     201| ### 4.4 Parallelism model
+     202| - **Intra-session**: the agent loop is sequential; parallelism comes from (a) background Bash jobs, (b) subagents/teams running concurrently, (c) user running multiple `claude` instances (multi-window / `claude agents` background sessions).
+     203| - **`claude agents`**: a session manager/agent view — lists live sessions (`claude agents --json`, 2.1.145), background sessions (`claude --bg`, `/bg`, `/background`), tab titles show awaiting-input count, cross-project resume hints.
+     204| - **Background sessions**: `claude --bg` starts detached sessions; `/resume` lists them (marked `bg`, 2.1.144); background-job worktrees (git worktrees per job, Windows NTFS-junction-safe, 2.1.147).
+     205| 
+     206| ---
+     207| 
+     208| ## 5. Extensibility
+     209| 
+     210| Claude Code has a deep extensibility stack. From lightest to heaviest:
+     211| 
+     212| ### 5.1 Hooks
+     213| **Hooks** are user-defined shell commands (or prompt/agent-type handlers) that run at lifecycle points, with JSON input/output. They are the primary mechanism for custom permission logic, automation, and guardrails.
+     214| 
+     215| - **Event points** (from public docs + changelog corroboration):
+     216|   - `PreToolUse` — can **deny** or **modify** a tool invocation before it runs (return `{decision: "block"}` or edit the input).
+     217|   - `PostToolUse` — react to results (e.g. auto-format after Edit).
+     218|   - `PermissionRequest` — custom permission prompts; hooks can auto-approve/deny (this is how teams implement policy beyond the rule lists).
+     219|   - `UserPromptSubmit` — validate/transform incoming prompts.
+     220|   - `Stop` / `SubagentStop` — on turn/subagent completion (input includes `background_tasks`, `session_crons` since 2.1.145).
+     221|   - `SessionStart` / `Setup` / `SubagentStart` — must be **command-type** hooks (2.1.142 fix).
+     222|   - `Notification` — on desktop notifications.
+     223| - **Configuration**: `hooks` key in settings (user/project/local) or plugin-provided. Hook `if` conditions (e.g. `PowerShell(git push*)`) filter when they fire (2.1.147).
+     224| - **Output contract**: JSON with `decision`, `reason`, `updatedInput`, and (since 2.1.141) `terminalSequence` for emitting notifications/window titles/bells without a controlling terminal.
+     225| - **Official `hookify` plugin** (in marketplace): "Easily create hooks to prevent unwanted behaviors by analyzing conversation patterns."
+     226| - Hooks are **cross-platform** (run via the configured shell; Windows via PowerShell/win_helper, verified locally).
+     227| 
+     228| ### 5.2 MCP servers (Model Context Protocol)
+     229| - **First-class integration** (changelog: MCP mentioned in 106 versions, back to `0.2.36`).
+     230| - **Add servers**: `claude mcp add <name> <command>`, `claude mcp add-json <n> <json>`, `claude mcp add-from-claude-desktop` (import from Claude Desktop, 0.2.36).
+     231| - **Scopes**: local (project), project (committed `.mcp.json`), user, enterprise. `.mcp.json` enables team-shared server configs.
+     232| - **Transport**: stdio (default), plus HTTP/SSE for remote servers.
+     233| - **Tool naming**: `mcp__<server>__<tool>`; servers expose **tools, resources, prompts, and templates** (changelog 2.1.147: "Fixed paginating MCP servers dropping resources, templates, and prompts past page 1").
+     234| - **MCP prompts** surface as slash commands (2.1.145: "MCP prompt slash commands showing raw server validation errors... the error now names the missing argument").
+     235| - **LSP integration** via MCP (clangd-lsp, gopls-lsp, csharp-lsp, jdtls-lsp, kotlin-lsp, lua-lsp in official marketplace).
+     236| - **`/mcp`** menu for listing/connecting/disconnecting servers at runtime.
+     237| - **Context URIs**: `mcpContextUris` per project (verified in local `.claude.json`) — servers can inject context.
+     238| - **External integrations** shipped as plugins: github, gitlab, playwright, asana, linear, context7, chrome-devtools-mcp, etc. (verified in `external_plugins/`).
+     239| 
+     240| ### 5.3 Slash commands
+     241| - **Built-in**: `/help`, `/init`, `/compact`, `/clear`, `/model`, `/resume`, `/continue`, `/permissions`, `/sandbox`, `/plugin`, `/status`, `/statusline`, `/feedback`, `/theme`, `/code-review`, `/review`, `/usage-credits`, `/bg`, `/background`, `/effort`, `/memory`, etc. (many confirmed via changelog).
+     242| - **Custom**: Markdown files in `.claude/commands/*.md` (project) or `~/.claude/commands/*.md` (user). Frontmatter can declare `description`, `argument-hint`, `allowed-tools`, `model`, `context` (e.g. `context: fork`), and `$ARGUMENTS`/`$1..$n` templating.
+     243| - **Namespaced**: subdirectories create namespaces (`/commands/git/commit.md` → `/git:commit`).
+     244| - **Dynamic arguments**: `!`command`` shell interpolation inside command bodies; `$ARGUMENTS` for positional args.
+     245| - **MCP prompts** also appear as slash commands (see §5.2).
+     246| - Unknown slash commands error in headless/SDK mode (2.1.147).
+     247| - Plugins can ship slash commands (see §5.6).
+     248| 
+     249| ### 5.4 Output styles
+     250| - **Introduced `1.0.81`**: "Released output styles, including new built-in educational output styles 'Explanatory' and 'Learning'."
+     251| - An output style **replaces the system prompt's output-formatting section** with custom instructions (e.g. terse, verbose, educational).
+     252| - Built-ins: `Explanatory`, `Learning`, `Proactive`, `Terse` (plus `default`); custom via `.claude/output-styles/*.md` with `name`, `description`, `model` frontmatter.
+     253| - `1.0.84`/`2.0.32`/`2.0.37`/`2.0.41`: iterative improvements; 2.1.94/2.1.141: further refinements.
+     254| - Official `explanatory-output-style` and `learning-output-style` plugins in marketplace.
+     255| 
+     256| ### 5.5 Skills
+     257| - **Agent Skills**: folders with a `SKILL.md` (YAML frontmatter: `name`, `description`, optional `allowed-tools`, `context`) + supporting scripts/resources. Invoked by the `Skill` tool; can run in `context: fork` (isolated context) or inline.
+     258| - Skills are the newer, richer extension primitive over slash commands: they bundle instructions + executable scripts + assets, and are auto-selected by the model based on description.
+     259| - Official marketplace ships many skill-based plugins (e.g. `aws-dev-toolkit`: "34 skills, 11 agents, and 3 MCP servers").
+     260| 
+     261| ### 5.6 Plugins & marketplaces
+     262| - **Introduced `2.0.12`**: "**Plugin System Released**: Extend Claude Code with custom commands, agents, hooks, and MCP servers from marketplaces."
+     263| - **A plugin =** a bundle that can include: slash commands, agents (subagents), hooks, skills, MCP servers, LSP servers, output styles, and theme files — all declared in `.claude-plugin/plugin.json` + `marketplace.json`.
+     264| - **Marketplaces**: git repos (or GitHub) that list plugins; official one is `anthropics/claude-plugins-official` (verified locally: **203 plugins** + `external_plugins/`).
+     265| - **Management**: `/plugin install`, `/plugin enable/disable`, `/plugin marketplace`, `/plugin discover`, `/plugin browse`, `claude plugin details`, `claude plugin validate`, `claude plugin list` (changelog 2.1.145: Discover/Browse show commands, agents, skills, hooks, MCP/LSP servers pre-install; 2.1.144: show last-updated date).
+     266| - **Repo-level config**: `extraKnownMarketplaces` for team collaboration (2.0.12); git-based plugins support branch/tag fragments `owner/repo#branch` (2.0.28).
+     267| - **`CLAUDE_CODE_PLUGIN_PREFER_HTTPS`** (2.1.141): clone plugin sources over HTTPS instead of SSH for environments without a GitHub SSH key.
+     268| - **Auto-install**: `officialMarketplaceAutoInstallAttempted` / `officialMarketplaceAutoInstalled` (verified in local `.claude.json`) — the official marketplace is auto-installed on first run.
+     269| - **Validation**: `claude plugin validate` flags structural issues (e.g. `skills:` entries pointing at a file instead of a directory, 2.1.145).
+     270| - **External plugins** (verified locally): `asana`, `context7`, `discord`, `firebase`, `github`, `gitlab`, `greptile`, `imessage`, `laravel-boost`, `linear`, `playwright`, `serena`, `telegram`, `terraform`, `fakechat`.
+     271| 
+     272| ### 5.7 Claude Code SDK (Agent SDK)
+     273| - **Claude Code SDK** (formerly "Claude Code SDK", now **Claude Agent SDK**) — programmatic access to the same agent harness:
+     274|   - **Python** (`claude-code-sdk`) and **TypeScript** (`@anthropic-ai/claude-code` / `@anthropic-ai/claude-agent-sdk`) packages.
+     275|   - Spawn Claude Code as a subprocess or import the loop; stream messages; inject custom tools; set permission callbacks; use subagents, hooks, MCP.
+     276|   - **Headless/SDK mode** is a distinct runtime (changelog 2.1.147: "Fixed unknown slash commands silently doing nothing in headless/SDK mode"; "an uncaught exception at the end of streaming sessions when running via the Agent SDK").
+     277|   - **Official `agent-sdk-dev` plugin** in marketplace: "Development kit for working with the Claude Agent SDK."
+     278| - The SDK is the basis for building custom agents on top of Claude Code's harness (tool execution, permissions, compaction) without the TTY.
+     279| 
+     280| ### 5.8 Themes, statusline, and other UX extensions
+     281| - **Themes**: `/theme` with built-in + custom themes (2.1.147: "New custom theme" and color editor dialogs; Esc handling fixed).
+     282| - **Statusline**: `/statusline` custom command (see §6.6).
+     283| - **Voice**: push-to-talk voice input (2.1.145: "Fixed voice push-to-talk not working in the agent view's reply pane").
+     284| - **Desktop/mobile**: `/mobile`, IDE/desktop pairing via `adapters.json` (verified locally: pairing code + expiry), `desktopNotificationsEnabled` in settings.
+     285| 
+     286| ---
+     287| 
+     288| ## 6. CLI / UX Design
+     289| 
+     290| ### 6.1 REPL and interactive mode
+     291| - `claude` launches an **interactive TTY REPL** (Ink/React-based terminal UI, full-screen mode supported).
+     292| - **Streaming** output token-by-token; tool calls rendered inline with collapsible output; **diff rendering** for file edits (unified diff, syntax-aware; 2.1.147: "Improved diff rendering performance for large file edits").
+     293| - **Keybindings**: `Esc` interrupts; `Esc+Esc` / `/rewind` for checkpoints; `Shift+Tab` cycles permission modes; `Ctrl+T` pins background sessions; arrow-up prompt history (deduplicated, 2.1.147); `@` file mentions; `#` memory shorthand; `!` shell passthrough; `Shift+O`/`Shift+R` open file diffs in IDE (restored in 2.1.141: "view diff in your IDE").
+     294| - **Prompt history**: persisted per project (`~/.claude/history.jsonl`, verified locally); consecutive duplicates not re-recorded (2.1.147).
+     295| - **Full-screen mode**: mouse hover/click on suggestion lists (2.1.145); fixed Windows Terminal strobing (2.1.147); garbled-output self-heal after missed resize (2.1.144).
+     296| - **Footer/status bar**: PR badge updates after `gh pr create` (2.1.145); GitHub repo/PR info in statusline JSON (2.1.145).
+     297| 
+     298| ### 6.2 Headless / print mode
+     299| - `claude -p "prompt"` (**print mode**): single-turn, non-interactive; `--output-format json|stream-json|text` for machine-readable output; `--input-format stream-json` for streaming input.
+     300| - **`--dangerously-skip-permissions`**: bypass permission prompts (requires trusted env).
+     301| - **CI usage**: `claude -p` with `--max-turns`, `--allowedTools`, `--resume`, `--continue`; env vars `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` / telemetry flags for deterministic CI runs **[memory]**.
+     302| - **Session continuation flags**:
+     303|   - `--continue` (`-c`): resume the **most recent** session in the current project.
+     304|   - `--resume` (`-r`): pick a session (interactive list) or `--resume <session-id>`; 2.1.144 added background sessions to `/resume` (marked `bg`); cross-project resume hints (2.1.145: Windows `;` separator fix).
+     305| - **Unknown slash commands** in headless/SDK mode now error instead of silently no-op (2.1.147).
+     306| - **`&` in `!` command output** fixed for headless machines (copy-pasting URLs from `gcloud auth login`) (2.1.147).
+     307| - **Startup robustness**: 2.1.144 — startup hangs up to 75s when `api.anthropic.com` unreachable (captive portal/firewall/VPN); side-channel calls now time out after 15s.
+     308| 
+     309| ### 6.3 Statusline
+     310| - **`/statusline`** (added `1.0.71`): user provides a shell command; Claude Code pipes session JSON (model, cost, context %, git info, workspace) into it, stdout = the status line.
+     311| - 2.1.145: statusline JSON now includes **GitHub repo and PR information** when detected.
+     312| - 2.1.111/2.1.86/2.1.80: iterative statusline improvements (multiple versions).
+     313| 
+     314| ### 6.4 Agent view / multi-session UI
+     315| - **`claude agents`**: session manager listing live sessions; `--json` for scripting (tmux-resurrect, status bars, session pickers, 2.1.145); `--cwd <path>` scoping (2.1.141); tab title shows awaiting-input count (2.1.145); voice push-to-talk in reply pane (2.1.145).
+     316| - **Background sessions**: `claude --bg`, `/bg`, `/background`; pinned sessions stay alive idle, restarted in place on update, memory-pressure shedding order (2.1.147).
+     317| - **Background jobs**: git worktree per job; Windows NTFS-junction-safe removal (2.1.147).
+     318| 
+     319| ### 6.5 Configuration surface (UX-relevant)
+     320| - **Settings cascade**: enterprise managed settings > CLI args > `.claude/settings.local.json` > `.claude/settings.json` > `~/.claude/settings.json` > defaults.
+     321| - **Env vars** (large surface): `ANTHROPIC_*` (provider), `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_PLUGIN_PREFER_HTTPS`, `ANTHROPIC_WORKSPACE_ID` (2.1.141), etc.
+     322| - **`/config`** interactive config; `/status` shows active config; `/permissions` manages rules; `/usage-credits` (renamed from "extra usage", 2.1.144).
+     323| - **`/effort`** effort-level slider (2.1.147: opens at current level) — effort/max thinking control (local config: `"effort": "max"`).
+     324| - **Language**: `language: chinese` setting (verified locally) — Claude Code responds in the configured language.
+     325| - **Windows support**: PowerShell tool, `.runtime/win_helper.py` (verified locally), Windows Terminal rendering fixes — Windows is a supported first-class platform in recent versions.
+     326| 
+     327| ---
+     328| 
+     329| ## 7. Integration Surface
+     330| 
+     331| ### 7.1 Git awareness
+     332| - **Repo detection**: `githubRepoPaths` maps GitHub remotes to local paths (verified in local `.claude.json`: `ychsu661121/amiclaw → D:\Tools\AmiClaw`).
+     333| - **PR badge** in footer: updates after `gh pr create` and other PR-state-changing commands (2.1.145).
+     334| - **Statusline JSON** includes repo + PR info (2.1.145).
+     335| - **`/review`**: PR review workflow (fixed 2.1.145: deprecated `projectCards` GraphQL query that errored on repos with Classic Projects — shows deep GitHub GraphQL integration).
+     336| - **`/code-review`** (2.1.147): correctness review at effort level; `--comment` posts inline GitHub PR comments.
+     337| - **Commit helpers**: `commit-commands` plugin in official marketplace; `git push` hook-condition matching (2.1.147).
+     338| - **Worktrees**: background jobs get their own git worktree (2.1.147).
+     339| - Git operations are performed via **Bash** (`git ...`), not a dedicated Git tool; awareness comes from repo metadata + model behavior.
+     340| 
+     341| ### 7.2 CI usage
+     342| - Headless `claude -p` is the CI entry point; combined with `--output-format stream-json` for structured results.
+     343| - **Anthropic's own usage**: Claude Code powers Claude Code on web (claude.ai/code), GitHub Actions integrations, and the Agent SDK; official plugins for Buildkite, GitHub, GitLab (verified in marketplace).
+     344| - **Telemetry/OTEL**: `claude_code.tool` spans with `agent_id`/`parent_agent_id` (2.1.145) — OpenTelemetry instrumentation for enterprise observability.
+     345| - **Enterprise**: managed settings, workload identity federation via `ANTHROPIC_WORKSPACE_ID` (2.1.141), Bedrock/Vertex/Foundry providers, org login enforcement.
+     346| 
+     347| ### 7.3 SDK/API
+     348| - **Claude Agent SDK** (Python/TypeScript) — see §5.7; exposes the same harness: tools, hooks, subagents, permissions callbacks, MCP.
+     349| - **Messages API** is the wire protocol; any Anthropic-compatible endpoint works (verified locally via `apiFormat: anthropic` / `runtimeKind: anthropic_compatible` providers pointed at Ollama).
+     350| - **MCP** is the bidirectional integration standard: Claude Code is both an MCP **client** (connects to servers) and can expose its capabilities to MCP **clients** via the SDK.
+     351| - **Desktop/IDE adapters**: `adapters.json` pairing (verified locally) links Claude Code sessions to Claude Desktop / IDE extensions; `desktopNotificationsEnabled`.
+     352| 
+     353| ---
+     354| 
+     355| ## 8. Known Strengths and Weaknesses
+     356| 
+     357| ### 8.1 Strengths
+     358| 1. **Best-in-class tool harness**: precise file tools (Read/Write/Edit/Grep/Glob) beat generic "run code" approaches for correctness; Edit's exact-match semantics reduce corruption.
+     359| 2. **Permission system is the differentiator**: modes + allow/ask/deny rules + sandbox + hooks give a graduated trust model unmatched by most CLI agents. Prompt-injection-aware (env-var assignment bypass fixed, external CLAUDE.md include approval).
+     360| 3. **Context engineering maturity**: auto-compaction since v0.2.47, rewind + "summarize up to here", micro-compaction, 1M context variants, CLAUDE.md hierarchy with @-imports and security gating.
+     361| 4. **Deep extensibility ladder**: hooks → slash commands → skills → subagents → output styles → plugins/marketplaces → MCP → SDK. The official marketplace (203 plugins, verified) shows ecosystem scale.
+     362| 5. **Session persistence & resume**: `--continue`/`--resume`, background sessions, `claude agents` multi-session manager, per-project history — agentic workflows survive restarts.
+     363| 6. **Provider flexibility**: Anthropic API + Bedrock/Vertex/Foundry + any Anthropic-compatible endpoint (Ollama etc.) via env vars — no vendor lock-in at the transport layer.
+     364| 7. **Headless-first design**: `-p` print mode, stream-json I/O, effort/model flags make it a programmable engine, not just a REPL.
+     365| 8. **Observability**: OTEL spans with agent parenting, statusline JSON, usage tracking — enterprise-ready instrumentation.
+     366| 
+     367| ### 8.2 Weaknesses / user complaints
+     368| 1. **Token cost & context burn**: subagents/agent teams are "token-intensive" (2.1.32 changelog's own words); compaction quality is imperfect; long sessions degrade. Agent teams remain research-preview.
+     369| 2. **Version churn**: 294 releases to 2.1.148 (verified changelog) — fast-moving target; changelog is dominated by fixes (rendering glitches, Windows Terminal issues, edge-case regressions like 2.1.147's exit-code-127 regression). Feature behavior shifts frequently (e.g. `/simplify` → `/code-review` rename, "extra usage" → "usage credits").
+     370| 3. **Platform gaps on Windows**: sandboxing arrived on Linux/macOS first (2.0.24); many changelog entries are Windows-specific rendering/PowerShell fixes — Windows is supported but second-tier.
+     371| 4. **Terminal rendering fragility**: recurring fixes for garbled output, resize events, CJK wide characters, VS Code split panes, GNOME paste (2.1.144–2.1.147) — TTY rendering is a moving target.
+     372| 5. **Prompt-injection surface**: WebFetch/WebSearch + auto-approval modes + hooks create attack surface; mitigations (permission rules, trust dialog, include approval) exist but users report injection incidents **[community reports, memory]**.
+     373| 6. **Permission complexity**: the rule grammar (Tool(specifier), three tiers, four scopes) is powerful but confusing; enterprise admins report configuration sprawl **[community reports, memory]**.
+     374| 7. **Anthropic-model coupling**: while endpoints are swappable, behavior is tuned for Claude models; third-party models (e.g. local Ollama, per this machine's config) degrade tool-use reliability, compaction, and classifier quality **[inferred; consistent with local setup using gemma4/qwen3.6]**.
+     375| 8. **Opaque internals**: system prompt is not inspectable; compaction/summarization is a black box — hard to debug context failures.
+     376| 9. **Experimental surfaces**: agent teams (tmux-dependent, env-flag gated), effort levels, auto-mode classifier — all in flux; APIs/behaviors change between minor versions.
+     377| 10. **Security of hooks/plugins**: hooks run arbitrary shell with full user privileges; marketplace plugins are third-party code — supply-chain risk despite `claude plugin validate`.
+     378| 
+     379| ### 8.3 Implications for AmiClaw comparison (short)
+     380| - **Match**: tool inventory, permission rules, CLAUDE.md-style memory, subagents, hooks, MCP client, headless mode.
+     381| - **Differentiators Claude Code has**: plugin/marketplace ecosystem, agent teams, checkpoint/rewind, OTEL, managed enterprise settings, output styles, skills.
+     382| - **AmiClaw angles to check**: local-model quality under the same harness (Claude Code proves the harness works with Anthropic-compatible endpoints), permission granularity vs. complexity, session persistence model, Windows support parity.
+     383| 
+     384| ---
+     385| 
+     386| ## Appendix A — Verified Local Evidence Index
+     387| 
+     388| | Path | Evidence |
+     389| |---|---|
+     390| | `~/.claude/cache/changelog.md` (322,699 bytes) | 294 versions: `0.2.21` → `2.1.148`. Feature intro dates cited throughout. |
+     391| | `~/.claude/settings.json` | `defaultMode: bypassPermissions`, `model: claude-opus-4-7`, `effort: max`, `language: chinese`. |
+     392| | `~/.claude/backups/.claude.json.backup.1787818464723` | Global config schema incl. `projects{allowedTools, mcpServers, hasTrustDialogAccepted, hasClaudeMdExternalIncludesApproved}`, `githubRepoPaths`, `officialMarketplaceAutoInstalled`. |
+     393| | `~/.claude/cc-haha/providers.json` | `apiFormat: anthropic`, `runtimeKind: anthropic_compatible`, model tiers `main/haiku/sonnet/opus`, Ollama endpoints. |
+     394| | `~/.claude/cc-haha/settings.json` | `ANTHROPIC_BASE_URL/ANTHROPIC_MODEL/ANTHROPIC_DEFAULT_*_MODEL`, `skipWebFetchPreflight`. |
+     395| | `~/.claude/plugins/marketplaces/claude-plugins-official` | Official marketplace checkout; `marketplace.json` = 203 plugins; `external_plugins/` = 14 vendor integrations. |
+     396| | `~/.claude/{projects,sessions,file-history,history.jsonl,adapters.json}` | Session persistence, prompt history, IDE pairing (pairing code + expiry), per-session file snapshots. |
+     397| | `~/.claude/.runtime/` | Bundled Python venv + `win_helper.py` (Windows runtime support). |
+     398| 
+     399| ## Appendix B — Method & Caveats
+     400| - **Changelog as primary source**: version numbers and feature names are quoted from the local changelog cache (installed build `2.1.148`); changelog text was sampled, not read exhaustively — some feature details in older versions are from **[memory]** of public docs and marked as such.
+     401| - **Not verified**: exact system-prompt text, internal loop implementation (JS bundle not inspected), current public pricing/quota details, and post-`2.1.148` releases.
+     402| - **Version sensitivity**: permission-mode names, effort levels, auto-mode classifier, agent teams, and skills are recent (2.1.x) and evolving; the tool inventory is stable but the MCP/skills/plugins surface changes frequently.
+     403| 
+     404| *Generated by Worker Agent #7 — evidence collected from local installation at `C:\Users\YCHsu\.claude`.*
+

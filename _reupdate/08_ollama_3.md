@@ -1,0 +1,444 @@
+# Chunk 08: src/ollama-chat.ts (lines 2041-3052)
+- L2041: `});` — Closes the `res.on('data')` handler registration for the streaming HTTP response in the Ollama chat call (opened earlier).
+- L2042: `res.on('end', () => {` — Fires when the response stream ends; finalizes the promise result.
+- L2043: `if (streamError) { reject(new Error('Ollama 錯誤：' + streamError)); return; }` — If a stream-level error was captured earlier, reject the promise with a localized error message and exit.
+- L2044: `if (finalToolCalls && finalToolCalls.length > 0) {` — Branch: model produced tool calls.
+- L2045: `resolve({ role: 'assistant', content: accContent || null, tool_calls: finalToolCalls as ChatMessage['tool_calls'] });` — Resolve with assistant message carrying accumulated text (or null) plus parsed tool_calls.
+- L2046: `} else {` — Branch: no tool calls, produce a plain assistant message.
+- L2047: `let content = accContent;` — Start from the accumulated streamed content.
+- L2048: `if (!accThinking && content) {` — Fallback: if no separate thinking stream was captured, look for inline `think` tags in content.
+- L2049: `const m = content.match(/^
+- L2050: `if (m) { if (onThinkChunk) onThinkChunk(m[1].trim()); content = content.slice(m[0].length); }` — If found, emit the thinking text via callback and strip the tag block from visible content.
+- L2051: `}` — Closes the `!accThinking && content` block.
+- L2052: `resolve({ role: 'assistant', content: content || null, thinking: accThinking || un` — Resolve final assistant message with optional thinking and truncated flags.
+- L2053: `}` — Closes the tool-call vs plain branch.
+- L2054: `});` — Closes the `res.on('end')` handler.
+- L2055: `});` — Closes the `res` callback of `http(s).request`.
+- L2056: `req.on('error', (e: NodeJS.ErrnoException) => reject(ollamaConnectError(new URL(bas` — Maps socket-level errors to a friendly connection error (hostname + cause) and rejects.
+- L2057: `req.setTimeout(600000, () => { req.destroy(new Error('Agent 呼叫逾時 (600s)')); });` — Enforces a 10-minute inactivity timeout on the request; destroys the socket on breach.
+- L2058: `req.write(body); req.end();` — Sends the JSON body and completes the request.
+- L2059: `} catch (e) { reject(e); }` — Catches synchronous setup errors (e.g., bad URL) and rejects the promise.
+- L2060: `});` — Closes the `new Promise` executor.
+- L2061: `}` — Ends the Ollama streaming chat call function.
+- L2062: (blank)
+- L2063: `/**` — JSDoc block begins for the OpenAI-compatible streaming call.
+- L2064: `* OpenAI-compatible /v1/chat/completions 串流呼叫（支援 tool_calls）。` — Doc: streaming call to OpenAI-style endpoint with tool_calls support.
+- L2065: `* 模型 ID 格式：openai::http://host:port||model-name 或 openai::model-name（使用預設 baseU` — Doc: model ID syntax — explicit base URL or default baseUrl.
+- L2066: `*/` — JSDoc ends.
+- L2067: `function openaiCompatChatCallStream(` — Declares the OpenAI-compatible streaming chat function.
+- L2068: `baseUrl: string, model: string, messages: ChatMessage[], tools: unknown[],` — Parameters: endpoint, model name, message list, tool definitions.
+- L2069: `onTextChunk?: (chunk: string) => void,` — Optional callback for streamed text chunks.
+- L2070: `onStats?: (tokens: number, tps: number) => void,` — Optional callback reporting token count and tokens/sec.
+- L2071: `onThinkChunk?: (chunk: string) => void` — Optional callback for thinking/reasoning chunks.
+- L2072: `): Promise<ChatMessage> {` — Returns a promise resolving to the final assistant message.
+- L2073: `OllamaChatPanel.log(`[openaiCompat] call url=${baseUrl} model=${model} msgs=${messag` — Logs the outgoing OpenAI-compat call for observability.
+- L2074: `return new Promise((resolve, reject) => {` — Wraps the imperative HTTP flow in a promise.
+- L2075: `try {` — Guards URL/body construction from throwing into the promise.
+- L2076: `const url = new URL('/v1/chat/completions', baseUrl);` — Builds the completions endpoint URL from the base.
+- L2077: `// 轉換 ChatMessage 格式為 OpenAI 格式` — Comment: convert internal ChatMessage format to OpenAI wire format.
+- L2078: `const oaiMessages = messages.map(m => {` — Maps each internal message to its OpenAI representation.
+- L2079: `if (m.role === 'tool') {` — Tool result messages need tool_call_id and empty-safe content.
+- L2080: `return { role: 'tool' as const, content: m.content ?? '', tool_call_id: m.tool_call_` — Emits a `tool` role message with safe defaults.
+- L2081: `}` — Closes the tool-role branch.
+- L2082: `if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {` — Assistant messages with tool calls need full tool_calls serialization.
+- L2083: `return {` — Starts the assistant-with-tool-calls object.
+- L2084: `role: 'assistant' as const,` — Role literal.
+- L2085: `content: m.content ?? null,` — Content may be null when only tool calls were produced.
+- L2086: `tool_calls: m.tool_calls.map(tc => ({` — Maps each internal tool call to OpenAI shape.
+- L2087: `id: tc.id ?? tc.function.name,` — Falls back to function name if no id was assigned.
+- L2088: `type: 'function' as const,` — OpenAI requires explicit type for function tool calls.
+- L2089: `function: {` — Nested function descriptor.
+- L2090: `name: tc.function.name,` — Function name passthrough.
+- L2091: `arguments: typeof tc.function.arguments === 'string'` — Arguments may already be a JSON string or an object.
+- L2092: `? tc.function.arguments` — String form passes through unchanged.
+- L2093: `: JSON.stringify(tc.function.arguments),` — Object form is serialized to a JSON string (OpenAI requires string).
+- L2094: `},` — Closes the function descriptor.
+- L2095: `})),` — Closes the tool_calls map.
+- L2096: `};` — Ends the assistant-with-tool-calls object literal.
+- L2097: `}` — Closes that branch.
+- L2098: `return { role: m.role as 'system' | 'user' | 'assistant', content: m.content ?? '' };` — Default: plain role+content message.
+- L2099: `});` — Closes the messages.map callback.
+- L2100: `const protocol = url.protocol === 'https:' ? https : http;` — Selects the Node http/https module by URL protocol.
+- L2101: `let triedWithoutTools = false;` — Flag for the fallback retry path (retry without tools if the provider rejects them).
+- L2102: (blank)
+- L2103: `const sendRequest = (includeTools: boolean) => {` — Inner function performing one attempt; parameter controls whether tools are included.
+- L2104: `const oaiTools = includeTools && tools.length > 0 ? tools : undefined;` — Only include the tools array when requested and non-empty.
+- L2105: `const bodyObj: Record<string, unknown> = { model, messages: oaiMessages, stream: t` — Base request body with streaming enabled.
+- L2106: `if (oaiTools) { bodyObj.tools = oaiTools; }` — Conditionally attach the tools field.
+- L2107: `const body = JSON.stringify(bodyObj);` — Serializes the request body.
+- L2108: (blank)
+- L2109: `const options: http.RequestOptions = {` — HTTP request options for the completions call.
+- L2110: `hostname: url.hostname,` — Target host from the parsed URL.
+- L2111: `port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),` — Explicit port or protocol default.
+- L2112: `path: url.pathname, method: 'POST',` — POST to the parsed path.
+- L2113: `headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(` — Sets JSON content type, length, and SSE accept header.
+- L2114: `};` — Ends the options object.
+- L2115: `const _oaiKey = vscode.workspace.getConfiguration('amiAiClaw').get<string>('openaiC` — Reads the configured OpenAI-compat API key from VS Code settings.
+- L2116: `if (_oaiKey) { (options.headers as Record<string, string>)['Authorization'] = 'Bea` — Adds Bearer auth header when a key is configured.
+- L2117: (blank)
+- L2118: `let lineBuffer = '';` — Accumulates partial SSE lines split across data chunks.
+- L2119: `let accContent = '';` — Accumulates streamed assistant text.
+- L2120: `let wasTruncated = false;` — Tracks whether the stream was cut off mid-generation.
+- L2121: `// tool_calls 是增量合併結構（index-based）` — Comment: OpenAI streams tool calls incrementally keyed by index; must be merged.
+- L2122: `const toolCallBuilders: Map<number, { id: string; name: string; args: string }> = new Map();` — Per-index accumulators merging streamed tool call fragments.
+- L2123: `let promptTokens = 0; let completionTokens = 0; const startMs = Date.now();` — Token counters and stream start timestamp for throughput stats.
+- L2124: `//  串流路由狀態機（0=before, 1=in_think, 2=after）` — Comment: think-tag routing state machine (before / inside / after think tags).
+- L2125: `let _thinkState: 0 | 1 | 2 = 0;` — State machine variable: 0=before think tag, 1=inside, 2=after.
+- L2126: `let _tagBuf = '';` — Holds a trailing partial that could be the start of a tag split across chunks.
+- L2127: `const _dispatch = (raw: string) => {` — Routes a raw content chunk to text vs think callbacks per state machine.
+- L2128: `let s = _tagBuf + raw; _tagBuf = '';` — Merges carried-over buffer with new chunk, resets buffer.
+- L2129: `while (s.length > 0) {` — Loop processes the buffer until fully consumed (handles multiple tag transitions in one chunk).
+- L2130: `if (_thinkState === 0) {` — State 0: scanning for the opening `think` tag.
+- L2131: `const openIdx = s.indexOf('
+- L2132: `if (openIdx === -1) {` — No opening tag present; emit as text but hold a possible partial suffix.
+- L2133: `let cut = s.length;` — Default: entire buffer is safe text.
+- L2134: `for (let p = Math.min(s.length, 6); p >= 1; p--) { if ('
+- L2135: `if (cut > 0 && onTextChunk) onTextChunk(s.slice(0, cut));` — Emit safe prefix as text; hold remainder in `_tagBuf`.
+- L2136: `s = '';` — Buffer fully handled; exit loop.
+- L2137: `} else {` — Opening tag found in buffer.
+- L2138: `if (openIdx > 0 && onTextChunk) onTextChunk(s.slice(0, openIdx));` — Emit any text before the tag.
+- L2139: `s = s.slice(openIdx + 7); _thinkState = 1;` — Skip the tag (7 chars), enter thinking state.
+- L2140: `}` — Closes the openIdx branch.
+- L2141: `} else if (_thinkState === 1) {` — State 1: inside think block, scanning for closing tag.
+- L2142: `const closeIdx = s.indexOf('
+- L2143: `if (closeIdx === -1) {` — No closing tag yet; emit as thinking but hold possible partial suffix.
+- L2144: `let cut = s.length;` — Default: whole buffer is thinking text.
+- L2145: `for (let p = Math.min(s.length, 7); p >= 1; p--) { if ('
+- L2146: `if (cut > 0 && onThinkChunk) onThinkChunk(s.slice(0, cut));` — Emit safe prefix as thinking; hold remainder.
+- L2147: `s = '';` — Buffer handled; exit loop.
+- L2148: `} else {` — Closing tag found.
+- L2149: `if (closeIdx > 0 && onThinkChunk) onThinkChunk(s.slice(0, closeIdx));` — Emit thinking text up to the tag.
+- L2150: `s = s.slice(closeIdx + 8); _thinkState = 2;` — Skip the closing tag (8 chars), enter after-think state.
+- L2151: `}` — Closes the closeIdx branch.
+- L2152: `} else {` — State 2: after thinking; all remaining text is normal content.
+- L2153: `if (onTextChunk) onTextChunk(s); s = '';` — Emit remainder as text and finish.
+- L2154: `}` — Closes the state-2 branch.
+- L2155: `}` — Closes the while loop.
+- L2156: `};` — Ends the `_dispatch` helper.
+- L2157: (blank)
+- L2158: `const req = protocol.request(options, (res)=> {` — Issues the HTTP(S) request; `res` callback handles the response stream.
+- L2159: `if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {` — Non-2xx status: treat as API error.
+- L2160: `let errBody = '';` — Accumulates error response body for diagnostics.
+- L2161: `res.setEncoding('utf8');` — Decode response as UTF-8.
+- L2162: `res.on('data', (d: string) => { errBody += d; });` — Collect error body chunks.
+- L2163: `res.on('end', () => {` — When error body is complete, build the error.
+- L2164: `let apiMessage = 'HTTP ' + res.statusCode;` — Default message is the raw HTTP status.
+- L2165: `try {` — Try to extract a structured error message from the JSON body.
+- L2166: `const j = JSON.parse(errBody);` — Parse the error body.
+- L2167: `apiMessage = j.error?.message ?? apiMessage;` — Use `error.message` if present.
+- L2168: `} catch { /* ignore parse error */ }` — Non-JSON bodies fall back to the HTTP status message.
+- L2169: (blank)
+- L2170: `const isAutoToolChoiceError = apiMessage.includes('"auto" tool choice requires')` — Detects vLLM "auto tool choice" rejection (part 1).
+- L2171: `|| apiMessage.includes('--enable-auto-tool-choice');` — Detection part 2 (CLI flag hint in error text).
+- L2172: (blank)
+- L2173: `// vLLM 在未啟用 auto tool choice 時會拒絕 tools；自動降級為無工具重試一次。` — Comment: degrade gracefully when the provider can't handle tool choice.
+- L2174: `if (includeTools && !triedWithoutTools && isAutoToolChoiceError) {` — Only retry once, and only if tools were included.
+- L2175: `triedWithoutTools = true;` — Prevents infinite retry loops.
+- L2176: `sendRequest(false);` — Reissues the request without the tools field.
+- L2177: `return;` — Skip normal error reporting for the retried case.
+- L2178: `}` — Closes the retry branch.
+- L2179: (blank)
+- L2180: `if (apiMessage.startsWith('HTTP ')) {` — If no structured message, include a body snippet.
+- L2181: `reject(new Error('OpenAI API HTTP ' + res.statusCode + ': ' + errBody.slice(0, 200)));` — Reject with status + truncated body.
+- L2182: `return;` — Exit after rejecting.
+- L2183: `}` — Closes the raw-HTTP branch.
+- L2184: `reject(new Error('OpenAI API 錯誤：' + apiMessage));` — Reject with the provider's error message.
+- L2185: `});` — Closes the error-body `res.on('end')` handler.
+- L2186: `return;` — Done handling the error status; skip success path.
+- L2187: `}` — Closes the non-2xx branch.
+- L2188: `res.setEncoding('utf8');` — Success path: decode stream as UTF-8.
+- L2189: `OllamaChatPanel.log(`[openaiCompat] HTTP ${res.statusCode} headers=${JSON.stringif` — Logs status and first 200 chars of headers for debugging.
+- L2190: `let _firstChunk = true;` — One-shot flag to log the first content/reasoning chunk for diagnostics.
+- L2191: `let _sseEvent = '';       // track current SSE event type` — Tracks the current SSE `event:` field (e.g., `error`).
+- L2192: `let _sseError = '';       // accumulate SSE error message` — Accumulates SSE error payload for end-of-stream handling.
+- L2193: `res.on('data', (data: string) => {` — Handles each incoming SSE data chunk.
+- L2194: `lineBuffer += data;` — Append to the line buffer (chunks may split lines).
+- L2195: `const lines = lineBuffer.split('\n');` — Split into lines; the last element may be incomplete.
+- L2196: `lineBuffer = lines.pop() ?? '';` — Keep the incomplete tail in `lineBuffer` for the next chunk.
+- L2197: `for (const line of lines) {` — Process each complete line.
+- L2198: `const t = line.trim();` — Trim whitespace (handles `\r` from CRLF SSE framing).
+- L2199: `if (!t) { _sseEvent = ''; continue; }           // blank line resets event type` — Blank SSE line terminates an event block.
+- L2200: `if (t.startsWith('event:')) { _sseEvent = t.slice(6).trim(); continue; }` — Record the SSE event type for the following `data:` line.
+- L2201: `if (!t.startsWith('data:')) continue;` — Skip comment lines and other SSE fields.
+- L2202: `const payload = t.slice(5).trim();` — Extract the data payload from the SSE line.
+- L2203: `if (payload === '[DONE]') continue;` — OpenAI stream terminator; nothing to process.
+- L2204: `// SSE error event: reject with the error message` — Comment: some providers send errors as SSE events.
+- L2205: `if (_sseEvent === 'error') {` — Handle an SSE `error` event.
+- L2206: `try {` — Try structured parsing of the error payload.
+- L2207: `const errObj = JSON.parse(payload);` — Parse the error JSON.
+- L2208: `const msg = errObj?.error?.message ?? payload.slice(0, 300);` — Prefer `error.message`, else raw payload (capped at 300 chars).
+- L2209: `_sseError = msg;` — Store for end-of-stream rejection.
+- L2210: `} catch { _sseError = payload.slice(0, 300); }` — Non-JSON payload used as the message directly.
+- L2211: `continue;` — Error events carry no choices; skip to next line.
+- L2212: `}` — Closes the SSE error branch.
+- L2213: `try {` — Parse the data payload as a JSON chunk.
+- L2214: `const chunk = JSON.parse(payload) as {` — Cast the chunk to a typed shape.
+- L2215: `choices?: Array<{` — Optional choices array.
+- L2216: `delta?: {` — Optional delta object per choice.
+- L2217: `content?: string | null;` — Text delta.
+- L2218: `reasoning_content?: string | null;   // LM Studio / OpenRouter 思考欄位` — Reasoning/thinking delta (LM Studio/OpenRouter style).
+- L2219: `tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; argum` — Streaming tool call fragments keyed by index.
+- L2220: `};` — Closes the delta type.
+- L2221: `finish_reason?: string;` — Per-choice finish reason (e.g., `length`).
+- L2222: `}>;` — Closes the choice type.
+- L2223: `usage?: { prompt_tokens?: number; completion_tokens?: number };` — Optional usage stats (some providers include on final chunk).
+- L2224: `};` — Closes the chunk type.
+- L2225: `if (chunk.choices?.[0]?.finish_reason === 'length') wasTruncated = true;` — Mark stream as truncated when the provider reports `length` finish.
+- L2226: `const delta = chunk.choices?.[0]?.delta;` — Grab the delta for processing.
+- L2227: `// reasoning_content → 思考框（Gemma 4 / OpenRouter thinking 格式）` — Comment: route reasoning deltas to the thinking UI.
+- L2228: `if (delta?.reasoning_content) {` — Handle a reasoning delta.
+- L2229: `if (_firstChunk) { OllamaChatPanel.log(`[openaiCompat] first reasoning_content c` — One-shot diagnostic log of the first reasoning chunk.
+- L2230: `if (onThinkChunk) onThinkChunk(delta.reasoning_content);` — Forward reasoning text to the thinking callback.
+- L2231: `}` — Closes the reasoning branch.
+- L2232: `if (delta?.content) {` — Handle a normal content delta.
+- L2233: `if (_firstChunk) { OllamaChatPanel.log(`[openaiCompat] first content chunk: ${JS` — One-shot diagnostic log of the first content chunk.
+- L2234: `accContent += delta.content; _dispatch(delta.content);` — Accumulate and route through the think-tag state machine.
+- L2235: `}` — Closes the content branch.
+- L2236: `if (delta?.tool_calls) {` — Handle streaming tool call fragments.
+- L2237: `for (const tc of delta.tool_calls) {` — Iterate each tool call delta.
+- L2238: `if (!toolCallBuilders.has(tc.index)) { toolCallBuilders.set(tc.index, { id: tc.id` — Lazily create the per-index builder.
+- L2239: `const b = toolCallBuilders.get(tc.index)!;` — Get the builder (always exists after the set above).
+- L2240: `if (tc.id) b.id = tc.id;` — Id is sent once; overwrite when present.
+- L2241: `if (tc.function?.name) b.name += tc.function.name;` — Name arrives in pieces; concatenate.
+- L2242: `if (tc.function?.arguments) b.args += tc.function.arguments;` — Arguments arrive as incremental JSON string fragments.
+- L2243: `}` — Closes the tool_calls loop.
+- L2244: `}` — Closes the tool_calls branch.
+- L2245: `if (chunk.usage) {` — Some providers send usage in-stream.
+- L2246: `promptTokens = chunk.usage.prompt_tokens ?? 0;` — Capture prompt token count.
+- L2247: `completionTokens = chunk.usage.completion_tokens ?? 0;` — Capture completion token count.
+- L2248: `}` — Closes the usage branch.
+- L2249: `} catch { /* partial */ }` — Ignore unparseable lines (partial/malformed payloads).
+- L2250: `}` — Closes the per-line loop.
+- L2251: `});` — Closes the `res.on('data')` handler.
+- L2252: `res.on('end', () => {` — Stream finished: resolve the promise.
+- L2253: `OllamaChatPanel.log(`[openaiCompat] end: accContent.length=${accContent.length}` — Diagnostic log summarizing stream result.
+- L2254: `// SSE error event → check if context overflow + tools → retry without tools` — Comment: provider-level context overflow fallback.
+- L2255: `if (_sseError) {` — An SSE error was captured.
+- L2256: `const isCtxOverflow = /exceeds.*context|context.*size|context.*length/i.test(_s` — Regex-detect context overflow errors.
+- L2257: `if (includeTools && !triedWithoutTools && isCtxOverflow) {` — Retry once without tools (tool schemas inflate context).
+- L2258: `OllamaChatPanel.log(`[openaiCompat] context overflow with tools, retrying wit` — Log the fallback decision.
+- L2259: `triedWithoutTools = true;` — Guard against repeated retries.
+- L2260: `sendRequest(false);` — Reissue the request without tools.
+- L2261: `return;` — Skip normal resolution.
+- L2262: `}` — Closes the overflow-retry branch.
+- L2263: `reject(new Error('OpenAI API 錯誤：' + _sseError));` — Otherwise reject with the SSE error.
+- L2264: `return;` — Exit the end handler.
+- L2265: `}` — Closes the SSE error branch.
+- L2266: `if (onStats && completionTokens > 0) {` — Report stats only when tokens were counted.
+- L2267: `const elapsed = (Date.now() - startMs) / 1000;` — Compute stream duration in seconds.
+- L2268: `onStats(promptTokens + completionTokens, elapsed > 0 ? completionTokens / elaps` — Report total tokens and tokens/sec (guarded against divide-by-zero).
+- L2269: `}` — Closes the stats branch.
+- L2270: `if (toolCallBuilders.size > 0) {` — Model produced tool calls.
+- L2271: `const tool_calls = Array.from(toolCallBuilders.entries())` — Convert the Map to an array for ordering.
+- L2272: `.sort(([a], [b]) => a - b)` — Sort by index to preserve call order.
+- L2273: `.map(([, b]) => ({` — Map each builder to a final tool call object.
+- L2274: `id: b.id || b.name,` — Fall back to the function name if no id was streamed.
+- L2275: `function: {` — Function descriptor.
+- L2276: `name: b.name,` — Concatenated function name.
+- L2277: `arguments: (() => { try { return JSON.parse(b.args) as Record<string, unknown>;` — Parse accumulated args JSON; empty object on failure (keeps tool loop alive).
+- L2278: `},` — Closes the function descriptor.
+- L2279: `}));` — Closes the map callback.
+- L2280: `resolve({ role: 'assistant', content: accContent || null, tool_calls });` — Resolve with tool calls (content may be null).
+- L2281: `} else {` — Branch: no tool calls produced.
+- L2282: `resolve({ role: 'assistant', content: accContent || null, truncated: wasTruncated || undefined });` — Resolve plain assistant message with optional truncation flag.
+- L2283: `}` — Closes the tool-call vs plain branch.
+- L2284: `});` — Closes the success `res.on('end')` handler.
+- L2285: `res.on('error', (e: Error) => reject(e));` — Reject on response-stream errors.
+- L2286: `});` — Closes the `protocol.request` response callback.
+- L2287: (blank)
+- L2288: `req.on('error', (e: Error) => reject(new Error(`無法連線到 OpenAI-compatible server (${baseU` — Socket-level error → friendly connection failure message.
+- L2289: `req.setTimeout(1200000, () => { req.destroy(new Error('OpenAI-compatible 呼叫逾時 (1200s)')); });` — 20-minute inactivity timeout (longer than Ollama path since OpenAI-compat calls may be slower).
+- L2290: `req.write(body); req.end();` — Send body and finish the request.
+- L2291: `};` — Ends the `sendRequest` inner function.
+- L2292: (blank)
+- L2293: `sendRequest(true);` — Initial attempt includes tools.
+- L2294: `} catch (e) { reject(e); }` — Synchronous setup errors reject the promise.
+- L2295: `});` — Closes the `new Promise` executor.
+- L2296: `}` — Ends `openaiCompatChatCallStream`.
+- L2297: (blank)
+- L2298: `export function getCopilotMultiplier(m: vscode.LanguageModelChat): string {` — Returns a Copilot pricing multiplier label for a VS Code language model object.
+- L2299: `const id = m.id.toLowerCase();` — Normalize model id for matching.
+- L2300: `const fam = (m.family || '').toLowerCase();` — Normalize the family string (may be undefined).
+- L2301: `if (id === 'auto' || fam === 'auto') return '10% off';` — Auto model is discounted.
+- L2302: `if (id.includes('opus') || fam.includes('opus')) return '3x';` — Claude Opus is 3x priced.
+- L2303: `if (id.includes('mini') || fam.includes('mini')) return '0x';` — Mini models are free.
+- L2304: `if ((id.startsWith('gpt-4o') && !id.includes('mini')) || fam === 'gpt-4o' || id === 'gpt-4o') return '0x';` — GPT-4o is free (except mini variants already handled).
+- L2305: `return '1x';` — Default pricing label.
+- L2306: `}` — Ends `getCopilotMultiplier`.
+- L2307: (blank)
+- L2308: `export function getCopilotMultiplierById(id: string): string {` — Same pricing lookup keyed by id string only.
+- L2309: `const i = id.toLowerCase();` — Normalize id.
+- L2310: `if (i === 'auto') { return '10% off'; }` — Auto → discount.
+- L2311: `if (i.includes('opus')) { return '3x'; }` — Opus → 3x.
+- L2312: `if (i.includes('mini')) { return '0x'; }` — Mini → free.
+- L2313: `if (i.startsWith('gpt-4o') && !i.includes('mini')) { return '0x'; }` — GPT-4o → free.
+- L2314: `return '1x';` — Default.
+- L2315: `}` — Ends `getCopilotMultiplierById`.
+- L2316: (blank)
+- L2317: `export async function copilotStreamText(` — Streaming text call through the VS Code Copilot LM API.
+- L2318: `modelId: string,` — Target model id.
+- L2319: `messages: vscode.LanguageModelChatMessage[],` — Messages in VS Code LM format.
+- L2320: `onChunk: (c: string) => void,` — Callback per streamed chunk.
+- L2321: `token: vscode.CancellationToken` — Cancellation token.
+- L2322: `): Promise<string> {` — Resolves with the full concatenated text.
+- L2323: `const lms = await vscode.lm.selectChatModels({ id: modelId });` — Look up the model provider by id.
+- L2324: `const lm = lms[0];` — Take the first matching provider.
+- L2325: `if (!lm) { throw new Error(`Copilot 找不到模型: ${modelId}`); }` — Fail clearly if the model is unavailable.
+- L2326: `const response = await lm.sendRequest(messages, {}, token);` — Send the chat request.
+- L2327: `let full = '';` — Accumulate the full text.
+- L2328: `for await (const chunk of response.text) { full += chunk; onChunk(chunk); }` — Iterate the text stream, invoking the callback per chunk.
+- L2329: `return full;` — Return the complete text.
+- L2330: `}` — Ends `copilotStreamText`.
+- L2331: (blank)
+- L2332: `async function copilotChatCallWithCts(` — Copilot chat call with tool support and internal cancellation handling.
+- L2333: `modelId: string,` — Target model id.
+- L2334: `messages: ChatMessage[],` — Internal ChatMessage format.
+- L2335: `tools: unknown[]` — Ollama-style tool definitions.
+- L2336: `): Promise<ChatMessage> {` — Resolves to an internal ChatMessage.
+- L2337: `const lms = await vscode.lm.selectChatModels({ id: modelId });` — Look up the provider.
+- L2338: `const lm = lms[0];` — First matching provider.
+- L2339: `if (!lm) { throw new Error(`Copilot 找不到模型: ${modelId}`); }` — Error if model missing.
+- L2340: (blank)
+- L2341: `// 防禦性過濾：移除孤立的 tool_result（找不到對應 tool_use 的 tool 訊息），避免 Bedrock/A` — Comment: drop orphan tool results that would cause 400 errors.
+- L2342: `const sanitized = messages.filter((m, i) => {` — Filter out orphan `tool` messages.
+- L2343: `if (m.role !== 'tool') { return true; }` — Non-tool messages always kept.
+- L2344: `// 往前找最近的 assistant 訊息，確認其 tool_calls 包含此 tool_call_id` — Comment: verify a matching tool_call exists.
+- L2345: `let ai = i - 1;` — Start scanning backwards from the previous message.
+- L2346: `while (ai >= 0 && messages[ai].role === 'tool') { ai--; }` — Skip over other tool results to find the assistant message.
+- L2347: `return ai >= 0 && messages[ai].role === 'assistant' &&` — The prior assistant message must exist...
+- L2348: `(messages[ai].tool_calls ?? []).some(tc => (tc.id ?? tc.function.name) === m.tool_call_id);` — ...and contain a tool call matching this result's id.
+- L2349: `});` — Closes the filter callback.
+- L2350: (blank)
+- L2351: `// 正確轉換每種 role 為 VS Code LM API 對應的 Part 型別` — Comment: convert each role to VS Code LM part types.
+- L2352: `const vmMsgs: vscode.LanguageModelChatMessage[] = [];` — Build the VS Code LM message array.
+- L2353: `for (const m of sanitized) {` — Iterate sanitized messages.
+- L2354: `if (m.role === 'system' || m.role === 'user') {` — System/user messages.
+- L2355: `// system 沒有對應 role，以 User 訊息注入` — Comment: VS Code LM has no system role; inject as User.
+- L2356: `vmMsgs.push(vscode.LanguageModelChatMessage.User(m.content ?? ''));` — Push as a User message.
+- L2357: `} else if (m.role === 'assistant') {` — Assistant messages.
+- L2358: `// 助手訊息可能同時含文字與工具呼叫（Claude Sonnet tool-use 格式）` — Comment: assistant may carry text + tool calls together.
+- L2359: `const parts: (vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart)[] = [];` — Build the parts list.
+- L2360: `if (m.content) { parts.push(new vscode.LanguageModelTextPart(m.content)); }` — Add text part when present.
+- L2361: `for (const tc of m.tool_calls ?? []) {` — Append each tool call as a part.
+- L2362: `const args = (typeof tc.function.arguments === 'string'` — Arguments may be a JSON string...
+- L2363: `? JSON.parse(tc.function.arguments)` — ...parse string form...
+- L2364: `: tc.function.arguments) as Record<string, unknown>;` — ...or use the object form; cast to record.
+- L2365: `parts.push(new vscode.LanguageModelToolCallPart(tc.id ?? tc.function.name, tc.function.na` — Push the tool call part (id falls back to function name).
+- L2366: `}` — Closes the tool_calls loop.
+- L2367: `if (parts.length === 0) { parts.push(new vscode.LanguageModelTextPart('')); }` — Ensure at least one part (empty text) for tool-call-only messages.
+- L2368: `// 純文字時直接傳 string，避免不必要的 Part 包裝` — Comment: keep pure-text messages as plain strings.
+- L2369: `vmMsgs.push(parts.length === 1 && parts[0] instanceof vscode.LanguageModelTextPart` — Single-text-part case...
+- L2370: `? vscode.LanguageModelChatMessage.Assistant(parts[0].value)` — ...push string form...
+- L2371: `: vscode.LanguageModelChatMessage.Assistant(parts));` — ...otherwise push the parts array (mixed text + tool calls).
+- L2372: `} else if (m.role === 'tool') {` — Tool result messages.
+- L2373: `// 工具執行結果：用 LanguageModelToolResultPart，讓 Claude Sonnet 正確對應 tool_call_id` — Comment: use ToolResultPart so Claude maps results to call ids correctly.
+- L2374: `vmMsgs.push(vscode.LanguageModelChatMessage.User([` — Tool results are delivered inside a User message.
+- L2375: `new vscode.LanguageModelToolResultPart(` — Tool result part wrapping...
+- L2376: `m.tool_call_id ?? '',` — the call id (empty fallback)...
+- L2377: `[new vscode.LanguageModelTextPart(m.content ?? '')]` — ...and the result content as text parts.
+- L2378: `)` — Closes the ToolResultPart.
+- L2379: `]));` — Closes the User message array and push.
+- L2380: `}` — Closes the tool-role branch.
+- L2381: `}` — Closes the message conversion loop.
+- L2382: (blank)
+- L2383: `type OllamaTool = { function: { name: string; description: string; parameters: obj` — Local type for Ollama-style tool definitions.
+- L2384: `const vmTools = (tools as OllamaTool[]).map(t => ({` — Convert Ollama tools to VS Code LM tool shape.
+- L2385: `name: t.function.name,` — Tool name.
+- L2386: `description: t.function.description,` — Tool description.
+- L2387: `inputSchema: t.function.parameters,` — Parameters schema becomes inputSchema.
+- L2388: `}));` — Closes the map callback.
+- L2389: `const cts = new vscode.CancellationTokenSource();` — Create a cancellation source for the LM request.
+- L2390: `try {` — Ensure the CTS is disposed even on error.
+- L2391: `const response = await lm.sendRequest(vmMsgs, { tools: vmTools }, cts.token);` — Send the request with tools and cancellation token.
+- L2392: `let text = '';` — Accumulate streamed text.
+- L2393: `const toolCalls: NonNullable<ChatMessage['tool_calls']> = [];` — Collect tool calls from the stream.
+- L2394: `for await (const part of response.stream) {` — Iterate streamed parts.
+- L2395: `if (part instanceof vscode.LanguageModelTextPart) {` — Text part.
+- L2396: `text += part.value;` — Append text.
+- L2397: `} else if (part instanceof vscode.LanguageModelToolCallPart) {` — Tool call part.
+- L2398: `toolCalls.push({` — Push a tool call entry.
+- L2399: `id: part.callId,` — Call id from the LM API.
+- L2400: `function: {` — Function descriptor.
+- L2401: `name: part.name,` — Function name.
+- L2402: `arguments: (typeof part.input === 'object' ? part.input : JSON.parse(String(part.inpu` — Normalize input to an object (parse string inputs).
+- L2403: `},` — Closes the function descriptor.
+- L2404: `});` — Closes the tool call push.
+- L2405: `}` — Closes the part-type branch.
+- L2406: `}` — Closes the stream loop.
+- L2407: `return { role: 'assistant', content: text || null, ...(toolCalls.length > 0 ? { tool_` — Return the final message, attaching tool_calls only when present.
+- L2408: `} finally {` — Always clean up the CTS.
+- L2409: `cts.dispose();` — Dispose the cancellation source.
+- L2410: `}` — Closes the finally block.
+- L2411: `}` — Ends `copilotChatCallWithCts`.
+- L2412: (blank)
+- L2413: `function supportsThinking(model: string): boolean {` — Determines whether a model supports reasoning/thinking output.
+- L2414: `// strip registry prefix (hf.co/user/) 後取純模型名稱` — Comment: normalize model names from registries.
+- L2415: `const m = model.toLowerCase().replace(/^hf\.co\/[^/]+\//i, '').replace(/^.*\//, '');` — Strip registry prefixes to get the bare model name.
+- L2416: `// 明確不支援 thinking 的關鍵字（coder / instruct 變體）` — Comment: explicit non-thinking variants.
+- L2417: `if (m.includes('coder') || m.includes('-instruct') || m.includes(':instruct')) { return f` — Coder/instruct variants don't think.
+- L2418: `// 明確支援 thinking 的模型` — Comment: positive matches follow.
+- L2419: `return m.startsWith('deepseek-r1') || m.startsWith('deepseek-r2') ||` — DeepSeek reasoning models...
+- L2420: `m.startsWith('qwq') ||` — Qwen QwQ models...
+- L2421: `// qwen3 只有 thinking 系列才支援，判斷方式：名稱不含 coder/instruct 且根模型就叫 qwen3` — Comment: qwen3 heuristic explanation.
+- L2422: `(m.startsWith('qwen3') && !m.includes('coder')) ||` — Qwen3 non-coder variants...
+- L2423: `m.includes(':thinking') || m.includes('-thinking') ||` — Explicit thinking-suffixed names...
+- L2424: `m.includes('think') || m.includes('-r1') || m.includes(':r1') ||` — Generic 'think' / r1 markers...
+- L2425: `m.includes('r1-') || /^r1[:.-]/.test(m);` — ...and r1-prefixed names.
+- L2426: `}` — Ends `supportsThinking`.
+- L2427: (blank)
+- L2428: `export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'max';` — Union type for the user-selectable thinking level.
+- L2429: (blank)
+- L2430: `export function getCurrentThinkingLevel(): ThinkingLevel {` — Reads the configured thinking level.
+- L2431: `const v = vscode.workspace.getConfiguration('amiAiClaw').get<string>('thinkingLevel', '` — Read setting, defaulting to 'medium'.
+- L2432: `return (v === 'off' || v === 'low' || v === 'medium' || v === 'high' || v === 'max') ? v` — Validate against allowed values; fall back to 'medium'.
+- L2433: `}` — Ends `getCurrentThinkingLevel`.
+- L2434: (blank)
+- L2435: `/**` — JSDoc begins.
+- L2436: `* 依使用者「思考等級」設定 + 模型能力，回傳要塞進 Ollama request body 的 think 參數。` — Doc: returns the `think` param for the Ollama request body.
+- L2437: `* - off: 強制 think:false（即使模型支援，也跳過思考，省 token & 加速）` — Doc: off forces no thinking.
+- L2438: `* - low/medium: 傳對應字串（各模型 Jinja 模板通用）` — Doc: low/medium send string levels.
+- L2439: `* - high/max: 傳 true（布林），讓 Ollama 套用模型預設最大思考力，避免模板等級字串不相容` — Doc: high/max use boolean true for template compatibility.
+- L2440: `* - 模型不支援思考時，不加 think key（讓 Ollama 用模型預設）` — Doc: unsupported models get no `think` key.
+- L2441: `*/` — JSDoc ends.
+- L2442: `function getOllamaThinkParam(model: string): { think?: boolean | string } {` — Computes the `think` param for the Ollama request body.
+- L2443: `const level = getCurrentThinkingLevel();` — Read the user's thinking level.
+- L2444: `if (level === 'off') { return { think: false }; }` — Off forces `think: false`.
+- L2445: `if (!supportsThinking(model)) { return {}; }` — Unsupported model: omit the key.
+- L2446: `// 'low'/'medium' are universally supported strings; 'high'/'max' fall back to boolean true` — Comment: rationale for boolean fallback.
+- L2447: `if (level === 'low' || level === 'medium') { return { think: level }; }` — Low/medium pass the string level.
+- L2448: `return { think: true };` — High/max use boolean true.
+- L2449: `}` — Ends `getOllamaThinkParam`.
+- L2450: (blank)
+- L2451: `function ollamaGenerate(baseUrl: string, model: string, prompt: string): Promise<{ res` — Non-streaming Ollama `/api/generate` call.
+- L2452: `return new Promise((resolve, reject) => {` — Wrap the HTTP flow in a promise.
+- L2453: `try {` — Guard setup from throwing.
+- L2454: `const url = new URL('/api/generate', baseUrl);` — Build the generate endpoint URL.
+- L2455: `const params: Record<string, unknown> = { model, prompt, stream: false };` — Base request params (non-streaming).
+- L2456: `Object.assign(params, getOllamaThinkParam(model));` — Merge in the think param.
+- L2457: `const body = JSON.stringify(params);` — Serialize the body.
+- L2458: `const protocol = url.protocol === 'https:' ? https : http;` — Select http/https module.
+- L2459: (blank)
+- L2460: `const options: http.RequestOptions = {` — Request options.
+- L2461: `hostname: url.hostname,` — Host from URL.
+- L2462: `port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 11434),` — Explicit port or default (Ollama default 11434).
+- L2463: `path: url.pathname,` — Path from URL.
+- L2464: `method: 'POST',` — POST method.
+- L2465: `headers: {` — Headers object.
+- L2466: `'Content-Type': 'application/json',` — JSON content type.
+- L2467: `'Content-Length': Buffer.byteLength(body)` — Body length.
+- L2468: `}` — Closes headers.
+- L2469: `};` — Closes options.
+- L2470: (blank)
+- L2471: `const req = protocol.request(options, (res) => {` — Issue the request.
+- L2472: `let data = '';` — Accumulate the full response body.
+- L2473: `res.on('data', (chunk: Buffer) => { data += chunk; });` — Collect body chunks.
+- L2474: `res.on('end', () => {` — Body complete.
+- L2475: `if (res.statusCode !== 200) {` — Non-200 → error.
+- L2476: `reject(new Error(`Ollama returned HTTP ${res.statusCode}: ${data.substring(0, 200)}`));` — Reject with status + body snippet.
+- L2477: `return;` — Exit the end handler.
+- L2478: `}` — Closes the error branch.
+- L2479: `try {` — Parse the JSON response.
+- L2480: `const json = JSON.parse(data);` — Parse the response body.
+- L2481: `let response: string = (json.response as string) ?? data;` — Extract the response text (fallback to raw).
+- L2482: `let thinking: string | undefined = json.thinking as string | undefined;` — Extract the thinking field if present.
+- L2483: `// fallback: extract

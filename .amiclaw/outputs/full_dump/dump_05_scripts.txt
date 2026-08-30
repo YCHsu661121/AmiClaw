@@ -1,0 +1,787 @@
+===== FILE: scripts\Dockerfile.tailscale  (22 lines) =====
+00001| FROM debian:bookworm-slim
+00002| 
+00003| # Install curl + iptables (needed by Tailscale), then run the official install script
+00004| RUN apt-get update -qq \
+00005|     && apt-get install -y --no-install-recommends curl ca-certificates iptables \
+00006|     && curl -fsSL https://tailscale.com/install.sh | sh \
+00007|     && rm -rf /var/lib/apt/lists/*
+00008| 
+00009| # Tailscale state (auth tokens, keys) persisted via named volume
+00010| VOLUME ["/var/lib/tailscale"]
+00011| 
+00012| # Startup: launch tailscaled daemon, then bring up the interface.
+00013| # TS_AUTHKEY  – one-time / reusable auth key from https://login.tailscale.com/admin/settings/keys
+00014| # TS_EXTRA_ARGS – any extra flags passed to `tailscale up` (e.g. --advertise-routes=...)
+00015| # TS_HOSTNAME – override the device name shown in the admin console (default: container hostname)
+00016| CMD tailscaled --statedir=/var/lib/tailscale --tun=userspace-networking & \
+00017|     sleep 2 && \
+00018|     tailscale up \
+00019|         --authkey="${TS_AUTHKEY}" \
+00020|         --hostname="${TS_HOSTNAME:-amiclaw-node}" \
+00021|         ${TS_EXTRA_ARGS} && \
+00022|     wait
+===== END: scripts\Dockerfile.tailscale =====
+
+===== FILE: scripts\WhatsAppManager.ts  (0 lines) =====
+===== END: scripts\WhatsAppManager.ts =====
+
+===== FILE: scripts\auto_cleanup_todo.py  (45 lines) =====
+00001| import os
+00002| import sys
+00003| from datetime import datetime
+00004| 
+00005| # Configuration
+00006| TODO_FILE = "ToDo.md"
+00007| ACTIVITY_LOG = "logs/agent_activity.log"
+00008| 
+00009| def log_activity(message):
+00010|     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+00011|     os.makedirs(os.path.dirname(ACTIVITY_LOG), exist_ok=True)
+00012|     with open(ACTIVITY_LOG, "a", encoding="utf-8") as f:
+00013|         f.write(f"[{timestamp}] {message}\n")
+00014| 
+00015| def cleanup_todo():
+00016|     if not os.path.exists(TODO_FILE):
+00017|         return "Todo file not found."
+00018| 
+00019|     with open(TODO_FILE, "r", encoding="utf-8") as f:
+00020|         lines = f.readlines()
+00021| 
+00022|     new_lines = []
+00023|     completed_count = 0
+00024|     removed_count = 0
+00025| 
+00026|     for line in lines:
+00027|         # Check if task is marked as done [x]
+00028|         if line.strip().startswith("- [x]"):
+00029|             completed_count += 1
+00030|             # We keep it but we could also 'remove' it by not adding to new_lines
+00031|             # However, for visibility, let's just mark completed tasks as 'archived' or removed
+00032|             removed_count += 1
+00033|             log_activity(f"Auto-cleaned completed task: {line.strip()}")
+00034|             continue 
+00035|         new_lines.append(line)
+00036| 
+00037|     with open(TODO_FILE, "w", encoding="utf-8") as f:
+00038|         f.writelines(new_lines)
+00039| 
+00040|     return f"Cleanup complete. Removed {removed_count} completed tasks. {completed_count} were tracked."
+00041| 
+00042| if __name__ == "__main__":
+00043|     log_activity("Running Auto-Todo Cleanup Task")
+00044|     result = cleanup_todo()
+00045|     print(result)
+===== END: scripts\auto_cleanup_todo.py =====
+
+===== FILE: scripts\clean_ollama_chat.py  (0 lines) =====
+===== END: scripts\clean_ollama_chat.py =====
+
+===== FILE: scripts\create_chat_modules.js  (0 lines) =====
+===== END: scripts\create_chat_modules.js =====
+
+===== FILE: scripts\get_instant_status.py  (54 lines) =====
+00001| import os
+00002| import shutil
+00003| import psutil
+00004| import sys
+00005| from datetime import datetime
+00006| 
+00007| # Configuration
+00008| AGENT_ACTIVITY_LOG = "logs/agent_activity.log"
+00009| 
+00010| def get_last_agent_activity():
+00011|     """Reads the last line from the agent activity log to see what the LLM was doing."""
+00012|     if not os.path.exists(AGENT_ACTIVITY_LOG):
+00013|         return "No recent activity logged."
+00014|     
+00015|     try:
+00016|         with open(AGENT_ACTIVITY_LOG, "r", encoding="utf-8") as f:
+00017|             lines = f.readlines()
+00018|             if not lines:
+00019|                 return "No activity recorded."
+00020|             for line in reversed(lines):
+00021|                 clean_line = line.strip()
+00022|                 if clean_line:
+00023|                     return clean_line
+00024|         return "No recent activity logged."
+00025|     except Exception as e:
+00026|         return f"Error reading activity log: {str(e)}"
+00027| 
+00028| def get_system_status():
+00029|     try:
+00030|         total, used, free = shutil.disk_usage("/")
+00031|         disk_percent = (used / total) * 100
+00032|         memory = psutil.virtual_memory()
+00033|         mem_percent = memory.percent
+00034|         cpu_percent = psutil.cpu_percent(interval=0.5) # Shorter interval for instant response
+00035|         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+00036|         
+00037|         last_activity = get_last_agent_activity()
+00038|         
+00039|         return (f"📊 *Instant System & Agent Status*\n"
+00040|                 f"⏰ Time: {timestamp}\n"
+00041|                 f"🤖 Last Agent Activity: {last_activity}\n"
+00042|                 f"💻 CPU: {cpu_percent}%\n"
+00043|                 f"🧠 MEM: {mem_percent}%\n"
+00044|                 f"💾 DISK: {disk_percent:.2f}% used\n")
+00045|     except Exception as e:
+00046|         return f"❌ Error collecting stats: {str(e)}\n"
+00047| 
+00048| if __name__ == "__main__":
+00049|     # Ensure UTF-8 for Windows environments
+00050|     if sys.platform == "win32":
+00051|         import io
+00052|         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+00053|         
+00054|     print(get_system_status())
+===== END: scripts\get_instant_status.py =====
+
+===== FILE: scripts\health-check.js  (153 lines) =====
+00001| #!/usr/bin/env node
+00002| /**
+00003|  * 代码健康度检查脚本 (Node.js)
+00004|  *
+00005|  * 汇总项目各维度指标，输出健康度报告：
+00006|  * - 代码规模（文件数、代码行数）
+00007|  * - TypeScript 编译错误（tsc --noEmit）
+00008|  * - 冗余代码（knip）
+00009|  * - 构建状态
+00010|  */
+00011| 
+00012| const { execSync } = require("child_process");
+00013| const fs = require("fs");
+00014| const path = require("path");
+00015| 
+00016| const DIVIDER = "─".repeat(60);
+00017| 
+00018| /** @type {{ label: string; value: string | number; status: 'ok'|'warn'|'error'|'info' }[]} */
+00019| const metrics = [];
+00020| 
+00021| function add(label, value, status = "info") {
+00022|   metrics.push({ label, value, status });
+00023| }
+00024| 
+00025| function icon(status) {
+00026|   switch (status) {
+00027|     case "ok":    return "[OK]";
+00028|     case "warn":  return "[!!]";
+00029|     case "error": return "[XX]";
+00030|     case "info":  return "[--]";
+00031|   }
+00032| }
+00033| 
+00034| function exec(cmd) {
+00035|   try {
+00036|     return { stdout: execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }), code: 0 };
+00037|   } catch (e) {
+00038|     return { stdout: (e.stdout || "") + (e.stderr || ""), code: e.status ?? 1 };
+00039|   }
+00040| }
+00041| 
+00042| // ---------------------------------------------------------------------------
+00043| // 1. 代码规模
+00044| // ---------------------------------------------------------------------------
+00045| function checkCodeSize() {
+00046|   const srcDir = path.join(__dirname, "..", "src");
+00047|   let fileCount = 0;
+00048|   let totalLines = 0;
+00049| 
+00050|   function walk(dir) {
+00051|     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+00052|       const fullPath = path.join(dir, entry.name);
+00053|       if (entry.isDirectory()) {
+00054|         walk(fullPath);
+00055|       } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
+00056|         fileCount++;
+00057|         const content = fs.readFileSync(fullPath, "utf8");
+00058|         totalLines += content.split("\n").length;
+00059|       }
+00060|     }
+00061|   }
+00062| 
+00063|   walk(srcDir);
+00064|   add("TypeScript 文件数", fileCount, "info");
+00065|   add("总代码行数 (src/)", totalLines, "info");
+00066| }
+00067| 
+00068| // ---------------------------------------------------------------------------
+00069| // 2. TypeScript 编译检查
+00070| // ---------------------------------------------------------------------------
+00071| function checkTypeScript() {
+00072|   const tsc = path.join(__dirname, "..", "node_modules", ".bin", "tsc");
+00073|   const result = exec(`"${tsc}" --noEmit -p tsconfig.json`);
+00074|   const errorLines = result.stdout.split("\n").filter(l => /error TS/.test(l));
+00075|   const errorCount = errorLines.length;
+00076|   add("TS 编译错误", errorCount, errorCount === 0 ? "ok" : errorCount < 10 ? "warn" : "error");
+00077| }
+00078| 
+00079| // ---------------------------------------------------------------------------
+00080| // 3. 冗余代码（knip）
+00081| // ---------------------------------------------------------------------------
+00082| function checkUnused() {
+00083|   const knip = path.join(__dirname, "..", "node_modules", ".bin", "knip");
+00084|   if (!fs.existsSync(knip)) {
+00085|     add("冗余代码检查", "knip 未安装 (npm install)", "warn");
+00086|     return;
+00087|   }
+00088|   const result = exec(`"${knip}" --reporter compact`);
+00089|   const unusedFiles   = result.stdout.match(/Unused files \((\d+)\)/);
+00090|   const unusedExports = result.stdout.match(/Unused exports \((\d+)\)/);
+00091|   const unusedDeps    = result.stdout.match(/Unused dependencies \((\d+)\)/);
+00092|   add("未使用文件",   unusedFiles?.[1]   ?? "0", "info");
+00093|   add("未使用导出",   unusedExports?.[1] ?? "0", "info");
+00094|   add("未使用依赖",   unusedDeps?.[1]    ?? "0",
+00095|     unusedDeps && Number(unusedDeps[1]) > 0 ? "warn" : "ok");
+00096| }
+00097| 
+00098| // ---------------------------------------------------------------------------
+00099| // 4. 构建状态
+00100| // ---------------------------------------------------------------------------
+00101| function checkBuild() {
+00102|   const tsc = path.join(__dirname, "..", "node_modules", ".bin", "tsc");
+00103|   const result = exec(`"${tsc}" -p tsconfig.json`);
+00104|   if (result.code === 0) {
+00105|     const outFile = path.join(__dirname, "..", "out", "extension.js");
+00106|     if (fs.existsSync(outFile)) {
+00107|       const kb = (fs.statSync(outFile).size / 1024).toFixed(1);
+00108|       add("构建状态", "成功", "ok");
+00109|       add("产物大小 (out/extension.js)", `${kb} KB`, "info");
+00110|     } else {
+00111|       add("构建状态", "成功 (无产物)", "warn");
+00112|     }
+00113|   } else {
+00114|     add("构建状态", "失败", "error");
+00115|   }
+00116| }
+00117| 
+00118| // ---------------------------------------------------------------------------
+00119| // Run
+00120| // ---------------------------------------------------------------------------
+00121| console.log("");
+00122| console.log(DIVIDER);
+00123| console.log("  代码健康度检查报告 — ami-ai-claw");
+00124| console.log(`  ${new Date().toLocaleString("zh-TW")}`);
+00125| console.log(DIVIDER);
+00126| 
+00127| checkCodeSize();
+00128| checkTypeScript();
+00129| checkUnused();
+00130| checkBuild();
+00131| 
+00132| console.log("");
+00133| for (const m of metrics) {
+00134|   const tag = icon(m.status);
+00135|   console.log(`  ${tag}  ${String(m.label).padEnd(28)} ${m.value}`);
+00136| }
+00137| 
+00138| const errorCount = metrics.filter(m => m.status === "error").length;
+00139| const warnCount  = metrics.filter(m => m.status === "warn").length;
+00140| 
+00141| console.log("");
+00142| console.log(DIVIDER);
+00143| if (errorCount > 0) {
+00144|   console.log(`  结果: ${errorCount} 个错误, ${warnCount} 个警告`);
+00145| } else if (warnCount > 0) {
+00146|   console.log(`  结果: 无错误, ${warnCount} 个警告`);
+00147| } else {
+00148|   console.log("  结果: 全部通过");
+00149| }
+00150| console.log(DIVIDER);
+00151| console.log("");
+00152| 
+00153| process.exit(errorCount > 0 ? 1 : 0);
+===== END: scripts\health-check.js =====
+
+===== FILE: scripts\log_agent_activity.py  (21 lines) =====
+00001| import os
+00002| from datetime import datetime
+00003| 
+00004| # Configuration
+00005| ACTIVITY_LOG = "logs/agent_activity.log"
+00006| 
+00007| def log_activity(message):
+00008|     """Logs a message representing the Agent's current task or thought process."""
+00009|     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+00010|     os.makedirs(os.path.dirname(ACTIVITY_LOG), exist_ok=True)
+00011|     try:
+00012|         with open(ACTIVITY_LOG, "a", encoding="utf-8") as f:
+00013|             f.write(f"[{timestamp}] {message}\n")
+00014|     except Exception:
+00015|         with open(ACTIVITY_LOG, "a", encoding="utf-8") as f:
+00016|             f.write(f"[{timestamp}] {message}\n")
+00017| 
+00018| if __name__ == "__main__":
+00019|     import sys
+00020|     if len(sys.argv) > 1:
+00021|         log_activity(sys.argv[1])
+===== END: scripts\log_agent_activity.py =====
+
+===== FILE: scripts\mk-integrations.js  (0 lines) =====
+===== END: scripts\mk-integrations.js =====
+
+===== FILE: scripts\ollama-codex-proxy.js  (266 lines) =====
+00001| const http = require('http');
+00002| const https = require('https');
+00003| 
+00004| const targetBase = new URL(process.env.OLLAMA_TARGET || 'http://ai:11434');
+00005| const listenHost = process.env.OLLAMA_PROXY_HOST || '127.0.0.1';
+00006| const listenPort = Number(process.env.OLLAMA_PROXY_PORT || '11434');
+00007| const targetKind = (process.env.OLLAMA_TARGET_KIND || 'auto').toLowerCase();
+00008| 
+00009| function getClient(url) {
+00010|   return url.protocol === 'https:' ? https : http;
+00011| }
+00012| 
+00013| function readJson(url, headers = {}) {
+00014|   return new Promise((resolve, reject) => {
+00015|     const client = getClient(url);
+00016|     const req = client.request(
+00017|       url,
+00018|       {
+00019|         method: 'GET',
+00020|         headers: {
+00021|           ...headers,
+00022|           host: url.host,
+00023|         },
+00024|       },
+00025|       (res) => {
+00026|         const chunks = [];
+00027|         res.on('data', (chunk) => chunks.push(chunk));
+00028|         res.on('end', () => {
+00029|           const body = Buffer.concat(chunks).toString('utf8');
+00030|           if (res.statusCode && res.statusCode >= 400) {
+00031|             reject(new Error(`Upstream ${url.pathname} failed with ${res.statusCode}: ${body}`));
+00032|             return;
+00033|           }
+00034| 
+00035|           try {
+00036|             resolve(JSON.parse(body));
+00037|           } catch (error) {
+00038|             reject(new Error(`Failed to parse upstream JSON from ${url.pathname}: ${error.message}`));
+00039|           }
+00040|         });
+00041|       }
+00042|     );
+00043| 
+00044|     req.on('error', reject);
+00045|     req.end();
+00046|   });
+00047| }
+00048| 
+00049| function getModelId(model) {
+00050|   return model.model || model.name || model.id || '';
+00051| }
+00052| 
+00053| function normalizeModels(models, sourceKind) {
+00054|   return models.map((model) => ({
+00055|     ...model,
+00056|     slug: getModelId(model),
+00057|     display_name: model.name || model.id || model.model || getModelId(model),
+00058|     description: sourceKind === 'ollama'
+00059|       ? 'Ollama model exposed through a local Codex compatibility shim.'
+00060|       : 'OpenAI-compatible model exposed through a local Codex compatibility shim.',
+00061|     default_reasoning_level: 'medium',
+00062|     supported_reasoning_levels: [
+00063|       { effort: 'low', description: 'Fast responses with lighter reasoning' },
+00064|       { effort: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
+00065|       { effort: 'high', description: 'Greater reasoning depth for complex problems' },
+00066|     ],
+00067|     shell_type: 'shell_command',
+00068|     visibility: 'list',
+00069|     supported_in_api: true,
+00070|     priority: 100,
+00071|     additional_speed_tiers: [],
+00072|     service_tiers: [],
+00073|     availability_nux: null,
+00074|     upgrade: null,
+00075|     base_instructions: '',
+00076|     model_messages: {
+00077|       instructions_template: '',
+00078|       instructions_variables: {
+00079|         personality_default: '',
+00080|         personality_friendly: '',
+00081|         personality_pragmatic: '',
+00082|       },
+00083|     },
+00084|     supports_reasoning_summaries: true,
+00085|     default_reasoning_summary: 'none',
+00086|     support_verbosity: true,
+00087|     default_verbosity: 'low',
+00088|     apply_patch_tool_type: 'freeform',
+00089|     web_search_tool_type: 'text_and_image',
+00090|     truncation_policy: {
+00091|       mode: 'tokens',
+00092|       limit: 10000,
+00093|     },
+00094|     supports_parallel_tool_calls: true,
+00095|     supports_image_detail_original: true,
+00096|     context_window: model.details?.context_length || model.max_model_len || 32768,
+00097|     max_context_window: model.details?.context_length || model.max_model_len || 32768,
+00098|     effective_context_window_percent: 95,
+00099|     experimental_supported_tools: [],
+00100|     input_modalities: Array.isArray(model.capabilities) && model.capabilities.includes('vision')
+00101|       ? ['text', 'image']
+00102|       : (Array.isArray(model.modalities) && model.modalities.includes('image') ? ['text', 'image'] : ['text']),
+00103|     supports_search_tool: true,
+00104|   }));
+00105| }
+00106| 
+00107| async function loadModelSource(req) {
+00108|   const ollamaModelsUrl = new URL('/api/tags', targetBase);
+00109|   const openAiModelsUrl = new URL('/v1/models', targetBase);
+00110| 
+00111|   if (targetKind === 'ollama') {
+00112|     const tagsPayload = await readJson(ollamaModelsUrl, req.headers);
+00113|     return { sourceKind: 'ollama', upstreamPayload: tagsPayload, models: Array.isArray(tagsPayload.models) ? tagsPayload.models : [] };
+00114|   }
+00115| 
+00116|   if (targetKind === 'vllm' || targetKind === 'openai' || targetKind === 'openai-compatible') {
+00117|     const modelsPayload = await readJson(openAiModelsUrl, req.headers);
+00118|     return { sourceKind: 'openai', upstreamPayload: modelsPayload, models: Array.isArray(modelsPayload.data) ? modelsPayload.data : [] };
+00119|   }
+00120| 
+00121|   try {
+00122|     const tagsPayload = await readJson(ollamaModelsUrl, req.headers);
+00123|     return { sourceKind: 'ollama', upstreamPayload: tagsPayload, models: Array.isArray(tagsPayload.models) ? tagsPayload.models : [] };
+00124|   } catch (ollamaError) {
+00125|     try {
+00126|       const modelsPayload = await readJson(openAiModelsUrl, req.headers);
+00127|       return { sourceKind: 'openai', upstreamPayload: modelsPayload, models: Array.isArray(modelsPayload.data) ? modelsPayload.data : [] };
+00128|     } catch (openAiError) {
+00129|       const error = new Error(`Unable to load models from ${targetBase.origin} as Ollama or OpenAI-compatible upstream`);
+00130|       error.cause = { ollamaError: ollamaError.message, openAiError: openAiError.message };
+00131|       throw error;
+00132|     }
+00133|   }
+00134| }
+00135| 
+00136| async function handleModels(req, res) {
+00137|   try {
+00138|     const { sourceKind, upstreamPayload, models } = await loadModelSource(req);
+00139|     const normalizedModels = normalizeModels(models, sourceKind);
+00140|     const data = normalizedModels.map((model) => ({
+00141|       id: getModelId(model),
+00142|       object: 'model',
+00143|       created: 0,
+00144|       owned_by: sourceKind === 'ollama' ? 'ollama' : (model.owned_by || 'openai-compatible'),
+00145|     }));
+00146| 
+00147|     const payload = {
+00148|       ...upstreamPayload,
+00149|       models: normalizedModels,
+00150|       object: 'list',
+00151|       data,
+00152|     };
+00153| 
+00154|     const body = JSON.stringify(payload);
+00155|     res.writeHead(200, {
+00156|       'content-type': 'application/json; charset=utf-8',
+00157|       'content-length': Buffer.byteLength(body),
+00158|       'cache-control': 'no-store',
+00159|     });
+00160|     res.end(body);
+00161|   } catch (error) {
+00162|     const body = JSON.stringify({ error: error.message });
+00163|     res.writeHead(502, {
+00164|       'content-type': 'application/json; charset=utf-8',
+00165|       'content-length': Buffer.byteLength(body),
+00166|     });
+00167|     res.end(body);
+00168|   }
+00169| }
+00170| 
+00171| function proxyRequest(req, res) {
+00172|   const upstreamUrl = new URL(req.url || '/', targetBase);
+00173|   const client = getClient(upstreamUrl);
+00174|   const proxyHeaders = {
+00175|     ...req.headers,
+00176|     host: upstreamUrl.host,
+00177|   };
+00178| 
+00179|   const createUpstreamRequest = (headers, bodyBuffer) => {
+00180|     const upstreamReq = client.request(
+00181|       upstreamUrl,
+00182|       {
+00183|         method: req.method,
+00184|         headers,
+00185|       },
+00186|       (upstreamRes) => {
+00187|         res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+00188|         upstreamRes.pipe(res);
+00189|       }
+00190|     );
+00191| 
+00192|     upstreamReq.on('error', (error) => {
+00193|       const body = JSON.stringify({ error: error.message });
+00194|       res.writeHead(502, {
+00195|         'content-type': 'application/json; charset=utf-8',
+00196|         'content-length': Buffer.byteLength(body),
+00197|       });
+00198|       res.end(body);
+00199|     });
+00200| 
+00201|     if (bodyBuffer) {
+00202|       upstreamReq.end(bodyBuffer);
+00203|       return;
+00204|     }
+00205| 
+00206|     req.pipe(upstreamReq);
+00207|   };
+00208| 
+00209|   const shouldSanitizeToolChoice =
+00210|     req.method === 'POST'
+00211|     && typeof req.url === 'string'
+00212|     && /^\/v1\/(chat\/completions|responses)(\?|$)/.test(req.url)
+00213|     && typeof req.headers['content-type'] === 'string'
+00214|     && req.headers['content-type'].toLowerCase().includes('application/json');
+00215| 
+00216|   if (!shouldSanitizeToolChoice) {
+00217|     createUpstreamRequest(proxyHeaders);
+00218|     return;
+00219|   }
+00220| 
+00221|   const chunks = [];
+00222|   req.on('data', (chunk) => chunks.push(chunk));
+00223|   req.on('error', () => {
+00224|     const body = JSON.stringify({ error: 'Failed to read request body' });
+00225|     res.writeHead(400, {
+00226|       'content-type': 'application/json; charset=utf-8',
+00227|       'content-length': Buffer.byteLength(body),
+00228|     });
+00229|     res.end(body);
+00230|   });
+00231|   req.on('end', () => {
+00232|     let bodyBuffer = Buffer.concat(chunks);
+00233|     try {
+00234|       const parsed = JSON.parse(bodyBuffer.toString('utf8'));
+00235|       if (parsed && parsed.tool_choice === 'auto') {
+00236|         delete parsed.tool_choice;
+00237|         bodyBuffer = Buffer.from(JSON.stringify(parsed));
+00238|       }
+00239|     } catch {
+00240|       // Keep the original payload if it is not valid JSON.
+00241|     }
+00242| 
+00243|     const headers = {
+00244|       ...proxyHeaders,
+00245|       'content-length': String(bodyBuffer.length),
+00246|     };
+00247|     delete headers['transfer-encoding'];
+00248| 
+00249|     createUpstreamRequest(headers, bodyBuffer);
+00250|   });
+00251| }
+00252| 
+00253| const server = http.createServer((req, res) => {
+00254|   console.log(`${req.method} ${req.url}`);
+00255| 
+00256|   if (req.method === 'GET' && (req.url || '').startsWith('/v1/models')) {
+00257|     handleModels(req, res);
+00258|     return;
+00259|   }
+00260| 
+00261|   proxyRequest(req, res);
+00262| });
+00263| 
+00264| server.listen(listenPort, listenHost, () => {
+00265|   console.log(`Codex proxy listening on http://${listenHost}:${listenPort} -> ${targetBase.origin} (${targetKind})`);
+00266| });
+===== END: scripts\ollama-codex-proxy.js =====
+
+===== FILE: scripts\split_webview_renderer.py  (121 lines) =====
+00001| """
+00002| Sonnet refactor script: Extract getHtmlForWebview from ollama-chat.ts
+00003| into src/webview/WebviewRenderer.ts
+00004| 
+00005| Priority-1 split: pure HTML/CSS/JS, no side-effects, zero class coupling.
+00006| Run via: docker compose run --rm npm run split:webview
+00007| Or:       docker run --rm -v $PWD:/workspace -w /workspace python:3.12-slim python scripts/split_webview_renderer.py
+00008| """
+00009| 
+00010| import os
+00011| import re
+00012| 
+00013| SRC = "src/ollama-chat.ts"
+00014| RENDERER = "src/webview/WebviewRenderer.ts"
+00015| 
+00016| def main():
+00017|     with open(SRC, encoding="utf-8") as f:
+00018|         lines = f.readlines()  # preserves \n
+00019| 
+00020|     total = len(lines)
+00021|     print(f"  Source: {total} lines")
+00022| 
+00023|     # Find getHtmlForWebview start (1-indexed search, store 0-indexed)
+00024|     start_idx = None
+00025|     for i, line in enumerate(lines):
+00026|         if re.search(r"\s*private getHtmlForWebview\(_webview", line):
+00027|             start_idx = i
+00028|             break
+00029|     if start_idx is None:
+00030|         raise RuntimeError("getHtmlForWebview not found")
+00031| 
+00032|     # Find its closing brace: scan forward, track brace depth
+00033|     depth = 0
+00034|     end_idx = None
+00035|     for i in range(start_idx, total):
+00036|         depth += lines[i].count("{") - lines[i].count("}")
+00037|         if depth == 0:
+00038|             end_idx = i
+00039|             break
+00040|     if end_idx is None:
+00041|         raise RuntimeError("Could not find closing brace of getHtmlForWebview")
+00042| 
+00043|     print(f"  getHtmlForWebview: lines {start_idx+1}–{end_idx+1} ({end_idx-start_idx+1} lines)")
+00044| 
+00045|     # ── 1. Build WebviewRenderer.ts ──────────────────────────────────────────
+00046|     # Extract inner body (skip method signature line, replace with export func sig)
+00047|     inner_body = lines[start_idx + 1 : end_idx]  # everything except first & last lines
+00048| 
+00049|     os.makedirs("src/webview", exist_ok=True)
+00050|     with open(RENDERER, "w", encoding="utf-8") as f:
+00051|         f.write("// Copyright (c) 2026 YCHsu. All rights reserved.\n")
+00052|         f.write("// Licensed under the MIT License.\n")
+00053|         f.write("// WebviewRenderer — extracted from OllamaChatPanel.getHtmlForWebview\n")
+00054|         f.write("// Sonnet refactor: Priority-1 split (pure HTML/CSS/JS, no side-effects)\n")
+00055|         f.write("import * as vscode from 'vscode';\n")
+00056|         f.write("\n")
+00057|         f.write("function getNonce(): string { return Math.random().toString(36).substring(2, 15); }\n")
+00058|         f.write("\n")
+00059|         f.write("export function getHtmlForWebview(_webview: vscode.Webview): string {\n")
+00060|         f.writelines(inner_body)
+00061|         f.write("}\n")
+00062| 
+00063|     renderer_lines = len(inner_body) + 11  # header + func sig + closing
+00064|     print(f"  WebviewRenderer.ts: ~{renderer_lines} lines written")
+00065| 
+00066|     # ── 2. Rebuild ollama-chat.ts ─────────────────────────────────────────────
+00067|     new_lines = []
+00068| 
+00069|     for i, line in enumerate(lines):
+00070|         if i == 0:
+00071|             # First line (copyright) — stays
+00072|             new_lines.append(line)
+00073|         elif i == 1:
+00074|             # Second line (licensed) — stays
+00075|             new_lines.append(line)
+00076|         elif re.match(r"^import \* as vscode from 'vscode';", line):
+00077|             # Add WebviewRenderer import after vscode import
+00078|             new_lines.append(line)
+00079|             new_lines.append("import { getHtmlForWebview } from './webview/WebviewRenderer';\n")
+00080|         elif i == start_idx:
+00081|             # Replace method with 3-line delegation
+00082|             new_lines.append(line)  # keep "  private getHtmlForWebview..." signature
+00083|             new_lines.append("    return getHtmlForWebview(_webview);\n")
+00084|             new_lines.append("  }\n")
+00085|         elif i > start_idx and i <= end_idx:
+00086|             # Skip the original body (replaced by delegation above)
+00087|             pass
+00088|         else:
+00089|             new_lines.append(line)
+00090| 
+00091|     with open(SRC, "w", encoding="utf-8") as f:
+00092|         f.writelines(new_lines)
+00093| 
+00094|     print(f"  ollama-chat.ts: {len(new_lines)} lines written")
+00095| 
+00096|     # ── 3. Verify ─────────────────────────────────────────────────────────────
+00097|     with open(SRC, encoding="utf-8") as f:
+00098|         content = f.read()
+00099| 
+00100|     checks = [
+00101|         ("import { getHtmlForWebview }", "WebviewRenderer import present"),
+00102|         ("return getHtmlForWebview(_webview)", "delegation call present"),
+00103|         ("private async handleTeamSend", "handleTeamSend preserved"),
+00104|         ("private async executeTool", "executeTool preserved"),
+00105|     ]
+00106|     all_ok = True
+00107|     for pattern, desc in checks:
+00108|         ok = pattern in content
+00109|         print(f"  {'✓' if ok else '✗'} {desc}")
+00110|         if not ok:
+00111|             all_ok = False
+00112| 
+00113|     if all_ok:
+00114|         print("\n  ✅ Split completed successfully.")
+00115|     else:
+00116|         print("\n  ❌ Some checks failed — review the output files.")
+00117|         raise SystemExit(1)
+00118| 
+00119| 
+00120| if __name__ == "__main__":
+00121|     main()
+===== END: scripts\split_webview_renderer.py =====
+
+===== FILE: scripts\status_reporter.py  (70 lines) =====
+00001| import os
+00002| import shutil
+00003| import psutil
+00004| import time
+00005| import sys
+00006| from datetime import datetime
+00007| 
+00008| # Configuration
+00009| LOG_FILE = "logs/system_report.log"
+00010| AGENT_ACTIVITY_LOG = "logs/agent_activity.log"
+00011| INTERVAL = 600  # 10 minutes in seconds
+00012| 
+00013| def get_last_agent_activity():
+00014|     """Reads the last line from the agent activity log to see what the LLM was doing."""
+00015|     if not os.path.exists(AGENT_ACTIVITY_LOG):
+00016|         return "No recent activity logged."
+00017|     
+00018|     try:
+00019|         with open(AGENT_ACTIVITY_LOG, "r", encoding="utf-8") as f:
+00020|             lines = f.readlines()
+00021|             if not lines:
+00022|                 return "No activity recorded."
+00023|             # Return the last non-empty line stripped of whitespace
+00024|             for line in reversed(lines):
+00025|                 clean_line = line.strip()
+00026|                 if clean_line:
+00027|                     return clean_line
+00028|         return "No recent activity logged."
+00029|     except Exception as e:
+00030|         return f"Error reading activity log: {str(e)}"
+00031| 
+00032| def get_system_status():
+00033|     try:
+00034|         total, used, free = shutil.disk_usage("/")
+00035|         disk_percent = (used / total) * 100
+00036|         memory = psutil.virtual_memory()
+00037|         mem_percent = memory.percent
+00038|         cpu_percent = psutil.cpu_percent(interval=1)
+00039|         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+00040|         
+00041|         # Get LLM/Agent progress
+00042|         last_activity = get_last_agent_activity()
+00043|         
+00044|         return (f"[System & Agent Status Report]\n"
+00045|                 f"⏰ Time: {timestamp}\n"
+00046|                 f"🤖 Last Agent Activity: {last_activity}\n"
+00047|                 f"💻 CPU: {cpu_percent}%\n"
+00048|                 f"🧠 MEM: {mem_percent}%\n"
+00049|                 f"💾 DISK: {disk_percent:.2f}% used\n")
+00050|     except Exception as e:
+00051|         return f"[Error] Error collecting stats: {str(e)}\n"
+00052| 
+00053| def main():
+00054|     if sys.platform == "win32":
+00055|         import io
+00056|         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+00057| 
+00058|     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+00059|     print(f"System Status Reporter started. Logging to {LOG_FILE}")
+00060|     
+00061|     while True:
+00062|         report = get_system_status()
+00063|         with open(LOG_FILE, "a", encoding="utf-8") as f:
+00064|             f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {report}")
+00065|         
+00066|         print(report)
+00067|         time.sleep(INTERVAL)
+00068| 
+00069| if __name__ == "__main__":
+00070|     main()
+===== END: scripts\status_reporter.py =====

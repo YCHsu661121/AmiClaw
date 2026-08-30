@@ -1,0 +1,240 @@
+===== FILE: tools\check_html.js  (18 lines) =====
+00001| const fs = require("fs");
+00002| const src = fs.readFileSync("out/ollama-chat.js", "utf8");
+00003| // Find the getHtmlForWebview section and extract line 144 of the HTML
+00004| const startMarker = "<!doctype html>";
+00005| const idx = src.indexOf(startMarker);
+00006| if (idx < 0) { console.log("Not found"); process.exit(1); }
+00007| // count newlines from idx to find line 144
+00008| let lineCount = 1;
+00009| let pos = idx;
+00010| while (lineCount < 144 && pos < src.length) {
+00011|   if (src[pos] === "\n") lineCount++;
+00012|   pos++;
+00013| }
+00014| const lineStart = pos;
+00015| const lineEnd = src.indexOf("\n", lineStart);
+00016| const line = src.substring(lineStart, lineEnd > 0 ? lineEnd : lineStart + 200);
+00017| console.log("Line 144:", line.substring(0, 150));
+00018| console.log("Col 81:", JSON.stringify(line.substring(78, 90)));
+===== END: tools\check_html.js =====
+
+===== FILE: tools\check_newline.js  (13 lines) =====
+00001| const fs=require('fs');
+00002| const js=fs.readFileSync('out/ollama-chat.js','utf8');
+00003| const dIdx=js.indexOf('<!doctype html>');
+00004| const htmlStr=js.substring(dIdx,dIdx+500000);
+00005| const waIdx=htmlStr.indexOf('waIncoming');
+00006| const waCtx=htmlStr.substring(waIdx,waIdx+300);
+00007| console.log('waIncoming context:',JSON.stringify(waCtx.substring(0,250)));
+00008| // check for naked \n inside single-quoted string within 50 chars of waIncoming content
+00009| const appendIdx=htmlStr.indexOf("appendMessage",waIdx);
+00010| const appendCtx=htmlStr.substring(appendIdx,appendIdx+200);
+00011| const hasNakedNewline=/'\[^\n']*\n[^\n']*'/.test(appendCtx);
+00012| console.log('Has naked newline in appendMessage string:', hasNakedNewline);
+00013| console.log('appendMessage ctx:', JSON.stringify(appendCtx));
+===== END: tools\check_newline.js =====
+
+===== FILE: tools\check_return.js  (8 lines) =====
+00001| const fs=require("fs");
+00002| const js=fs.readFileSync("out/ollama-chat.js","utf8");
+00003| // Find getHtmlForWebview compiled output
+00004| const idx=js.indexOf("getHtmlForWebview");
+00005| if(idx<0){console.log("not found");process.exit();}
+00006| // look at the return statement nearby
+00007| const ctx=js.substring(idx,idx+600);
+00008| console.log(JSON.stringify(ctx.substring(0,600)));
+===== END: tools\check_return.js =====
+
+===== FILE: tools\check_return2.js  (5 lines) =====
+00001| const fs=require("fs");
+00002| const js=fs.readFileSync("out/ollama-chat.js","utf8");
+00003| const idx=js.indexOf("getHtmlForWebview(_webview)");
+00004| const ctx=js.substring(idx,idx+300);
+00005| console.log("method def context:", JSON.stringify(ctx));
+===== END: tools\check_return2.js =====
+
+===== FILE: tools\check_return3.js  (10 lines) =====
+00001| const fs=require("fs");
+00002| const js=fs.readFileSync("out/ollama-chat.js","utf8");
+00003| const idx=js.indexOf("return `<!doctype html>");
+00004| const ctx=js.substring(idx,idx+200);
+00005| console.log("return uses template literal:", idx>=0);
+00006| console.log("context:", JSON.stringify(ctx.substring(0,100)));
+00007| // check if waIncoming surrogate is still a template literal escape
+00008| const s1=js.indexOf("uD83D\\\\uDCF2");
+00009| const s2=js.indexOf("\\\\uD83D\\\\uDCF2");
+00010| console.log("uD83D\\\\uDCF2 idx:", s1, "\\\\\\\\uD83D idx:", s2);
+===== END: tools\check_return3.js =====
+
+===== FILE: tools\check_surr.js  (11 lines) =====
+00001| const fs=require("fs");
+00002| const js=fs.readFileSync("out/ollama-chat.js","utf8");
+00003| // Check if the compiled JS has \uD83D in a template literal context
+00004| const idx=js.indexOf("\\uD83D");
+00005| if(idx<0){console.log("NOT FOUND \\\\uD83D in compiled JS");process.exit();}
+00006| console.log("Found at offset",idx);
+00007| console.log("Context:",JSON.stringify(js.substring(idx-50,idx+60)));
+00008| // Count lines to this position
+00009| const before=js.substring(0,idx);
+00010| const lineNum=before.split("\n").length;
+00011| console.log("At compiled JS line:",lineNum);
+===== END: tools\check_surr.js =====
+
+===== FILE: tools\check_wai.js  (14 lines) =====
+00001| const fs=require("fs");
+00002| const js=fs.readFileSync("out/ollama-chat.js","utf8");
+00003| const idx=js.indexOf("waIncoming");
+00004| if(idx<0){console.log("not found");process.exit();}
+00005| // Show all occurrences
+00006| let pos=0;
+00007| while(true){
+00008|   const i=js.indexOf("waIncoming",pos);
+00009|   if(i<0)break;
+00010|   const ln=js.substring(0,i).split("\n").length;
+00011|   console.log("at JS line",ln,"offset",i);
+00012|   console.log("context:",JSON.stringify(js.substring(i-20,i+120)));
+00013|   pos=i+1;
+00014| }
+===== END: tools\check_wai.js =====
+
+===== FILE: tools\decode_atlascode.py  (120 lines) =====
+00001| import sqlite3, json, ctypes, os, base64
+00002| 
+00003| db_path = os.path.expandvars(r'%APPDATA%\Code\User\globalStorage\state.vscdb')
+00004| local_state_path = os.path.expandvars(r'%APPDATA%\Code\Local State')
+00005| 
+00006| # --- Step 1: Get master key from Local State ---
+00007| with open(local_state_path, 'r', encoding='utf-8') as f:
+00008|     local_state = json.load(f)
+00009| 
+00010| encrypted_key_b64 = local_state.get('os_crypt', {}).get('encrypted_key', '')
+00011| if not encrypted_key_b64:
+00012|     print('No os_crypt.encrypted_key found in Local State')
+00013|     exit(1)
+00014| 
+00015| encrypted_key = base64.b64decode(encrypted_key_b64)
+00016| # Strip "DPAPI" prefix (5 bytes)
+00017| print(f'encrypted_key prefix: {encrypted_key[:5]}')
+00018| dpapi_blob = encrypted_key[5:]
+00019| 
+00020| class DATA_BLOB(ctypes.Structure):
+00021|     _fields_ = [('cbData', ctypes.c_ulong), ('pbData', ctypes.POINTER(ctypes.c_char))]
+00022| 
+00023| in_data = (ctypes.c_char * len(dpapi_blob))(*dpapi_blob)
+00024| in_blob = DATA_BLOB(len(dpapi_blob), in_data)
+00025| out_blob = DATA_BLOB()
+00026| 
+00027| ok = ctypes.windll.crypt32.CryptUnprotectData(
+00028|     ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+00029| )
+00030| if not ok:
+00031|     err = ctypes.windll.kernel32.GetLastError()
+00032|     print(f'DPAPI master key decrypt failed, error={err}')
+00033|     exit(1)
+00034| 
+00035| master_key = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+00036| ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+00037| print(f'Master key length: {len(master_key)}')
+00038| 
+00039| # --- Step 2: Decrypt vscdb value with AES-256-GCM ---
+00040| from Crypto.Cipher import AES
+00041| 
+00042| def decrypt_v10(buf, key):
+00043|     # v10 format: "v10" (3) + nonce (12) + ciphertext + tag(16)
+00044|     nonce = buf[3:15]
+00045|     ciphertext_with_tag = buf[15:]
+00046|     ciphertext = ciphertext_with_tag[:-16]
+00047|     tag = ciphertext_with_tag[-16:]
+00048|     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+00049|     return cipher.decrypt_and_verify(ciphertext, tag)
+00050| 
+00051| # Read jiraSites from DB
+00052| c = sqlite3.connect(db_path)
+00053| 
+00054| state_row = c.execute('SELECT value FROM ItemTable WHERE key=?', ['atlassian.atlascode']).fetchone()
+00055| if state_row:
+00056|     state = json.loads(state_row[0])
+00057|     sites = state.get('jiraSites', [])
+00058|     print('jiraSites:')
+00059|     for s in sites:
+00060|         print(f"  host={s.get('host')}, baseApiUrl={s.get('baseApiUrl')}, credentialId={s.get('credentialId')}")
+00061|         cred_key = 'secret://{"extensionId":"atlassian.atlascode","key":"jira-' + s['credentialId'] + '"}'
+00062|         row = c.execute('SELECT value FROM ItemTable WHERE key=?', [cred_key]).fetchone()
+00063|         if row:
+00064|             data = json.loads(row[0])
+00065|             buf = bytes(data['data'])
+00066|             print(f'  buf prefix: {buf[:3]}, len={len(buf)}')
+00067|             try:
+00068|                 plaintext = decrypt_v10(buf, master_key)
+00069|                 print(f'  Decrypted: {plaintext.decode("utf-8")[:300]}')
+00070|             except Exception as e:
+00071|                 print(f'  AES-GCM decrypt failed: {e}')
+00072|         else:
+00073|             print(f'  No credential row for key: {cred_key}')
+00074| 
+00075| cred_key = 'secret://{"extensionId":"atlassian.atlascode","key":"jira-89de22f89f2231c932f685eb54b23bdc"}'
+00076| row = c.execute('SELECT value FROM ItemTable WHERE key=?', [cred_key]).fetchone()
+00077| if row:
+00078|     data = json.loads(row[0])
+00079|     buf = bytes(data['data'])
+00080|     print(f'\nRaw bytes prefix: {buf[:3]}')
+00081|     print(f'Total length: {len(buf)}')
+00082|     
+00083|     class DATA_BLOB(ctypes.Structure):
+00084|         _fields_ = [('cbData', ctypes.c_ulong), ('pbData', ctypes.POINTER(ctypes.c_char))]
+00085|     
+00086|     def try_dpapi(enc):
+00087|         in_data = (ctypes.c_char * len(enc))(*enc)
+00088|         in_blob = DATA_BLOB(len(enc), in_data)
+00089|         out_blob = DATA_BLOB()
+00090|         ok = ctypes.windll.crypt32.CryptUnprotectData(
+00091|             ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+00092|         )
+00093|         if ok and out_blob.cbData > 0:
+00094|             plain = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+00095|             ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+00096|             return plain
+00097|         err = ctypes.windll.kernel32.GetLastError()
+00098|         print(f'  DPAPI failed, error={err}')
+00099|         return None
+00100| 
+00101|     # Try without "v10" prefix
+00102|     print('Trying without v10 prefix...')
+00103|     result = try_dpapi(buf[3:])
+00104|     if not result:
+00105|         # Try with full buffer
+00106|         print('Trying full buffer...')
+00107|         result = try_dpapi(buf)
+00108|     if not result:
+00109|         # Try raw DPAPI with different offset
+00110|         print('Trying offset 0...')
+00111|         result = try_dpapi(buf)
+00112|     
+00113|     if result:
+00114|         print(f'Decrypted ({len(result)} bytes): {result[:500]}')
+00115|     else:
+00116|         print('All decrypt attempts failed')
+00117| else:
+00118|     print('Credential not found in DB')
+00119| 
+00120| c.close()
+===== END: tools\decode_atlascode.py =====
+
+===== FILE: tools\find_l144.js  (15 lines) =====
+00001| const fs=require("fs");
+00002| const compiled=fs.readFileSync("out/ollama-chat.js","utf8");
+00003| // get HTML string: find <!doctype and then count to line 144
+00004| const dIdx=compiled.indexOf("<!doctype html>");
+00005| if(dIdx<0){console.log("not found");process.exit();}
+00006| // Now walk through the template to find line 144 
+00007| // TypeScript compiles template literals - find the actual newlines
+00008| let ln=1,pos=dIdx;
+00009| while(ln<144&&pos<compiled.length){if(compiled[pos]==="\n")ln++;pos++;}
+00010| const ls=pos;
+00011| const le=compiled.indexOf("\n",ls);
+00012| const line=compiled.substring(ls,le>0?le:ls+300);
+00013| console.log("HTML L144 content (first 160):",JSON.stringify(line.substring(0,160)));
+00014| // col 81 = index 80 in line
+00015| console.log("Around col 81:",JSON.stringify(line.substring(77,87)));
+===== END: tools\find_l144.js =====

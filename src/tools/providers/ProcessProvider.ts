@@ -11,6 +11,29 @@ import type { IToolProvider, ToolExecutionContext } from './IToolProvider';
 
 const TOOLS = new Set(['run_terminal', 'run_command', 'run_python']);
 
+const OUTPUT_PERSIST_THRESHOLD = 16 * 1024; // persist to disk when output exceeds 16 KB
+
+/** When output exceeds threshold, save to .amiclaw/outputs/ and return preview + path. */
+function _persistIfLarge(out: string, prefix: string, wsRoot: string): string {
+  if (out.length <= OUTPUT_PERSIST_THRESHOLD) return out;
+  const dir = path.join(wsRoot, '.amiclaw', 'outputs');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const fname = `${prefix}_${Date.now().toString(36)}.txt`;
+    const fpath = path.join(dir, fname);
+    fs.writeFileSync(fpath, out, 'utf8');
+    const lines = out.split('\n').length;
+    return (
+      out.slice(0, 4000) +
+      `\n\n…[輸出已持久化至磁碟，共 ${out.length} 字元 / ${lines} 行]\n` +
+      `路徑: ${fpath}\n` +
+      `讀取方式: read_file_smart(path="${fpath}", tail=100) 或指定 start_line/end_line`
+    );
+  } catch {
+    return out.slice(0, 8000) + '\n…（輸出過長已截斷）';
+  }
+}
+
 export class ProcessProvider implements IToolProvider {
   readonly tools: ReadonlySet<string> = TOOLS;
 
@@ -56,12 +79,13 @@ export class ProcessProvider implements IToolProvider {
     if (cfg.get<boolean>('sandboxUseDocker', false)) {
       return runDockerShell(cmd, cfg.get<string>('sandboxDockerImage', 'ubuntu:24.04'), 35000);
     }
+    const wsRoot = (vscode.workspace.workspaceFolders ?? [])[0]?.uri.fsPath ?? process.cwd();
     return new Promise<string>(resolve => {
       const unixCmdPattern = /^(find|grep|ls|cat|wc|head|tail|awk|sed|chmod|which|touch|mkdir|rm|cp|mv|echo|sort|uniq|xargs|cut|tr|diff|tar|curl|wget)\s/;
       const shellOpt = (process.platform === 'win32' && unixCmdPattern.test(cmd.trim())) ? 'powershell.exe' : true;
       exec(cmd, { cwd, timeout: 30000, shell: shellOpt as unknown as string }, (_err, stdout, stderr) => {
         const out = (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
-        resolve(out.trim().slice(0, 8000) || '(無輸出)');
+        resolve(_persistIfLarge(out.trim() || '(無輸出)', 'cmd', wsRoot));
       });
     });
   }
@@ -81,9 +105,10 @@ export class ProcessProvider implements IToolProvider {
       if (!allowed) return '使用者已拒絕執行操作';
     }
     const tmpFile = path.join(os.tmpdir(), `ami_ai_claw_py_${Date.now()}.py`);
+    let raw = '';
     try {
       fs.writeFileSync(tmpFile, pyCode, 'utf-8');
-      return await new Promise<string>(resolve => {
+      raw = await new Promise<string>(resolve => {
         const cmds = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
         let tried = 0;
         const tryNext = () => {
@@ -92,11 +117,12 @@ export class ProcessProvider implements IToolProvider {
           exec(`${c} "${tmpFile}"`, { cwd: wsRoot, timeout: 30000 }, (_err, stdout, stderr) => {
             if (_err && (_err as NodeJS.ErrnoException).code === 'ENOENT') { tryNext(); return; }
             const out = (stdout || '') + (stderr ? (stdout ? '\n[stderr]\n' : '[stderr]\n') + stderr : '');
-            resolve((out.trim() || '（無輸出）').slice(0, 8000));
+            resolve(out.trim() || '（無輸出）');
           });
         };
         tryNext();
       });
     } finally { try { fs.unlinkSync(tmpFile); } catch { /* ignore */ } }
+    return _persistIfLarge(raw, 'py', wsRoot);
   }
 }

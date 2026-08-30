@@ -1,0 +1,18 @@
+===== FILE: tsconfig.json  (16 lines) =====
+00001| {
+00002|   "compilerOptions": {
+00003|     "module": "commonjs",
+00004|     "target": "es2020",
+00005|     "outDir": "out",
+00006|     "rootDir": "src",
+00007|     "sourceMap": true,
+00008|     "strict": true,
+00009|     "esModuleInterop": true,
+00010|     "skipLibCheck": true,
+00011|     "forceConsistentCasingInFileNames": true,
+00012|     "types": ["node", "vscode"]
+00013|   },
+00014|   "include": ["src"],
+00015|   "exclude": ["node_modules", ".vscode-test"]
+00016| }
+===== END: tsconfig.json =====

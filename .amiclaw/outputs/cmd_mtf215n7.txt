@@ -1,0 +1,205 @@
+diff --git a/src/tools/ToolRegistry.ts b/src/tools/ToolRegistry.ts
+--- a/src/tools/ToolRegistry.ts
++++ b/src/tools/ToolRegistry.ts
+@@ -6,11 +6,24 @@
++// 27 tools: matches claude-code CORE scope (read/write/search/git/memory/lsp/meta)
+-  'get_active_file','read_file','read_files','write_file','replace_in_file',
+-  'list_dir','run_command','search_workspace','manage_todo','run_python',
+-  'jira_fetch','jira_search','git_status','git_diff','memory_read',
+-  'search_tools','workflow_run',  // discovery + workflow meta-tools
++  // file I/O (primary)
++  'get_active_file','read_file','read_files','read_file_smart','write_file',
++  'replace_in_file','insert_in_file',
++  // navigation & search
++  'list_dir','outline_file','search_workspace','search_regex','agentic_file_search',
++  // execution
++  'run_command','run_python',
++  // git
++  'git_status','git_diff','git_log','git_commit',
++  // project management
++  'manage_todo','memory_read','memory_write',
++  'jira_fetch','jira_search','jira_open',
++  // LSP (diagnostics always-on; definition/references on demand via search_tools)
++  'lsp_diagnostics',
++  // meta-tools
++  'search_tools','workflow_run',
+@@ -20,26 +33,45 @@ const SEARCH_TOOLS_TOOL = { type: 'function', function: { name: 'search_tools',
++/** Worker completion report ??sent back to Coordinator as the only visible output. */
++export const REPORT_RESULT_TOOL = {
++  type: 'function',
++  function: {
++    name: 'report_result',
++    description: 'Report task completion to the Coordinator. **Call this ONCE when all work is done.** The Coordinator sees ONLY this summary ??not your raw tool outputs. Keep summary ??00 chars.',
++    parameters: {
++      type: 'object',
++      properties: {
++        status:        { type: 'string', enum: ['completed', 'failed', 'blocked'], description: 'Task outcome: completed=done; failed=could not finish; blocked=needs more info' },
++        summary:       { type: 'string', description: '任�?完�??��?（≤500 字�?：�?了�?麼、�??��?何、�??�發?? },
++        files_changed: { type: 'array', items: { type: 'string' }, description: '已修?��?建�??��?案路徑�??��??�選�? },
++        errors:        { type: 'string', description: '?��??�錯誤�?述�?status=failed/blocked ?�填寫�??�選�? },
++      },
++      required: ['status', 'summary'],
++    },
++  },
++};
++
+-  { type: 'function', function: { name: 'get_active_file', description: '?��??��?編輯?��??��?檔�?路�??�內�?, parameters: { type: 'object', properties: {} } } },
+-  { type: 'function', function: { name: 'read_file', description: '讀?�工作�??��?案�?完整?�容??*?�用?�確實�?要整?��?案�?小�?檔�?�? 30KB�?*?��?大�?程�?碼�?案�??��?：�? outline_file 了解結�??��???????read_file_smart(start_line/end_line) ?��??�?�?�段�??��?載入?��??��? context??, parameters: { type: 'object', properties: { path: { type: 'string', description: '?��??��?對路�? } }, required: ['path'] } } },
+-  { type: 'function', function: { name: 'read_files', description: '一次批次�??��??��?案內容�??��??�制總�??��? token ?��?）。適?��??��??�考數?�相?��?案�??�景，�?????�叫 read_file ?��? round-trip?��??�格式�?每個�?案以??== <path> ===?��??��?, parameters: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' }, description: '檔�?路�????（相對�?絕�?）�??��?30 ?? }, max_per_file_kb: { type: 'number', description: '?��??�大�???KB（�?�?64，�??�截?��?' }, max_total_kb: { type: 'number', description: '?�?��?案�?計�?�?KB（�?�?256，�??��?止並?�報?��?檔�?清單�? } }, required: ['paths'] } } },
+-  { type: 'function', function: { name: 'write_file', description: '寫入(建�?/覆寫)檔�??�支?��??��?字�?案�??��?.c .h .inf .dec .dsc .ts .py 等�?', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+-  { type: 'function', function: { name: 'replace_in_file', description: '?��?案中?��??��?字串（第一?�匹?��??�支?��??��?字�?�?c .h .inf .ts 等�?', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '要替?��??��?字串（�??�含足�? context 以唯一定�?�? }, new_str: { type: 'string', description: '?��?後�?字串' } }, required: ['path', 'old_str', 'new_str'] } } },
+-  { type: 'function', function: { name: 'insert_in_file', description: '?��?案�?定�??��??�入?�容（支?��?行�??�適?�在 .c/.h ?��??��??�新?��??�在 .inf [Sources] 段落?��?檔�?，�??�任何�?置�??��?式碼?�自?��??��?始�?尾�?CRLF/LF）�?, parameters: { type: 'object', properties: { path: { type: 'string', description: '檔�?路�?（�?對�??��?工�??��? }, line: { type: 'number', description: '?�此行�?後�??��?1-based�? = ?��??�面?�入�? }, content: { type: 'string', description: '要�??��??�容（支?��?行�?�?\n ?��?�? } }, required: ['path', 'line', 'content'] } } },
+-  { type: 'function', function: { name: 'list_dir', description: '?�出?��??�容', parameters: { type: 'object', properties: { path: { type: 'string', description: '?��?路�?，空?�表示工作�??�目?? } }, required: [] } } },
+-  { type: 'function', function: { name: 'run_terminal', description: '??VS Code 終端機執行命令�??�輸?��??��?', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
+-  { type: 'function', function: { name: 'search_workspace', description: '?�工作�?中�?尋�?案�?稱、函式�?稱、�??��?稱�?程�?碼�??��??��??�任何�?題�?請優?�呼?�此工具確�?工�??�?��?程�?�?, parameters: { type: 'object', properties: { query: { type: 'string', description: '?��??�鍵字�?如�?案�?稱、函式�?稱、�??��?稱、�??��?稱�?' } }, required: ['query'] } } },
+-  { type: 'function', function: { name: 'delete_file', description: '?�除檔�??�目??, parameters: { type: 'object', properties: { path: { type: 'string' }, recursive: { type: 'boolean', description: '?�否?�迴?�除?��?' } }, required: ['path'] } } },
+-  { type: 'function', function: { name: 'create_dir', description: '建�??��?（�??�中?�目?��?', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
+-  { type: 'function', function: { name: 'run_command', description: '?��??�令並�??�輸?��??��?stdout+stderr）。適?��?要知?�執行�??��??��?', parameters: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string', description: '?��??��?，空?�表示工作�??�目?? } }, required: ['command'] } } },
+-  { type: 'function', function: { name: 'fetch_url', description: '下�?網�??�容（自?�去??HTML 標籤）。適?�查?��?件、API ?�件?��?尋網路�???, parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' } }, required: ['url'] } } },
+-  { type: 'function', function: { name: 'open_browser', description: '??VS Code 簡�??�覽?�中?��?網�?', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
+-  { type: 'function', function: { name: 'manage_todo', description: 'Agent ?�部任�?清單?��??�任?��??�建立任?��??��??��?完�?後�?記为done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=?��?, done=完�?, list=?��?, clear=清空' }, text: { type: 'string', description: '任�??�容（action=add ?��??��?' }, id: { type: 'number', description: '任�? ID（action=done ?��??��?' } }, required: ['action'] } } },
+-  { type: 'function', function: { name: 'vscode_action', description: 'VS Code ?��?：�??��?案到?��?行、�?得工作�?信息?�顯示通知?�執�?VS Code ?�建?�令', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=?��?, get_workspace_info=工�??�信息, show_notification=?�知, run_command=?��??�建?�令' }, path: { type: 'string', description: 'open_file ?? }, line: { type: 'number', description: '?��??�哪一�? }, message: { type: 'string', description: 'show_notification ?? }, command: { type: 'string', description: 'run_command ?��?VS Code ?�令 ID' }, args: { type: 'array', items: { type: 'string' }, description: '?�令?�數' } }, required: ['action'] } } },
+-  { type: 'function', function: { name: 'jira_search', description: '??JQL ?��? Jira Issues，支?��??��?定人?�工作�??��?assignee/reporter）、�?案、�??��?濾。�?：�??��????�人?��?辦、�??��?專�??�?�進�?�?Issue??, parameters: { type: 'object', properties: { jql: { type: 'string', description: '完整 JQL ?�詢語句（優?��??��?：assignee = currentUser() AND status != Done ORDER BY updated DESC' }, assignee: { type: 'string', description: '?�派人帳?��?稱�? displayName（可?��??��?�?JQL�? }, reporter: { type: 'string', description: '建�?人帳?��?稱�??�選�? }, project: { type: 'string', description: '專�? Key，�?�?BIOS?�UOEM2（可?��?' }, status: { type: 'string', description: '?�?�篩?��?例�? "In Progress"??To Do"??Done"（可?��?' }, text: { type: 'string', description: '?��??��??�鍵字�??�選�? }, max_results: { type: 'number', description: '?�多�??��??��??�設 20，�?�?50�? } }, required: [] } } },
+-  { type: 'function', function: { name: 'jira_fetch', description: '?��??�執行】直?�呼??Jira REST API ?��? Issue 完整詳�?（Summary?�Description?�Status?�Assignee?�Priority?��?近�?言?��?件�??��?供�??�。�???Jira Key 就呼?��?禁止?�說?��?將查詢」�??��?語句?��?行�???, parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，�?�?UOEM2-3476' } }, required: ['issue_key'] } } },
+-  { type: 'function', function: { name: 'jira_attachment_download', description: '下�? Jira Issue ?�件（URL 來自 jira_fetch 結�???url= 欄�?）。ZIP 檔�??��?�??縮並?�出?�容?��?字�??�容；�?�?patch/log 檔直?�顯示�?, parameters: { type: 'object', properties: { url: { type: 'string', description: '?�件下�? URL（�???jira_fetch ?�件清單??url= 後方網�?�? }, filename: { type: 'string', description: '?��??��?檔�?（可?��??�設�?URL ?�斷�? } }, required: ['url'] } } },
++  { type: 'function', function: { name: 'get_active_file', description: '?��??��? VS Code 編輯?��??�中?��?案路徑�?完整?�容?�適?�快?��??�正?�編輯�?程�?碼�?, parameters: { type: 'object', properties: {} } } },
++  { type: 'function', function: { name: 'read_file', description: '讀?�工作�?檔�?完整?�容??*小�?檔�?首選�? 30 KB�?*；�???30 KB 請改??outline_file 了解結�?後�???read_file_smart ?�段讀?�。Log/trace 檔�??��??��??�錯誤優?��??��?顯示?�誤�?+ 尾端）�?, parameters: { type: 'object', properties: { path: { type: 'string', description: '?��??��?對路�? } }, required: ['path'] } } },
++  { type: 'function', function: { name: 'read_files', description: '?�次讀?��??��?案�?*?�?��??�考數?�相?��?案�??��??�此工具**，�?多次 read_file ?��??��??��?案以 `=== <path> ===` ?��??��?�?30 ?��?案�?, parameters: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' }, description: '檔�?路�????，�?�?30 ?? }, max_per_file_kb: { type: 'number', description: '?��?上�? KB（�?�?64�? }, max_total_kb: { type: 'number', description: '?��?上�? KB（�?�?256�? } }, required: ['paths'] } } },
++  { type: 'function', function: { name: 'write_file', description: '建�??��??��?寫�?案�?*?�寫?�整??content，�?確�? content ?��??��?檔�??�容**?��??�修?��???replace_in_file，�??��??��???token?�寫?��?系統?�偵測�??�修?��?突�?, parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string', description: '完整?�新檔�??�容（�?差異，是?��?�? } }, required: ['path', 'content'] } } },
++  { type: 'function', function: { name: 'replace_in_file', description: '�?old_str ??new_str 精�??��?檔�?中�?一段�?字�?*?�是修改?��?檔�??��??�方�?*?��?要�??��???old_str 必�??��?案中?��??�—�??��??�相符�?被�?絕�?請�??�更多�?�?context；② 使用?��??��? read_file 確�?確�??�容（系統�??�測衝�?）�???old_str ?��??��??�傳?��??��?示�?, parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '要替?��??��?字串（�??�在檔�?中唯一，�??�足夠�?�?context�? }, new_str: { type: 'string', description: '?��?後�?字串（空字串 = ?�除�? } }, required: ['path', 'old_str', 'new_str'] } } },
++  { type: 'function', function: { name: 'insert_in_file', description: '?��?定�??��??�入多�??�容?�適?��??�新?��??�新段落，�??�任何精確�?置新增�?式碼?�自?��??��?始�?尾�?CRLF/LF）�?, parameters: { type: 'object', properties: { path: { type: 'string', description: '檔�?路�?' }, line: { type: 'number', description: '?�此行�?後�??��?1-based�? = ?�?�面�? }, content: { type: 'string', description: '要�??��??�容（支??\\n 多�?�? } }, required: ['path', 'line', 'content'] } } },
++  { type: 'function', function: { name: 'list_dir', description: '?�出?��??�容（�??��??��?案�??�探索�??��??�工作�?結�??��??��?, parameters: { type: 'object', properties: { path: { type: 'string', description: '?��?路�?，空??= 工�??�?�目?? } }, required: [] } } },
++  { type: 'function', function: { name: 'run_terminal', description: '??VS Code ?��?終端機中?��??�令�?*不�??�輸??*）。適?�長?��??��??��??��?序。�?要�?輸出結�?請改??run_command??, parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
++  { type: 'function', function: { name: 'search_workspace', description: '?�工作�??��?符�??��?案�?稱�?程�?碼�??��???*?��?任�?程�?碼任?��?請�??�叫此工?�確認現?��?式碼位置**?��? search_regex 快�??��??�鍵字�?位�??�要正規表?��??�改??search_regex??, parameters: { type: 'object', properties: { query: { type: 'string', description: '?�鍵字�?檔�??�稱?�函式�?稱、�??��?稱、�??��?稱�?' } }, required: ['query'] } } },
++  { type: 'function', function: { name: 'delete_file', description: '永�??�除檔�??�目?�。此?��?**不可??*，執行�?系統?��?求確認�?, parameters: { type: 'object', properties: { path: { type: 'string' }, recursive: { type: 'boolean', description: '?�迴?�除?��?（�?�?false�? } }, required: ['path'] } } },
++  { type: 'function', function: { name: 'create_dir', description: '建�??��??��??�中?�目?��?等�? mkdir -p）�?, parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
++  { type: 'function', function: { name: 'run_command', description: '?��? shell ?�令�?*?�步?�傳 stdout+stderr**（�?多�? 30 秒�??�適?��?要�??��?結�??�場?��?編譯?�測試、git ?��?等�??�系統�??��??��??�險?�令（rm -rf /?�curl|bash 等�??�長?��??�令請用 run_terminal??, parameters: { type: 'object', properties: { command: { type: 'string', description: '要執行�??�令' }, cwd: { type: 'string', description: '?��??��?（可?��??�設工�??�?�目?��?' } }, required: ['command'] } } },
++  { type: 'function', function: { name: 'fetch_url', description: '下�?網�?�?*?��??�除 HTML 標籤**?�傳純�?字。適?��??��?件、API 規格?��?尋�??�。�?�?JavaScript 渲�???SPA ?�面請改??browser_navigate??, parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' } }, required: ['url'] } } },
++  { type: 'function', function: { name: 'open_browser', description: '??VS Code ?�建簡�??�覽?��???URL（�?人工檢�?，�??�傳?�容）�?, parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
++  { type: 'function', function: { name: 'manage_todo', description: '管�? Agent ?�任?��??��?*?�到複�?任�??��??�用 add 建�?清單，�?完�?一步用 done 標�?**，�?使用?�可以�??�進度??, parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=?��?, done=完�?, list=?��?, clear=清空' }, text: { type: 'string', description: '任�??�容（action=add ?��?填�?' }, id: { type: 'number', description: '任�? ID（action=done ?��?填�?' } }, required: ['action'] } } },
++  { type: 'function', function: { name: 'vscode_action', description: 'VS Code IDE ?��?：�??��?案到?��?行、查詢工作�?資�??�顯示通知訊息?�執�?VS Code ?�建?�令??, parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'] }, path: { type: 'string', description: 'open_file ?��?路�?' }, line: { type: 'number', description: '行�?（open_file�? }, message: { type: 'string', description: 'show_notification ?��??? }, command: { type: 'string', description: 'VS Code ?�建?�令 ID（run_command�? }, args: { type: 'array', items: { type: 'string' }, description: '?�令?�數' } }, required: ['action'] } } },
++  { type: 'function', function: { name: 'jira_search', description: 'JQL ?��? Jira Issues?�適?��??��?辦�??�、�?專�?/?�?�篩?�。�?：`assignee = currentUser() AND status != Done ORDER BY updated DESC`??, parameters: { type: 'object', properties: { jql: { type: 'string', description: 'JQL 語句（優?�使?��?' }, assignee: { type: 'string', description: '?�派人�??�選，自?��? JQL�? }, reporter: { type: 'string', description: '建�?人�??�選�? }, project: { type: 'string', description: '專�? Key，�?�?BIOS?�UOEM2（可?��?' }, status: { type: 'string', description: '?�?�篩?��??�選�? }, text: { type: 'string', description: '?��??�鍵字�??�選�? }, max_results: { type: 'number', description: '?�多�??��??�設 20�? } }, required: [] } } },
++  { type: 'function', function: { name: 'jira_fetch', description: '**?��???Jira Key 立刻?�叫，�?止說?��?將查詢」�?* ?�接?��? Issue 完整詳�?：Summary?�Description?�Status?�Assignee?�Priority?��?近�?言?��?件�??��?, parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，�?�?UOEM2-3476' } }, required: ['issue_key'] } } },
++  { type: 'function', function: { name: 'jira_attachment_download', description: '下�? Jira ?�件（URL 來自 jira_fetch 結�?）。ZIP ?��?�??並�??�內容�??��?/patch/log ?�接顯示??, parameters: { type: 'object', properties: { url: { type: 'string', description: '?�件下�? URL（�???jira_fetch ?�件清單�? }, filename: { type: 'string', description: '?��?檔�?（可?��?' } }, required: ['url'] } } },
+   { type: 'function', function: { name: 'jira_open', description: '??VS Code 中�???Jira Issue UI ?�板（�??�傳?�容，�?介面?��?）。�?�?Issue ?�容供�??��?請用 jira_fetch ?��?此工?��?, parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，�?�?BIOS-123 ??PROJ-456' } }, required: ['issue_key'] } } },
+   { type: 'function', function: { name: 'jira_log_time', description: '記�? Jira Issue 工�?（Worklog）。支??"16h"??2h 30m"??1d" 等格式�??��?定日?��?today/yesterday/YYYY-MM-DD）�??�設今天??, parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，�?�?BIOS-123' }, time_spent: { type: 'string', description: '工�?，�?�?"16h"??2h 30m"??1d"??90m"' }, date: { type: 'string', description: '?��?（可?��?�?today"（�?設�???yesterday"?��? "YYYY-MM-DD"' }, comment: { type: 'string', description: '?�註（可?��?' } }, required: ['issue_key', 'time_spent'] } } },
+@@ -85,6 +117,26 @@ export const AGENT_TOOLS = [
+   { type: 'function', function: { name: 'batch_replace', description: '使用�??表�?式跨多個�?案批次�?尋�?�???�傳修改?��?案�??��??��?次數?�適?�全?��??�命??symbol ?�修�?typo??, parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'JavaScript �??表�?式�?串�?不含 //�? }, replace: { type: 'string', description: '?�代字串（可??$1 $2 back-reference�? }, include: { type: 'string', description: 'glob 篩選檔�?（�?�?**/*）�?例�? **/*.{c,h}' }, flags: { type: 'string', description: 'regex flags（�?�?gi�? } }, required: ['pattern', 'replace'] } } },
+   { type: 'function', function: { name: 'organize_photos', description: '?�次辨�?並整?�照?��?給「�??�照?�目?�」�??��?迴含子目?��?，用 Ollama 視覺模�??�張辨�??�若?��??��?張�??�人?�照?�」�??�逐張?�斷?�否?��?一?�人，�?辨�??��????�景，�?符�??��??�人??行為?�兩層�??�夾複製（�?移�?）到輸出?��?；未?��??�考人?��??�為?��??��????�景?��?類。�?�?Ollama 視覺模�?（�? llava?�llama3.2-vision?�qwen2.5vl，�???ollama pull）�?, parameters: { type: 'object', properties: { source_dir: { type: 'string', description: '要�??��??��?來�??��?（�?迴含子目?��?' }, reference_image: { type: 'string', description: '?�考人?�照?�路徑�??�選）。�?供�?依「人??行為?�兩層整?��??��?供�??��?行為/?�景?��?' }, output_dir: { type: 'string', description: '?��?後輸?�目?��??�選，�?設為來�??��?下�? _organized�? }, person_name: { type: 'string', description: '人物資�?夾�?稱�??�選，�?設�??�考照?��??��?' }, behaviors: { type: 'array', items: { type: 'string' }, description: '行為/?�景?��??��?（可?��?，�?�?["?��?","?��?","?��?","工�?"]；�?供�?模�??�能從中?��?，未?��??�由模�??�由?��?簡短標籤' }, vision_model: { type: 'string', description: 'Ollama 視覺模�??�稱（可?��??�設讀設�? amiAiClaw.visionModel�? }, mode: { type: 'string', enum: ['copy','move'], description: 'copy=複製並�??��?檔�??�設）、move=移�??��?' }, min_confidence: { type: 'number', description: '人物比�??�低信�?0~100（�?�?60，�??��? reference_image ?��??��?' }, max_images: { type: 'number', description: '?�多�??�張?��??�設 200，�?�?1000�? } }, required: ['source_dir'] } } },
++  // ?�?� Background execution tools ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
++  { type: 'function', function: { name: 'run_in_background', description: '?��??�執�?shell ?�令（�??�步，�?等�?完�?）。�??��???taskId ?�輸?��?案路徑�?*?��??��??�執行�??�令**（建置、測試、伺?�器?��?等�?；�?要查?�輸?��???bg_task_status ??bg_task_read??, parameters: { type: 'object', properties: { command: { type: 'string', description: '要執行�? shell ?�令' }, cwd: { type: 'string', description: '?��??��?（可?��??�設工�??�?�目?��?' } }, required: ['command'] } } },
++  { type: 'function', function: { name: 'bg_task_status', description: '?�詢?�景任�??�?��?輸出?�覽（�?�?80 行�??��???task_id ?��??��??�任?��?, parameters: { type: 'object', properties: { task_id: { type: 'string', description: '任�? ID（�???run_in_background ?�傳；�??��??�出?�部�? } }, required: [] } } },
++  { type: 'function', function: { name: 'bg_task_read', description: '讀?��??�任?��?完整輸出（�?久�??��?碟�??��?檔�??�支?��?範�?讀?��??��??��?大�?輸出??, parameters: { type: 'object', properties: { task_id: { type: 'string', description: '任�? ID' }, start_line: { type: 'number', description: '起�?行�?1-based，可?��?' }, end_line: { type: 'number', description: '結�?行�??�選�? }, tail: { type: 'number', description: '?��??��?N 行�??��???start/end_line�? } }, required: ['task_id'] } } },
++  { type: 'function', function: { name: 'bg_task_kill', description: '終止?��??��??�任?��??��?SIGTERM）�?, parameters: { type: 'object', properties: { task_id: { type: 'string', description: '要�?止�?任�? ID' } }, required: ['task_id'] } } },
++  // ?�?� Computer Use tools ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
++  { type: 'function', function: { name: 'computer_screenshot', description: '?��??��??��?並儲存為 PNG?��?�?Python pyautogui（pip install pyautogui pillow）。截?��??�用 organize_photos ??browser_screenshot ?��??��??�容??, parameters: { type: 'object', properties: { save_path: { type: 'string', description: '?��?路�?（可?��??�設 .amiclaw/outputs/screenshot_<ts>.png�? }, region: { type: 'array', items: { type: 'number' }, description: '?��??�??[left, top, width, height]（可?��??�設?�螢幕�?' } }, required: [] } } },
++  { type: 'function', function: { name: 'computer_type', description: '?�目?�焦點�?置輸?��?字。優?�使?�剪貼板貼�?（支??Unicode）。�?�?Python pyautogui（pip install pyautogui）�?, parameters: { type: 'object', properties: { text: { type: 'string', description: '要輸?��??��?' }, interval: { type: 'number', description: '每個�??��??��??��??�設 0.02�? } }, required: ['text'] } } },
++  { type: 'function', function: { name: 'computer_key', description: '?��??�鍵?��??�鍵?�支?�單?��?"enter","esc","tab"）�?組�??��?"ctrl+s","alt+f4","ctrl+shift+t"）。�?�?Python pyautogui??, parameters: { type: 'object', properties: { key: { type: 'string', description: '?�鍵?�稱，�??�鍵??+ ??��，�?�?"ctrl+s"??enter"??alt+tab"' } }, required: ['key'] } } },
++  { type: 'function', function: { name: 'computer_click', description: '?��?定螢幕�?標�??��?鼠。�?�?Python pyautogui??, parameters: { type: 'object', properties: { x: { type: 'number', description: '?��? X ?��?（�?素�?' }, y: { type: 'number', description: '?��? Y ?��?（�?素�?' }, button: { type: 'string', enum: ['left', 'right', 'middle'], description: '滑�??�鍵（�?�?left�? }, clicks: { type: 'number', description: '點�?次數（�?�?1，�??�傳 2�? } }, required: ['x', 'y'] } } },
++  { type: 'function', function: { name: 'computer_scroll', description: '?��?定�?標滾?��?鼠滾輪。�?�?Python pyautogui??, parameters: { type: 'object', properties: { x: { type: 'number', description: '?��? X ?��?' }, y: { type: 'number', description: '?��? Y ?��?' }, direction: { type: 'string', enum: ['up', 'down'], description: '滾�??��?（�?�?down�? }, clicks: { type: 'number', description: '滾�??�數（�?�?3�? } }, required: ['x', 'y'] } } },
++  { type: 'function', function: { name: 'computer_clipboard_read', description: '讀?�系統剪貼板?��?字內容�?, parameters: { type: 'object', properties: {}, required: [] } } },
++  { type: 'function', function: { name: 'computer_clipboard_write', description: '將�?字寫?�系統剪貼板?��???computer_type ?�快?�貼?�任何�??��?式�?, parameters: { type: 'object', properties: { text: { type: 'string', description: '要寫?�剪貼板?��?�? } }, required: ['text'] } } },
++  // ?�?� LSP tools ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
++  { type: 'function', function: { name: 'lsp_goto_definition', description: '跳至 symbol 定義位置（使?��?言伺�??��??��??��?義�??��? file:line:col?�適?�追蹤函�?變數/?�別�??位置?��?要目標�?言??VS Code 語�??��?（TypeScript/C/Python 等�?已�??��?, parameters: { type: 'object', properties: { path: { type: 'string', description: '?�含 symbol ?��?案路�? }, line: { type: 'number', description: 'Symbol ?�?��??��?1-based�? }, col: { type: 'number', description: 'Symbol ?�?��??��?1-based，�?�?1�? } }, required: ['path', 'line'] } } },
++  { type: 'function', function: { name: 'lsp_find_references', description: '?�出 symbol ?�整?�工作�??��??��??��?置�?使用語�?伺�??��??��???file:line:col 清單?�適?��?構�?確�?影響範�?，�??�出?��??�方?�叫了此?��???, parameters: { type: 'object', properties: { path: { type: 'string', description: '?�含 symbol ?��?案路�? }, line: { type: 'number', description: 'Symbol ?�?��??��?1-based�? }, col: { type: 'number', description: 'Symbol ?�?��??��?1-based，�?�?1�? }, include_declaration: { type: 'boolean', description: '?�否?�含�??位置（�?�?true�? } }, required: ['path', 'line'] } } },
++  { type: 'function', function: { name: 'lsp_hover', description: '?��? symbol ??hover 資�?（�??�簽?�、JSDoc/Doxygen ?�件?��??�說?��??�使?��?言伺�??��?等�??�在 VS Code 中�?滑�?移到 symbol 上。適?�快?�確認函式簽?��??�別定義??, parameters: { type: 'object', properties: { path: { type: 'string', description: '?�含 symbol ?��?案路�? }, line: { type: 'number', description: 'Symbol ?�?��??��?1-based�? }, col: { type: 'number', description: 'Symbol ?�?��??��?1-based，�?�?1�? } }, required: ['path', 'line'] } } },
++  { type: 'function', function: { name: 'lsp_diagnostics', description: '?��?語�?伺�??��?診斷資�?（錯�?警�?/?�示）�?*不�?�?path ?��??�整?�工作�??�?�診?��?�?*；�?�?path ?�只?�傳該�?案。適?�確認編譯錯誤、�??�錯誤、未使用 import 等�?題。優?�在 write_file/replace_in_file 之�??�叫此工?�確認無?�誤??, parameters: { type: 'object', properties: { path: { type: 'string', description: '檔�?路�?（可?��?空白 = ?�工作�?�? }, severity: { type: 'string', enum: ['error', 'warning', 'all'], description: '?�濾?��?度�??�設 all�? } }, required: [] } } },
++  { type: 'function', function: { name: 'lsp_rename_symbol', description: '?��?語�?伺�??�跨工�??�?�新?��? symbol（�???VS Code F2 Rename）。�??�新?�?��??��?案�??�傳修改?��?案�??��?*�?batch_replace ?�精�?*（只?��?�?? symbol ?�考�?不改字串常數?�注�?��?��??��?字�??��?作�??�使用?�確認�?, parameters: { type: 'object', properties: { path: { type: 'string', description: '?�含 symbol ?��?案路�? }, line: { type: 'number', description: 'Symbol ?�?��??��?1-based�? }, col: { type: 'number', description: 'Symbol ?�?��??��?1-based，�?�?1�? }, new_name: { type: 'string', description: '?��?�? } }, required: ['path', 'line', 'new_name'] } } },
++  { type: 'function', function: { name: 'lsp_document_symbols', description: '?�出檔�?中�???symbol（函式、�??�、�??�、�??�、enum 等�??�其行�??�層次�?構。使?��?言伺�??��?�?outline_file ?�精準�?使用?�正?��?法�??��??�適?�快?��?�?��?��?案�? API surface ?�確認�??��??��?, parameters: { type: 'object', properties: { path: { type: 'string', description: '檔�?路�?' } }, required: ['path'] } } },
+@@ -102,23 +154,64 @@ export const ALL_TOOLS = [...AGENT_TOOLS, SEARCH_TOOLS_TOOL, WORKFLOW_RUN_TOOL,
+ /** LLM-facing toolset: core tools + meta-tools. */
++// ?�?� TF-IDF tool search ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
++
++function _tokenize(text: string): string[] {
++  return text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(t => t.length > 1);
++}
++
++/** Smoothed IDF: log((N+1)/(df+1)) + 1, computed once at module load. */
++const _idf: ReadonlyMap<string, number> = (() => {
++  const N = EXTRA_TOOLS.length;
++  const df = new Map<string, number>();
++  for (const tool of EXTRA_TOOLS) {
++    const terms = new Set(_tokenize(`${tool.function.name} ${tool.function.description}`));
++    for (const t of terms) df.set(t, (df.get(t) ?? 0) + 1);
++  }
++  const idf = new Map<string, number>();
++  for (const [term, count] of df) idf.set(term, Math.log((N + 1) / (count + 1)) + 1);
++  return idf;
++})();
++
++function _tfidfVec(tokens: string[]): Map<string, number> {
++  const tf = new Map<string, number>();
++  for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
++  const vec = new Map<string, number>();
++  const len = tokens.length || 1;
++  // unseen terms get IDF = log((N+1)/1)+1 ??high weight for novel query terms
++  const unseenIdf = Math.log(EXTRA_TOOLS.length + 2) + 1;
++  for (const [t, count] of tf) vec.set(t, (count / len) * (_idf.get(t) ?? unseenIdf));
++  return vec;
++}
++
++function _cosine(a: Map<string, number>, b: Map<string, number>): number {
++  let dot = 0, normA = 0, normB = 0;
++  for (const [t, v] of a) { dot += v * (b.get(t) ?? 0); normA += v * v; }
++  for (const v of b.values()) normB += v * v;
++  return normA === 0 || normB === 0 ? 0 : dot / (Math.sqrt(normA) * Math.sqrt(normB));
++}
++
++/** Pre-computed TF-IDF vectors for all EXTRA_TOOLS (avoids recompute per query). */
++const _toolVecs: ReadonlyMap<string, Map<string, number>> = (() => {
++  const m = new Map<string, Map<string, number>>();
++  for (const tool of EXTRA_TOOLS) {
++    m.set(tool.function.name, _tfidfVec(_tokenize(`${tool.function.name} ${tool.function.description}`)));
++  }
++  return m;
++})();
++
+- * Simple keyword-based search over EXTRA_TOOLS.
+- * Returns up to topK matching tool definitions.
++ * TF-IDF + cosine similarity search over EXTRA_TOOLS.
++ * Returns up to topK tool definitions ranked by semantic relevance.
+-  const terms = query.toLowerCase().split(/\W+/).filter(t => t.length > 2);
+-  if (terms.length === 0) return EXTRA_TOOLS.slice(0, topK);
+-  const scored = EXTRA_TOOLS.map(tool => {
+-    const text = `${tool.function.name} ${tool.function.description}`.toLowerCase();
+-    let score = 0;
+-    for (const term of terms) {
+-      // Exact name match is a strong signal
+-      if (tool.function.name.includes(term)) score += 3;
+-      else if (text.includes(term)) score += 1;
+-    }
+-    return { tool, score };
+-  });
++  const queryTokens = _tokenize(query);
++  if (queryTokens.length === 0) return EXTRA_TOOLS.slice(0, topK);
++  const queryVec = _tfidfVec(queryTokens);
++  const scored = EXTRA_TOOLS.map(tool => ({
++    tool,
++    score: _cosine(queryVec, _toolVecs.get(tool.function.name)!),
++  }));
+     .sort((a, b) => b.score - a.score)
+@@ -127,7 +220,10 @@ export function searchExtraTools(query: string, topK = 5): typeof EXTRA_TOOLS {
+-  const m: Record<string, string> = { get_active_file: '??', read_file: '??', read_files: '??', write_file: '?��', replace_in_file: '?��?', insert_in_file: '??', glob: '??', outline_file: '??', todo_write: '??, memory_read: '??', memory_write: '??', list_dir: '??', run_terminal: '??, search_workspace: '??', delete_file: '??�?, create_dir: '??', run_command: '?��?', fetch_url: '??', open_browser: '?��', manage_todo: '??', vscode_action: '?��', jira_search: '??', jira_fetch: '??', jira_open: '?��', jira_create: '?��', jira_transition: '??', jira_log_time: '?��?', jira_attachment_download: '??', bb_create_pr: '??', rovo_ask: '??', run_python: '??', git_status: '??', git_diff: '??', git_log: '??', git_commit: '??, http_request: '?��', db_query: '??�?, search_regex: '??', agentic_file_search: '??', lint_fix: '?��', run_tests: '?��', browser_navigate: '?��', browser_screenshot: '?��', browser_script: '?��', generate_docs: '??', refactor_suggest: '?��', whatsapp_connect: '?��', whatsapp_disconnect: '?��', whatsapp_status: '?��', whatsapp_save_credentials: '??', whatsapp_send: '?��', whatsapp_send_template: '?��', jenkins_build: '??�?, jenkins_status: '??', read_workspace: '??�?, agent_run_tool: '??', 'agent:run_tool': '??', read_file_smart: '?��', rename_file: '?��?', copy_file: '??', diff_files: '??', replace_all_in_file: '?��?', batch_replace: '??', file_info: '?��?', organize_photos: '?���?, search_tools: '?��', workflow_run: '?��?', workflow_list: '??' };
++  const m: Record<string, string> = { get_active_file: '??', read_file: '??', read_files: '??', write_file: '?��', replace_in_file: '?��?', insert_in_file: '??', glob: '??', outline_file: '??', todo_write: '??, memory_read: '??', memory_write: '??', list_dir: '??', run_terminal: '??, search_workspace: '??', delete_file: '??�?, create_dir: '??', run_command: '?��?', fetch_url: '??', open_browser: '?��', manage_todo: '??', vscode_action: '?��', jira_search: '??', jira_fetch: '??', jira_open: '?��', jira_create: '?��', jira_transition: '??', jira_log_time: '?��?', jira_attachment_download: '??', bb_create_pr: '??', rovo_ask: '??', run_python: '??', git_status: '??', git_diff: '??', git_log: '??', git_commit: '??, http_request: '?��', db_query: '??�?, search_regex: '??', agentic_file_search: '??', lint_fix: '?��', run_tests: '?��', browser_navigate: '?��', browser_screenshot: '?��', browser_script: '?��', generate_docs: '??', refactor_suggest: '?��', whatsapp_connect: '?��', whatsapp_disconnect: '?��', whatsapp_status: '?��', whatsapp_save_credentials: '??', whatsapp_send: '?��', whatsapp_send_template: '?��', jenkins_build: '??�?, jenkins_status: '??', read_workspace: '??�?, agent_run_tool: '??', 'agent:run_tool': '??', read_file_smart: '?��', rename_file: '?��?', copy_file: '??', diff_files: '??', replace_all_in_file: '?��?', batch_replace: '??', file_info: '?��?', organize_photos: '?���?, search_tools: '?��', workflow_run: '?��?', workflow_list: '??',
++    lsp_goto_definition: '??', lsp_find_references: '??', lsp_hover: '?��', lsp_diagnostics: '?��', lsp_rename_symbol: '?��?', lsp_document_symbols: '??�?,
++    run_in_background: '??, bg_task_status: '??', bg_task_read: '??', bg_task_kill: '?��?',
++    computer_screenshot: '?��', computer_type: '?��?', computer_key: '?��?', computer_click: '?���?, computer_scroll: '?���?, computer_clipboard_read: '??', computer_clipboard_write: '??' };
+@@ -204,6 +300,23 @@ export function formatToolTitle(name: string, args: Record<string, unknown>): st
+     case 'organize_photos': return `?��??��?: ${args.source_dir}${args.reference_image ? ' (比�? ' + path.basename(String(args.reference_image)) + ')' : ' (依�???'}`;
++    case 'lsp_goto_definition':    return `LSP 跳至定義: ${args.path}:${args.line}`;
++    case 'lsp_find_references':    return `LSP ?��??? ${args.path}:${args.line}`;
++    case 'lsp_hover':              return `LSP Hover: ${args.path}:${args.line}`;
++    case 'lsp_diagnostics':        return args.path ? `LSP 診斷: ${args.path}` : 'LSP 診斷: ?�工作�?';
++    case 'lsp_rename_symbol':      return `LSP ?�新?��?: ${args.path}:${args.line} ??"${args.new_name}"`;
++    case 'lsp_document_symbols':   return `LSP Symbol 清單: ${args.path}`;
++    case 'run_in_background': return `?�景?��?: ${args.command}`;
++    case 'bg_task_status':    return `?�景任�??�??{args.task_id ? ': ' + args.task_id : ' (?�部)'}` ;
++    case 'bg_task_read':      return `?�景任�?讀?? ${args.task_id}${args.tail ? ' (tail=' + args.tail + ')' : ''}`;
++    case 'bg_task_kill':      return `終止?�景任�?: ${args.task_id}`;
++    case 'computer_screenshot':      return `?��?${args.save_path ? '?��?: ' + args.save_path : ''}`;
++    case 'computer_type':            return `輸入?��?: ${String(args.text || '').slice(0, 60)}`;
++    case 'computer_key':             return `?��?: ${args.key}`;
++    case 'computer_click':           return `滑�?點�? (${args.x}, ${args.y})${args.button && args.button !== 'left' ? ' ' + args.button : ''}`;
++    case 'computer_scroll':          return `滑�?滚�? (${args.x}, ${args.y}) ${args.direction ?? 'down'} ${args.clicks ?? 3}`;
++    case 'computer_clipboard_read':  return '讀?�剪貼板';
++    case 'computer_clipboard_write': return `寫入?�貼?? ${String(args.text || '').slice(0, 60)}`;

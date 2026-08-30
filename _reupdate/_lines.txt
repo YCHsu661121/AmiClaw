@@ -1,0 +1,593 @@
+1: import * as vscode from 'vscode';
+2: import { exec as nodeExec } from 'child_process';
+3: import { promisify } from 'util';
+4: const exec = promisify(nodeExec);
+5: import { OllamaChatPanel } from './ollama-chat';
+6: import { setAutoPilotActive, setAutoPilotEnabledBySetting } from './au...
+7: 
+8: interface ChatSessionInfo { id: string; title: string; }
+9: 
+10: class ChatSessionsProvider implements vscode.TreeDataProvider<ChatSess...
+11: private _onDidChangeTreeData = new vscode.EventEmitter<void>();
+12: readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+13: 
+14: constructor(private context: vscode.ExtensionContext) {}
+15: 
+16: refresh(): void { this._onDidChangeTreeData.fire(); }
+17: 
+18: getTreeItem(session: ChatSessionInfo): vscode.TreeItem {
+19: const activeId = this.context.globalState.get<string>('amiAiClaw.activ...
+20: const isActive = session.id === activeId;
+21: const item = new vscode.TreeItem(session.title, vscode.TreeItemCollaps...
+22: item.command = { command: 'amiAiClaw.switchChatSession', title: '切換到此聊...
+23: item.iconPath = new vscode.ThemeIcon(isActive ? 'comment-discussion' :...
+24: item.contextValue = 'chatSession';
+25: item.tooltip = session.title;
+26: if (isActive) { item.description = '▶ 活躍'; }
+27: return item;
+28: }
+29: 
+30: getChildren(): vscode.ProviderResult<ChatSessionInfo[]> {
+31: const sessions = this.context.globalState.get<ChatSessionInfo[]>('amiA...
+32: return sessions.length > 0 ? sessions : [{ id: 'default', title: '聊天 1...
+33: }
+34: }
+35: 
+36: function openAndSend(context: vscode.ExtensionContext, msg: object) {
+37: // createOrShow 為 async（內部會 await sidebar.focus），需先等它完成再 post
+38: void (async () => {
+39: try {
+40: await OllamaChatPanel.createOrShow(context);
+41: const panel = OllamaChatPanel.currentPanel;
+42: if (panel) {
+43: await panel.waitForWebviewReady();
+44: panel.postMessageToWebview(msg);
+45: }
+46: } catch (e) {
+47: OllamaChatPanel.reportDiagnostic('openAndSend failed', e);
+48: OllamaChatPanel.revealDiagnostics();
+49: void vscode.window.showErrorMessage('AmiClaw 無法開啟，請查看輸出視窗「AmiClaw Diag...
+50: }
+51: })();
+52: }
+53: 
+54: export function activate(context: vscode.ExtensionContext) {
+55: // ── Initialize AutoPilot State (Critical fix: was missing) ─────────...
+56: const autoPilotCfg = vscode.workspace.getConfiguration('amiAiClaw');
+57: const apEnabled = autoPilotCfg.get<boolean>('autoPilotEnabled', false)...
+58: setAutoPilotEnabledBySetting(apEnabled);
+59: if (apEnabled) {
+60: setAutoPilotActive(true);
+61: } else {
+62: setAutoPilotActive(false);
+63: }
+64: 
+65: OllamaChatPanel.reportDiagnostic('activate:start');
+66: const sessionsProvider = new ChatSessionsProvider(context);
+67: 
+68: // ── 固定側邊欄 WebviewView Provider ─────────────────────────────────────...
+69: const viewProvider: vscode.WebviewViewProvider = {
+70: resolveWebviewView(view: vscode.WebviewView) {
+71: try {
+72: OllamaChatPanel.createFromView(view, context);
+73: } catch (e) {
+74: OllamaChatPanel.reportDiagnostic('resolveWebviewView failed', e);
+75: OllamaChatPanel.revealDiagnostics();
+76: void vscode.window.showErrorMessage('AmiClaw 側邊欄初始化失敗，請查看輸出視窗「AmiClaw ...
+77: }
+78: }
+79: };
+80: context.subscriptions.push(
+81: vscode.window.registerWebviewViewProvider('amiAiClaw.chatView', viewPr...
+82: webviewOptions: { retainContextWhenHidden: true }
+83: })
+84: );
+85: 
+86: // VS Code 開啟時自動在背景初始化（不顯示 panel）以接受 WhatsApp 指令
+87: try {
+88: OllamaChatPanel.createSilent(context);
+89: } catch (e) {
+90: OllamaChatPanel.reportDiagnostic('createSilent failed', e);
+91: }
+92: 
+93: // ── AmiClawToClaudeToDo.md 監聽器：存檔時自動將內容送入 Agent ──────────────
+94: const todoLog = vscode.window.createOutputChannel('AmiClaw-TodoWatcher...
+95: context.subscriptions.push(todoLog);
+96: 
+97: // ── 對話記錄回呼：Agent 完成後將提示 + 回應 append 到 AmiClawTodoLog.md ────
+98: OllamaChatPanel.onTodoComplete = async (prompt: string, response: stri...
+99: const folders = vscode.workspace.workspaceFolders ?? [];
+100: // 找到 AmiClawToClaudeToDo.md 所在的 folder，把 log 放在同目錄
+101: let logFolder = folders[0]?.uri;
+102: for (const folder of folders) {
+103: try {
+104: await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'AmiCla...
+105: logFolder = folder.uri;
+106: break;
+107: } catch { /* 不在這個 folder */ }
+108: }
+109: if (!logFolder) { return; }
+110: const logUri = vscode.Uri.joinPath(logFolder, 'AmiClawTodoLog.md');
+111: const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$...
+112: const entry = `\n---\n## 📋 ${ts} 任務\n${prompt}\n\n## 🤖 ${ts} Agent 回應\...
+113: try {
+114: // 追加到已有的 log（如果存在），否則建立新檔
+115: let existing = '';
+116: try {
+117: const b = await vscode.workspace.fs.readFile(logUri);
+118: existing = Buffer.from(b).toString('utf8');
+119: } catch { /* 第一次建立 */ }
+120: const newContent = Buffer.from(existing + entry, 'utf8');
+121: await vscode.workspace.fs.writeFile(logUri, newContent);
+122: todoLog.appendLine(`[onTodoComplete] 已寫入 ${logUri.fsPath}（+${entry.len...
+123: vscode.window.setStatusBarMessage(`📝 AmiClaw：對話已記錄到 AmiClawTodoLog.md`...
+124: } catch (e) {
+125: todoLog.appendLine(`[onTodoComplete] 寫入失敗: ${(e as Error)?.message ?? ...
+126: }
+127: };
+128: 
+129: let _todoDebounce: ReturnType<typeof setTimeout> | undefined;
+130: 
+131: async function processTodoFile(uri: vscode.Uri) {
+132: clearTimeout(_todoDebounce);
+133: _todoDebounce = setTimeout(async () => {
+134: try {
+135: todoLog.appendLine(`[processTodoFile] 觸發: ${uri.fsPath}`);
+136: const bytes = await vscode.workspace.fs.readFile(uri);
+137: const prompt = Buffer.from(bytes).toString('utf8').trim();
+138: if (!prompt) {
+139: todoLog.appendLine('[processTodoFile] 檔案為空，跳過');
+140: return;
+141: }
+142: todoLog.appendLine(`[processTodoFile] 內容長度=${prompt.length}，送入 agentSe...
+143: // 確保 panel 已建立，再進入 todo 模式
+144: await OllamaChatPanel.createOrShow(context);
+145: OllamaChatPanel.currentPanel?.enterTodoMode(prompt);
+146: const send = () => OllamaChatPanel.currentPanel?.postMessageToWebview(...
+147: if (OllamaChatPanel.currentPanel) { send(); } else { setTimeout(send, ...
+148: vscode.window.setStatusBarMessage(`🤖 AmiClaw：已讀取 AmiClawToClaudeToDo.m...
+149: } catch (e) {
+150: const msg = (e as Error)?.message ?? String(e);
+151: todoLog.appendLine(`[processTodoFile] 錯誤: ${msg}`);
+152: vscode.window.showErrorMessage(`AmiClaw 讀取 AmiClawToClaudeToDo.md 失敗：$...
+153: }
+154: }, 500);
+155: }
+156: 
+157: // 對每個 workspace folder 分別建立 RelativePattern watcher（multi-root 最可靠作法）
+158: function registerTodoWatchers(folders: readonly vscode.WorkspaceFolder...
+159: for (const folder of folders) {
+160: const pattern = new vscode.RelativePattern(folder, 'AmiClawToClaudeToD...
+161: const w = vscode.workspace.createFileSystemWatcher(pattern, false, fal...
+162: w.onDidCreate(processTodoFile);
+163: w.onDidChange(processTodoFile);
+164: context.subscriptions.push(w);
+165: todoLog.appendLine(`[init] 監聽 ${folder.uri.fsPath}/AmiClawToClaudeToDo...
+166: }
+167: }
+168: 
+169: registerTodoWatchers(vscode.workspace.workspaceFolders ?? []);
+170: 
+171: // 若之後動態加入 workspace folder，也自動加 watcher
+172: context.subscriptions.push(
+173: vscode.workspace.onDidChangeWorkspaceFolders((e) => {
+174: registerTodoWatchers(e.added);
+175: })
+176: );
+177: 
+178: // 手動命令備用：Command Palette → "AmiClaw: 執行 AmiClawToClaudeToDo.md"
+179: context.subscriptions.push(
+180: vscode.commands.registerCommand('amiAiClaw.runTodoFile', async () => {
+181: const folders = vscode.workspace.workspaceFolders ?? [];
+182: for (const folder of folders) {
+183: const uri = vscode.Uri.joinPath(folder.uri, 'AmiClawToClaudeToDo.md');
+184: try {
+185: await vscode.workspace.fs.stat(uri);   // 確認檔案存在
+186: await processTodoFile(uri);
+187: return;
+188: } catch { /* 此 folder 沒有該檔案，繼續找下一個 */ }
+189: }
+190: vscode.window.showWarningMessage('找不到 AmiClawToClaudeToDo.md（請放在任一 wor...
+191: })
+192: );
+193: 
+194: context.subscriptions.push(
+195: vscode.window.registerTreeDataProvider('amiAiClaw.openChat', sessionsP...
+196: );
+197: 
+198: // Wire up callback so webview updates propagate to the sidebar
+199: OllamaChatPanel.onSessionsChanged = (sessions: ChatSessionInfo[], acti...
+200: context.globalState.update('amiAiClaw.sessions', sessions);
+201: context.globalState.update('amiAiClaw.activeSessionId', activeId);
+202: sessionsProvider.refresh();
+203: };
+204: 
+205: context.subscriptions.push(
+206: vscode.commands.registerCommand('amiAiClaw.chat', () => {
+207: OllamaChatPanel.createOrShow(context);
+208: })
+209: );
+210: 
+211: // ➕ New chat (view title button)
+212: context.subscriptions.push(
+213: vscode.commands.registerCommand('amiAiClaw.newChatSession', () => {
+214: openAndSend(context, { type: 'newChatSession' });
+215: })
+216: );
+217: 
+218: // Click on a tree item → switch to that session
+219: context.subscriptions.push(
+220: vscode.commands.registerCommand('amiAiClaw.switchChatSession', (sessio...
+221: openAndSend(context, { type: 'switchChatSessionFromHost', sessionId })...
+222: })
+223: );
+224: 
+225: // Rename (context menu)
+226: context.subscriptions.push(
+227: vscode.commands.registerCommand('amiAiClaw.renameChatSession', async (...
+228: const title = await vscode.window.showInputBox({ prompt: '請輸入聊天標題', va...
+229: if (!title || !title.trim()) { return; }
+230: OllamaChatPanel.currentPanel?.postMessageToWebview({ type: 'renameChat...
+231: })
+232: );
+233: 
+234: // Delete (context menu)
+235: context.subscriptions.push(
+236: vscode.commands.registerCommand('amiAiClaw.deleteChatSession', async (...
+237: const confirm = await vscode.window.showWarningMessage(
+238: `刪除「${session?.title || '聊天'}」？此動作無法復原。`,
+239: { modal: true }, '刪除'
+240: );
+241: if (confirm !== '刪除') { return; }
+242: OllamaChatPanel.currentPanel?.postMessageToWebview({ type: 'deleteChat...
+243: })
+244: );
+245: 
+246: // Right-click on file/folder in Explorer or Editor → send to chat
+247: context.subscriptions.push(
+248: vscode.commands.registerCommand('amiAiClaw.sendToChat', async (uri: vs...
+249: await OllamaChatPanel.createOrShow(context);
+250: const uris = allUris && allUris.length > 0 ? allUris : (uri ? [uri] : ...
+251: if (uris.length > 0) {
+252: await OllamaChatPanel.sendUrisToChat(uris);
+253: }
+254: })
+255: );
+256: 
+257: // 聚焦輸入框 (快捷鍵 Ctrl+L)
+258: context.subscriptions.push(
+259: vscode.commands.registerCommand('amiAiClaw.focusInput', async () => {
+260: await OllamaChatPanel.createOrShow(context);
+261: OllamaChatPanel.currentPanel?.postMessageToWebview({ type: 'focusInput...
+262: })
+263: );
+264: 
+265: // 顯示 Agent 工具呼叫稽核日誌
+266: context.subscriptions.push(
+267: vscode.commands.registerCommand('amiAiClaw.showAuditLog', () => {
+268: if (OllamaChatPanel.currentPanel) {
+269: OllamaChatPanel.currentPanel.showAuditLog();
+270: } else {
+271: // 未開啟面板時，直接從 globalState 讀取
+272: type AuditEntry = { ts: number; session: string; tool: string; argsSni...
+273: const entries = context.globalState.get<AuditEntry[]>('amiAiClaw.audit...
+274: if (entries.length === 0) {
+275: vscode.window.showInformationMessage('稽核日誌為空 — 尚未有 Agent 工具呼叫記錄');
+276: return;
+277: }
+278: const items = entries.slice().reverse().slice(0, 200).map(e => ({
+279: label: `${e.error ? '❌' : '✅'} ${e.tool}`,
+280: description: new Date(e.ts).toLocaleString('zh-TW'),
+281: detail: e.argsSnippet,
+282: }));
+283: void vscode.window.showQuickPick(items, {
+284: title: `稽核日誌（共 ${entries.length} 筆工具呼叫）`,
+285: placeHolder: '工具呼叫歷程…',
+286: });
+287: }
+288: })
+289: );
+290: 
+291: // Jira 快速指令 (Ctrl+Shift+J)
+292: context.subscriptions.push(
+293: vscode.commands.registerCommand('amiAiClaw.jira', async () => {
+294: type JiraAction = { label: string; description: string; id: string };
+295: const actions: JiraAction[] = [
+296: { label: '$(search)  搜尋我的 Issues', description: 'assignee=currentUser(...
+297: { label: '$(eye)  待 Review Issues', description: 'status In Review / C...
+298: { label: '$(person)  依指定人搜尋', description: '輸入 assignee displayName', ...
+299: { label: '$(list-filter)  JQL 自訂搜尋', description: '直接輸入 JQL 語句', id: '...
+300: { label: '$(tag)  查詢特定 Issue', description: '輸入 Issue Key（如 BIOS-123）'...
+301: { label: '$(clock)  記錄工時', description: '選 Issue Key + 時間（如 16h）', id:...
+302: { label: '$(add)  建立 Issue', description: '開啟建立 Issue 面板', id: 'create...
+303: { label: '$(sync)  轉換 Issue 狀態', description: '輸入 Issue Key 後開啟轉換面板', ...
+304: ];
+305: 
+306: const picked = await vscode.window.showQuickPick(actions, {
+307: title: 'Jira 快速指令',
+308: placeHolder: '選擇 Jira 操作…',
+309: matchOnDescription: true,
+310: });
+311: if (!picked) { return; }
+312: 
+313: let prompt = '';
+314: 
+315: switch (picked.id) {
+316: case 'mine':
+317: prompt = '列出我名下所有未完成的 Jira Issues（使用 jira_search，jql="assignee=current...
+318: break;
+319: 
+320: case 'review': {
+321: prompt = '列出目前待 Review 的 Jira Issues（使用 jira_search，jql="status IN (\\...
+322: break;
+323: }
+324: 
+325: case 'assignee': {
+326: const name = await vscode.window.showInputBox({ prompt: '輸入指派人名稱（displ...
+327: if (!name) { return; }
+328: prompt = `列出指派給「${name}」的所有 Jira Issues（使用 jira_search，assignee="${nam...
+329: break;
+330: }
+331: 
+332: case 'jql': {
+333: const jql = await vscode.window.showInputBox({ prompt: '輸入 JQL 查詢語句', ...
+334: if (!jql) { return; }
+335: prompt = `使用以下 JQL 搜尋 Jira Issues 並以清單顯示：${jql}`;
+336: break;
+337: }
+338: 
+339: case 'fetch': {
+340: const key = await vscode.window.showInputBox({ prompt: '輸入 Jira Issue ...
+341: if (!key) { return; }
+342: prompt = `立即呼叫 jira_fetch 取得 ${key.trim().toUpperCase()} 的完整詳情並顯示。`;
+343: break;
+344: }
+345: 
+346: case 'logtime': {
+347: const ltKey = await vscode.window.showInputBox({ prompt: '輸入 Jira Issu...
+348: if (!ltKey) { return; }
+349: const ltTime = await vscode.window.showInputBox({ prompt: '輸入工時', plac...
+350: if (!ltTime) { return; }
+351: const ltDateOptions = ['今天 (today)', '昨天 (yesterday)', '自訂日期…'];
+352: const ltDatePick = await vscode.window.showQuickPick(ltDateOptions, { ...
+353: if (!ltDatePick) { return; }
+354: let ltDate = 'today';
+355: if (ltDatePick === '昨天 (yesterday)') { ltDate = 'yesterday'; }
+356: else if (ltDatePick === '自訂日期…') {
+357: const d = await vscode.window.showInputBox({ prompt: '輸入日期 (YYYY-MM-DD...
+358: if (!d) { return; }
+359: ltDate = d.trim();
+360: }
+361: const ltComment = await vscode.window.showInputBox({ prompt: '備註（可空白）'...
+362: prompt = `請立即呼叫 jira_log_time，記錄 ${ltKey.trim().toUpperCase()} 的工時：tim...
+363: break;
+364: }
+365: 
+366: case 'create':
+367: prompt = '請立即呼叫 jira_create 開啟 Jira 建立 Issue 面板。';
+368: break;
+369: 
+370: case 'transition': {
+371: const tKey = await vscode.window.showInputBox({ prompt: '輸入 Jira Issue...
+372: if (!tKey) { return; }
+373: prompt = `請立即呼叫 jira_transition 開啟 ${tKey.trim().toUpperCase()} 的狀態轉換面...
+374: break;
+375: }
+376: 
+377: default: return;
+378: }
+379: 
+380: if (prompt) {
+381: openAndSend(context, { type: 'agentSend', prompt });
+382: }
+383: })
+384: );
+385: 
+386: // UEFI Code Review 快速指令
+387: context.subscriptions.push(
+388: vscode.commands.registerCommand('amiAiClaw.uefiCodeReview', async () =...
+389: type ReviewInput = { label: string; description: string; id: string };
+390: const inputs: ReviewInput[] = [
+391: { label: '$(git-commit)  特定 Commit', description: '輸入 Commit SHA', id:...
+392: { label: '$(git-pull-request)  Staged Changes', description: 'git add ...
+393: { label: '$(diff)  Unstaged Changes', description: '工作區未 stage 的修改', i...
+394: { label: '$(git-branch)  Diff Range', description: '例：HEAD~3..HEAD', i...
+395: { label: '$(file-code)  Patch 檔案', description: '指定 .patch 檔案路徑', id: ...
+396: { label: '$(file)  指定檔案', description: '指定一個或多個原始檔', id: 'files' },
+397: { label: '$(folder)  Folder Diff (ORG vs MOD)', description: '比較兩個資料夾'...
+398: ];
+399: 
+400: const picked = await vscode.window.showQuickPick(inputs, {
+401: title: 'UEFI Code Review — 選擇輸入來源',
+402: placeHolder: '選擇要 review 的內容…',
+403: matchOnDescription: true,
+404: });
+405: if (!picked) { return; }
+406: 
+407: let target = '';
+408: switch (picked.id) {
+409: case 'commit': {
+410: const sha = await vscode.window.showInputBox({ prompt: '輸入 Commit SHA'...
+411: if (!sha) { return; }
+412: target = `the changes introduced in this commit ID: ${sha.trim()}`;
+413: break;
+414: }
+415: case 'staged':    target = 'the staged changes'; break;
+416: case 'unstaged':  target = 'the unstaged changes'; break;
+417: case 'range': {
+418: const range = await vscode.window.showInputBox({ prompt: '輸入 diff rang...
+419: if (!range) { return; }
+420: target = `the changes in the diff range ${range.trim()}`;
+421: break;
+422: }
+423: case 'patch': {
+424: const uris = await vscode.window.showOpenDialog({ filters: { 'Patch fi...
+425: if (!uris || uris.length === 0) { return; }
+426: target = `this ${uris[0].fsPath}`;
+427: break;
+428: }
+429: case 'files': {
+430: const f = await vscode.window.showInputBox({ prompt: '輸入檔案路徑（以空格分隔）', ...
+431: if (!f) { return; }
+432: target = f.trim();
+433: break;
+434: }
+435: case 'folder': {
+436: const mod = await vscode.window.showInputBox({ prompt: '修改後資料夾路徑 (MOD)...
+437: if (!mod) { return; }
+438: const org = await vscode.window.showInputBox({ prompt: '原始資料夾路徑 (ORG)'...
+439: if (!org) { return; }
+440: target = `by taking the diff between the ${mod.trim()} and ${org.trim(...
+441: break;
+442: }
+443: default: return;
+444: }
+445: 
+446: // SourceTag
+447: const tagOptions = [
+448: { label: 'AptioV (預設)', description: 'AMI Aptio V UEFI BIOS', id: 'Apt...
+449: { label: 'AptioV + Unittesting', description: 'AptioV 含 Unit Test', id...
+450: { label: 'AptioPE', description: '純 UEFI/EDK2，無 AMI 建置系統', id: 'AptioP...
+451: { label: 'AMI Porting Changes Only', description: '只看 AMI porting 部分',...
+452: ];
+453: const tagPick = await vscode.window.showQuickPick(tagOptions, { title:...
+454: if (!tagPick) { return; }
+455: 
+456: // Jira ID（可選）
+457: const jiraId = await vscode.window.showInputBox({ prompt: 'Jira ID（可留空...
+458: 
+459: // 組合 prompt
+460: const sourceTagLine = tagPick.id ? `\nSourceTag: ${tagPick.id}` : '';
+461: const jiraLine = jiraId.trim() ? `\nJira Id: ${jiraId.trim()}` : '';
+462: const amiPortingLine = tagPick.id === '' ? ' AMI porting changes only'...
+463: const prompt = `Perform a code review of ${target}${amiPortingLine}.${...
+464: 
+465: // externalAgentSend 會在 webview 側先呼叫 setInteractionMode('agent')，確保從 T...
+466: openAndSend(context, { type: 'externalAgentSend', prompt });
+467: })
+468: );
+469: 
+470: context.subscriptions.push(
+471: vscode.commands.registerCommand('amiAiClaw.debugWriteMemory', async ()...
+472: const example = `# Demo MEMORY\n\nThis is a demo memory written at ${n...
+473: try {
+474: const mem = await import('./memdir/memdir');
+475: await mem.saveMemoryIndex(example);
+476: vscode.window.showInformationMessage('已寫入 MEMORY.md 至 memory 目錄（示範）');
+477: } catch (e) {
+478: vscode.window.showErrorMessage('寫入 MEMORY.md 失敗：' + (e instanceof Erro...
+479: }
+480: })
+481: );
+482: 
+483: context.subscriptions.push(
+484: vscode.commands.registerCommand('amiAiClaw.migrateMemory', async () =>...
+485: try {
+486: const mem = await import('./memdir/memdir');
+487: const res = await mem.migrateGlobalIndexToWorkspace();
+488: if (res.migrated) {
+489: vscode.window.showInformationMessage(`Memory migration completed (${re...
+490: } else {
+491: vscode.window.showInformationMessage(`Memory migration skipped: ${res....
+492: }
+493: } catch (e) {
+494: vscode.window.showErrorMessage('Memory migration failed: ' + (e instan...
+495: }
+496: })
+497: );
+498: 
+499: context.subscriptions.push(
+500: vscode.commands.registerCommand('amiAiClaw.showMemoryPath', async () =...
+501: try {
+502: const paths = await import('./memdir/paths');
+503: const fs = await import('fs/promises');
+504: const wsDir = paths.getWorkspaceMemoryDir();
+505: const defDir = paths.getDefaultMemoryDir();
+506: let wsExists = false;
+507: let defExists = false;
+508: if (wsDir) {
+509: try { await fs.stat(wsDir); wsExists = true; } catch {}
+510: }
+511: try { await fs.stat(defDir); defExists = true; } catch {}
+512: const msg = `workspace: ${wsDir ?? '<none>'} (exists:${wsExists})\ndef...
+513: void vscode.window.showInformationMessage(msg, { modal: false } as any...
+514: } catch (e) {
+515: vscode.window.showErrorMessage('Cannot determine memory paths: ' + (e ...
+516: }
+517: })
+518: );
+519: 
+520: context.subscriptions.push(
+521: vscode.commands.registerCommand('amiAiClaw.showFileCount', async () =>...
+522: try {
+523: if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFo...
+524: vscode.window.showInformationMessage('No workspace folder is open.');
+525: return;
+526: }
+527: // exclude common large folders
+528: const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**}'...
+529: const uris = await vscode.workspace.findFiles('**/*', exclude);
+530: const count = uris.length;
+531: const msg = `Workspace file count: ${count.toLocaleString()} (excludes...
+532: const chan = vscode.window.createOutputChannel('AmiClaw');
+533: chan.appendLine(msg);
+534: chan.show(true);
+535: vscode.window.showInformationMessage(msg);
+536: } catch (e) {
+537: vscode.window.showErrorMessage('Failed to count files: ' + (e instance...
+538: }
+539: })
+540: );
+541: 
+542: context.subscriptions.push(
+543: vscode.commands.registerCommand('amiAiClaw.execFileCountShell', async ...
+544: try {
+545: if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFo...
+546: vscode.window.showInformationMessage('No workspace folder is open.');
+547: return;
+548: }
+549: const activeUri = vscode.window.activeTextEditor?.document.uri;
+550: const wf = (activeUri && vscode.workspace.getWorkspaceFolder(activeUri...
+551: const root = wf.uri.fsPath;
+552: let cmd: string;
+553: if (process.platform === 'win32') {
+554: // Use PowerShell for reliable recursive file count
+555: cmd = `powershell -NoProfile -Command "(Get-ChildItem -Path '${root.re...
+556: } else {
+557: // POSIX: use ls -R | wc -l
+558: cmd = `sh -c "ls -R '${root.replace(/'/g, "'\\''")}' | wc -l"`;
+559: }
+560: 
+561: const oc = vscode.window.createOutputChannel('AmiClaw');
+562: oc.appendLine(`Running: ${cmd}`);
+563: oc.show(true);
+564: try {
+565: const { stdout, stderr } = await exec(cmd, { windowsHide: true, maxBuf...
+566: if (stderr && String(stderr).trim()) oc.appendLine(String(stderr));
+567: const n = parseInt(String(stdout).trim().split(/\r?\n/).pop() || '', 1...
+568: if (!Number.isNaN(n)) {
+569: const msg = `Shell file count: ${n.toLocaleString()} (path: ${root})`;
+570: oc.appendLine(msg);
+571: vscode.window.showInformationMessage(msg);
+572: return;
+573: }
+574: } catch (e) {
+575: oc.appendLine('Shell command failed: ' + (e instanceof Error ? e.messa...
+576: }
+577: 
+578: // Fallback to JS counting via workspace.findFiles
+579: oc.appendLine('Falling back to workspace.findFiles count...');
+580: const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**}'...
+581: const uris = await vscode.workspace.findFiles('**/*', exclude);
+582: const count = uris.length;
+583: const msg = `Fallback file count: ${count.toLocaleString()} (excludes ...
+584: oc.appendLine(msg);
+585: vscode.window.showInformationMessage(msg);
+586: } catch (e) {
+587: vscode.window.showErrorMessage('Failed to execute file-count: ' + (e i...
+588: }
+589: })
+590: );
+591: }
+592: 
+593: export function deactivate() {}

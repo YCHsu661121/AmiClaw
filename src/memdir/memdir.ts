@@ -112,4 +112,23 @@ export default {
   readMemoryIndex,
   saveMemoryIndex,
   listMemoryFiles,
+  loadRulesLayer,
 };
+
+const RULES_NAME = 'RULES.md';
+
+/**
+ * 載入「規則層」——每次請求必常注入的專案規範 / 編碼規則 / flow 描述。
+ * 搜尋順序： workspace/.amiclaw/RULES.md → ~/.amiclaw/RULES.md
+ */
+export async function loadRulesLayer(): Promise<string> {
+  // 1. 各工作區根目錄 .amiclaw/RULES.md
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  for (const folder of folders) {
+    const candidate = path.join(folder.uri.fsPath, '.amiclaw', RULES_NAME);
+    try { return (await fs.readFile(candidate, 'utf8')).trim(); } catch { /* 試下一個 */ }
+  }
+  // 2. 全域： ~/.amiclaw/RULES.md
+  try { return (await fs.readFile(path.join(paths.getMemoryBaseDir(), RULES_NAME), 'utf8')).trim(); } catch {}
+  return '';
+}

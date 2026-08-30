@@ -67,6 +67,7 @@ export class OllamaChatPanel {
   private _webviewSessionsPersistTimer: NodeJS.Timeout | null = null;
   private _latestWebviewSessions: unknown = null; // dispose 時強制 flush 用
   private _ltmCache = '';  // eager-loaded at init; avoids async race in getLongTermMemory()
+  private _rulesCache = '';  // eager-loaded RULES.md (layer-1, always injected)
   // ── 工作檔對話記錄模式 ────────────────────────────────────────────────────────
   private _todoModePrompt: string | undefined;   // 非 undefined 表示目前在 todo 模式
   private _todoAccumulator = '';                  // 累積 agentChunk / assistant 文字
@@ -423,6 +424,7 @@ export class OllamaChatPanel {
         getChatHistory: () => this._chatHistory,
         getActiveSessionId: () => this._activeSessionId,
         getLongTermMemory: () => this.getLongTermMemory(),
+        getProjectRules: () => this._rulesCache,
         trackUsage: (m, t, mul, tc) => this.trackUsage(m, t, mul, tc),
         trackLatency: (m, ms) => this.trackLatency(m, ms),
         ensureModelReady: (url, mdl) => this._queryEngine.ensureModelReady(url, mdl),
@@ -434,6 +436,7 @@ export class OllamaChatPanel {
         expandFileMentions: (p) => this._queryEngine.expandFileMentions(p),
         getSessionNotes: () => loadSessionNotes(),
         onSessionNotesUpdate: (notes) => saveSessionNotes(notes),
+        notifyWaOwner: (text) => this._wa.notifyOwner(text),
       },
       {
         getOllamaUrls,
@@ -507,6 +510,8 @@ export class OllamaChatPanel {
         this._ltmCache = fileLtm.trim()
           ? fileLtm
           : (this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '');
+        // Load rules layer (always-injected project conventions)
+        try { this._rulesCache = await memdir.loadRulesLayer(); } catch { this._rulesCache = ''; }
       } catch {
         this._ltmCache = this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
       }

@@ -1,0 +1,1020 @@
+   1| // Copyright (c) 2026 YCHsu. All rights reserved.
+   2| // Licensed under the MIT License.
+   3| import * as vscode from 'vscode';
+   4| import { getHtmlForWebview } from './webview/WebviewRenderer';
+   5| import * as http from 'http';
+   6| import * as https from 'https';
+   7| import * as path from 'path';
+   8| import * as fs from 'fs';
+   9| import * as crypto from 'crypto';
+  10| import * as os from 'os';
+  11| import { execSync } from 'child_process';
+  12| import { URL } from 'url';
+  13| import { WhatsAppManager } from './integrations/WhatsAppManager';
+  14| import { HeartbeatService } from './services/HeartbeatService';
+  15| import { ToolExecutor, type ToolPermissionDiff } from './tools/ToolExecutor';
+  16| import { ALL_TOOLS, getToolIcon, formatToolTitle } from './tools/ToolRegistry';
+  17| import { TeamManager } from './team/TeamManager';
+  18| import { DebateEngine } from './debate/DebateEngine';
+  19| import { QueryEngine, QueryEngineServices } from './chat/QueryEngine';
+  20| import * as memdir from './memdir/memdir';
+  21| import { AgentExecutor } from './chat/AgentExecutor';
+  22| import type { AgentExecutorServices, AgentExecutorChatMessage } from './chat/AgentExecutor';
+  23| import { loadSessionNotes, saveSessionNotes } from './services/SessionNotes';
+  24| import { PanelLike, WebviewViewAdapter } from './panels/ChatPanelAdapter';
+  25| import { setAutoPilotActive, setAutoPilotEnabledBySetting, isAutoPilotActive } from './autopilot';
+  26| import { getCurrentContextDepth, invalidateWorkspaceDigestCache } from './context/WorkspaceDigest';
+  27| 
+  28| // ── PanelLike：WebviewPanel 與 WebviewView 共用介面（搬到 ./panels/ChatPanelAdapter） ─
+  29| 
+  30| // (Copied implementation from top-level file)
+  31| export class OllamaChatPanel {
+  32|   public static currentPanel: OllamaChatPanel | undefined;
+  33|   public static readonly viewType = 'amiAiClaw.chat';
+  34|   private static _log: vscode.OutputChannel;
+  35|   private static _diag: vscode.OutputChannel;
+  36|   /** Called by extension.ts to keep sidebar in sync */
+  37|   public static onSessionsChanged?: (sessions: { id: string; title: string }[], activeId: string) => void;
+  38|   /** 工作檔對話記錄回呼：extension.ts 訂閱後，每次 AgentExecutor / QueryEngine 完成都會收到 { prompt, response } */
+  39|   public static onTodoComplete?: (prompt: string, response: string) => void;
+  40| 
+  41|   private readonly _panel: PanelLike;
+  42|   private readonly _disposables: vscode.Disposable[] = [];
+  43|   private _disposed = false;
+  44|   private _streamMode = false;
+  45|   /** WhatsApp state and messaging – managed by WhatsAppManager */
+  46|   private _wa!: WhatsAppManager;
+  47|   private _team: TeamManager;
+  48|   private _debate: DebateEngine;
+  49|   private _tools: ToolExecutor;
+  50|   /** QueryEngine: handleSend, buildSystemContent, summarizeText, fetchModels, ensureModelReady */
+  51|   private _queryEngine!: QueryEngine;
+  52|   /** AgentExecutor: handleAgent, startAuto, agent/auto state */
+  53|   private _agentExecutor!: AgentExecutor;
+  54|   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  55|   private _context!: vscode.ExtensionContext;
+  56|   private _chatHistories: Record<string, ChatMessage[]> = { default: [] };
+  57|   private _activeSessionId = 'default';
+  58|   private _chatHistory: ChatMessage[] = this._chatHistories.default;
+  59|   /** 使用量統計：各 model 累計 token 與 Copilot 費率 */
+  60|   private _usageStats: Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }
+  61|   /** 延遲記錄：每次請求完成時寫入 { model, ms, ts } */
+  62|   private _latencyLog: Array<{ model: string; ms: number; ts: number }> = [];
+  63|   // 短期對話自動持久化相關
+  64|   private _chatDirty = false;
+  65|   private _persistTimer: NodeJS.Timeout | null = null;
+  66|   private _agentPersistTimer: NodeJS.Timeout | null = null;
+  67|   private _webviewSessionsPersistTimer: NodeJS.Timeout | null = null;
+  68|   private _latestWebviewSessions: unknown = null; // dispose 時強制 flush 用
+  69|   private _ltmCache = '';  // eager-loaded at init; avoids async race in getLongTermMemory()
+  70|   private _rulesCache = '';  // eager-loaded RULES.md (layer-1, always injected)
+  71|   // ── 工作檔對話記錄模式 ────────────────────────────────────────────────────────
+  72|   private _todoModePrompt: string | undefined;   // 非 undefined 表示目前在 todo 模式
+  73|   private _todoAccumulator = '';                  // 累積 agentChunk / assistant 文字
+  74|   private _persistDebounceMs = 500;
+  75|   private _maxMessagesPerSession = 500;
+  76| 
+  77|   private _readyPromise: Promise<void>;
+  78|   private _resolveReady!: () => void;
+  79|   private _isWebviewReady = false;
+  80|   private _messageQueue: object[] = []; // buffer messages until webviewReady is received
+  81| 
+  82|   public async waitForWebviewReady(): Promise<void> {
+  83|     return this._readyPromise;
+  84|   }
+  85| 
+  86|   private static formatError(error: unknown): string {
+  87|     if (error instanceof Error) {
+  88|       return error.stack || error.message;
+  89|     }
+  90|     if (typeof error === 'string') {
+  91|       return error;
+  92|     }
+  93|     try {
+  94|       return JSON.stringify(error);
+  95|     } catch {
+  96|       return String(error);
+  97|     }
+  98|   }
+  99| 
+ 100|   private static getDiagnosticChannel(): vscode.OutputChannel {
+ 101|     if (!OllamaChatPanel._diag) {
+ 102|       OllamaChatPanel._diag = vscode.window.createOutputChannel('AmiClaw Diagnostics');
+ 103|     }
+ 104|     return OllamaChatPanel._diag;
+ 105|   }
+ 106| 
+ 107|   public static reportDiagnostic(msg: string, error?: unknown): void {
+ 108|     const channel = OllamaChatPanel.getDiagnosticChannel();
+ 109|     channel.appendLine(`[${new Date().toISOString()}] ${msg}`);
+ 110|     if (error !== undefined) {
+ 111|       for (const line of OllamaChatPanel.formatError(error).split(/\r?\n/)) {
+ 112|         channel.appendLine(`  ${line}`);
+ 113|       }
+ 114|       console.error(`[AmiClaw] ${msg}`, error);
+ 115|     }
+ 116|   }
+ 117| 
+ 118|   public static revealDiagnostics(preserveFocus = true): void {
+ 119|     OllamaChatPanel.getDiagnosticChannel().show(preserveFocus);
+ 120|   }
+ 121| 
+ 122|   static log(msg: string): void {
+ 123|     if (!vscode.workspace.getConfiguration('amiAiClaw').get<boolean>('enableDebugLog', false)) { return; }
+ 124|     if (!OllamaChatPanel._log) {
+ 125|       OllamaChatPanel._log = vscode.window.createOutputChannel('AmiClaw');
+ 126|     }
+ 127|     OllamaChatPanel._log.appendLine(`[${new Date().toISOString()}] ${msg}`);
+ 128|   }
+ 129| 
+ 130|   // 建立一個 Proxy 用以攔截陣列變更並標記為需要儲存
+ 131|   private createHistoryProxy(arr: ChatMessage[], sessionId: string): ChatMessage[] {
+ 132|     const that = this;
+ 133|     const target = Array.isArray(arr) ? arr : [];
+ 134|     const handler: ProxyHandler<ChatMessage[]> = {
+ 135|       set(t, prop, value) {
+ 136|         const res = Reflect.set(t, prop, value);
+ 137|         // 設定長度或數字索引時視為修改
+ 138|         if (typeof prop === 'string' && (prop === 'length' || /^\d+$/.test(prop))) {
+ 139|           that._chatDirty = true;
+ 140|           that.schedulePersistChatHistories();
+ 141|         }
+ 142|         return res;
+ 143|       },
+ 144|       get(t, prop, receiver) {
+ 145|         const v = Reflect.get(t, prop, receiver);
+ 146|         if (typeof v === 'function') {
+ 147|           const name = String(prop);
+ 148|           if (['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'fill', 'copyWithin'].includes(name)) {
+ 149|             return function (...args: any[]) {
+ 150|               const r = (Array.prototype as any)[name].apply(t, args);
+ 151|               that._chatDirty = true;
+ 152|               that.schedulePersistChatHistories();
+ 153|               return r;
+ 154|             };
+ 155|           }
+ 156|         }
+ 157|         return v;
+ 158|       }
+ 159|     };
+ 160|     const proxy = new Proxy(target, handler) as ChatMessage[];
+ 161|     (proxy as any).__isProxy = true;
+ 162|     return proxy;
+ 163|   }
+ 164| 
+ 165|   // 包裝所有已存在的 histories 為 proxy
+ 166|   private wrapAllHistories(): void {
+ 167|     for (const [id, arr] of Object.entries(this._chatHistories)) {
+ 168|       if (!arr || !(arr as any).__isProxy) {
+ 169|         this._chatHistories[id] = this.createHistoryProxy(arr || [], id);
+ 170|       }
+ 171|     }
+ 172|     // 確保目前 active session 指向 proxy
+ 173|     if (!this._chatHistories[this._activeSessionId]) {
+ 174|       this._chatHistories[this._activeSessionId] = this.createHistoryProxy([], this._activeSessionId);
+ 175|     }
+ 176|     this._chatHistory = this._chatHistories[this._activeSessionId];
+ 177|   }
+ 178| 
+ 179|   private schedulePersistChatHistories(): void {
+ 180|     if (this._persistTimer) { clearTimeout(this._persistTimer); }
+ 181|     this._persistTimer = setTimeout(() => { void this.persistChatHistories(); }, this._persistDebounceMs);
+ 182|   }
+ 183| 
+ 184|   private async persistChatHistories(): Promise<void> {
+ 185|     if (!this._chatDirty) return;
+ 186|     try {
+ 187|       const copy: Record<string, ChatMessage[]> = {};
+ 188|       for (const [sid, arr] of Object.entries(this._chatHistories)) {
+ 189|         const msgs = Array.isArray(arr) ? arr.slice(-this._maxMessagesPerSession) : [];
+ 190|         copy[sid] = msgs.map(m => ({ role: m.role, content: (m.content ?? '').slice(0, 10000) }));
+ 191|       }
+ 192|       // 改用 workspaceState 实現工作區隔離
+ 193|       await this._context.workspaceState.update('amiAiClaw.chatHistories', copy);
+ 194|       this._chatDirty = false;
+ 195|     } catch (e) {
+ 196|       OllamaChatPanel.log('persistChatHistories error: ' + (e instanceof Error ? e.message : String(e)));
+ 197|     }
+ 198|   }
+ 199| 
+ 200|   private scheduleWebviewSessionsPersist(data: unknown): void {
+ 201|     this._latestWebviewSessions = data;
+ 202|     if (this._webviewSessionsPersistTimer) { clearTimeout(this._webviewSessionsPersistTimer); }
+ 203|     this._webviewSessionsPersistTimer = setTimeout(() => {
+ 204|       void this._context.workspaceState.update('amiAiClaw.webviewSessions', data);
+ 205|     }, 1500);
+ 206|   }
+ 207| 
+ 208|   private scheduleAgentPersist(): void {
+ 209|     if (this._agentPersistTimer) { clearTimeout(this._agentPersistTimer); }
+ 210|     this._agentPersistTimer = setTimeout(() => { void this.persistAgentMessages(); }, 2000);
+ 211|   }
+ 212| 
+ 213|   private async persistAgentMessages(): Promise<void> {
+ 214|     try {
+ 215|       const msgs = this._agentExecutor.getAgentMessagesBySession();
+ 216|       const copy: Record<string, { role: string; content: string | null }[]> = {};
+ 217|       for (const [sid, arr] of Object.entries(msgs)) {
+ 218|         if (!Array.isArray(arr) || arr.length === 0) continue;
+ 219|         // 只儲存最近 60 則，且不包含工具呼叫結果（避免儲存過大）
+ 220|         copy[sid] = arr.slice(-60)
+ 221|           .filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
+ 222|           .map(m => ({ role: m.role, content: (m.content ?? '').slice(0, 8000) }));
+ 223|       }
+ 224|       await this._context.workspaceState.update('amiAiClaw.agentMessages', copy);
+ 225|     } catch (e) {
+ 226|       OllamaChatPanel.log('persistAgentMessages error: ' + (e instanceof Error ? e.message : String(e)));
+ 227|     }
+ 228|   }
+ 229| 
+ 230|   /** 記錄一次 API 呼叫的 token 使用量，並推送更新到前端。 */
+ 231|   private trackUsage(model: string, tokens: number, multiplier = '', toolCall = false): void {
+ 232|     if (!toolCall && (!tokens || tokens <= 0)) { return; }
+ 233|     const isCopilot = model.startsWith('copilot::') || model.startsWith('copilot/');
+ 234|     const key = model.replace(/^copilot[::\/]+/, '');
+ 235|     const existing = this._usageStats[key];
+ 236|     if (existing) {
+ 237|       existing.tokens += tokens;
+ 238|       if (tokens > 0) existing.calls = (existing.calls || 0) + 1;
+ 239|       if (toolCall) existing.toolCalls = (existing.toolCalls || 0) + 1;
+ 240|     } else {
+ 241|       this._usageStats[key] = { tokens, isCopilot, multiplier, calls: tokens > 0 ? 1 : 0, toolCalls: toolCall ? 1 : 0 };
+ 242|     }
+ 243|     // 持久化累計值
+ 244|     const saved = this._context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: nu
+ 245|     const sk = saved[key];
+ 246|     if (sk) { sk.tokens += tokens; if (tokens > 0) sk.calls = (sk.calls || 0) + 1; if (toolCall) sk.toolCalls = (sk.toolCalls || 0
+ 247|     else { saved[key] = { tokens, isCopilot, multiplier, calls: tokens > 0 ? 1 : 0, toolCalls: toolCall ? 1 : 0 }; }
+ 248|     this._context.globalState.update('amiAiClaw.usageStats', saved);
+ 249|     this._panel.webview.postMessage({ type: 'usageUpdate', stats: this._usageStats });
+ 250|   }
+ 251| 
+ 252|   /** 記錄一次請求的延遲，並推送到前端。 */
+ 253|   private trackLatency(model: string, ms: number): void {
+ 254|     const key = model.replace(/^copilot[::\/]+/, '');
+ 255|     this._latencyLog.push({ model: key, ms, ts: Date.now() });
+ 256|     if (this._latencyLog.length > 200) { this._latencyLog.shift(); }
+ 257|     this._panel.webview.postMessage({ type: 'latencyUpdate', log: this._latencyLog });
+ 258|   }
+ 259| 
+ 260|   private normalizeConfiguredModelId(modelId: string): string {
+ 261|     return modelId.startsWith('copilot/') ? `copilot::${modelId.slice('copilot/'.length)}` : modelId;
+ 262|   }
+ 263| 
+ 264|   private getProviderId(modelId: string): string {
+ 265|     if (modelId.startsWith('copilot::') || modelId.startsWith('copilot/')) {
+ 266|       return 'copilot';
+ 267|     }
+ 268|     if (modelId.startsWith('openai::')) {
+ 269|       return 'openai';
+ 270|     }
+ 271|     return 'ollama';
+ 272|   }
+ 273| 
+ 274|   private getProviderLabel(providerId: string): string {
+ 275|     switch (providerId) {
+ 276|       case 'copilot':
+ 277|         return 'Copilot';
+ 278|       case 'openai':
+ 279|         return 'OpenAI Compatible';
+ 280|       default:
+ 281|         return 'Ollama';
+ 282|     }
+ 283|   }
+ 284| 
+ 285|   private normalizeModelOptions(
+ 286|     ollamaModels: { id: string; label: string }[],
+ 287|     copilotModels: { id: string; name: string; multiplier: string }[]
+ 288|   ): WebviewModelOption[] {
+ 289|     return [
+ 290|       ...ollamaModels.map((model) => {
+ 291|         const isOai = model.id.startsWith('openai::');
+ 292|         return {
+ 293|           id: model.id,
+ 294|           label: model.label,
+ 295|           provider: isOai ? 'openai' : 'ollama',
+ 296|           providerLabel: isOai ? 'OpenAI Compatible' : 'Ollama',
+ 297|         };
+ 298|       }),
+ 299|       ...copilotModels.map((model) => ({
+ 300|         id: `copilot::${model.id}`,
+ 301|         label: model.name,
+ 302|         provider: 'copilot',
+ 303|         providerLabel: 'Copilot',
+ 304|         multiplier: model.multiplier,
+ 305|       })),
+ 306|     ];
+ 307|   }
+ 308| 
+ 309|   private buildProviderInfo(modelId?: string, models?: WebviewModelOption[]): ProviderInfo {
+ 310|     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+ 311|     const normalizedModelId = this.normalizeConfiguredModelId(modelId ?? cfg.get<string>('model') ?? '');
+ 312|     const providerId = this.getProviderId(normalizedModelId);
+ 313|     const displayName = models?.find((model) => model.id === normalizedModelId)?.label
+ 314|       ?? normalizedModelId.replace(/^copilot::/, '').replace(/^openai::/, '');
+ 315| 
+ 316|     return {
+ 317|       id: providerId,
+ 318|       label: this.getProviderLabel(providerId),
+ 319|       modelId: normalizedModelId,
+ 320|       displayName,
+ 321|     };
+ 322|   }
+ 323| 
+ 324|   private constructor(panel: PanelLike, context: vscode.ExtensionContext) {
+ 325|     this._panel = panel;
+ 326|     // Promise resolves when webview posts 'webviewReady'; callers use waitForWebviewReady()
+ 327|     this._readyPromise = new Promise<void>(resolve => { this._resolveReady = resolve; });
+ 328|     const hbSub = HeartbeatService.getInstance().onTick(() => {
+ 329|       this.broadcastHeartbeat();
+ 330|     });
+ 331|     this._disposables.push(hbSub);
+ 332| 
+ 333|     // WA 定期回報：agent 執行中每 60s 推送一次進度（12 ticks × 5s）
+ 334|     let _hbWaTick = 0;
+ 335|     const hbWaSub = HeartbeatService.getInstance().onTick(() => {
+ 336|       _hbWaTick++;
+ 337|       if (_hbWaTick < 12) return;
+ 338|       _hbWaTick = 0;
+ 339|       const info = HeartbeatService.getInstance().getAgentInfo();
+ 340|       if (!info.running || !this._wa?.connected) return;
+ 341|       const elapsedMin = info.startedAt ? ((Date.now() - info.startedAt) / 60000).toFixed(1) : '?';
+ 342|       const shadowNote = info.shadowRunning ? '（影子督促審查中）' : info.shadowCount > 0 ? `（已督促 ${info.shadowCount} 次）` : '';
+ 343|       this._wa.notifyOwner(`🤖 Agent 進行中 — step ${info.step} | ${elapsedMin}m elapsed | ${info.lastActivity}${shadowNote}`);
+ 344|     });
+ 345|     this._disposables.push(hbWaSub);
+ 346|     HeartbeatService.getInstance().start();
+ 347| 
+ 348| 
+ 349|     this._context = context;
+ 350|     this._tools = new ToolExecutor({
+ 351|       postToWebview: (msg) => this._postToWebview(msg as Record<string, unknown>),
+ 352|       getExtensionContext: () => this._context,
+ 353|       isWaAgentMode: () => this._wa?.agentMode ?? false,
+ 354|       log: (msg) => OllamaChatPanel.log(msg),
+ 355|       getActiveSessionId: () => this._activeSessionId,
+ 356|       handleWhatsAppTool: (name, args) => this._wa.handleTool(name, args),
+ 357|       getAutoPilotServices: () => {
+ 358|         const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+ 359|         const urls = getOllamaUrls(cfg);
+ 360|         const configuredModel = cfg.get<string>('autoPilotClassifierModel') ?? cfg.get<string>('model') ?? 'llama3';
+ 361|         const { url: baseUrl, model } = decodeOllamaModel(configuredModel, urls);
+ 362|         return {
+ 363|           callModel: async (opts: { system: string; user: string }) => {
+ 364|             const t0 = Date.now();
+ 365|             const text = model.startsWith('openai::')
+ 366|               ? (await openaiCompatChatCallStream(baseUrl, model.slice('openai::'.length), [{ role: 'system', content: opts.system
+ 367|               : (await ollamaGenerate(baseUrl, model, `${opts.system}\n\n${opts.user}`)).response;
+ 368|             return { text, durationMs: Date.now() - t0 };
+ 369|           },
+ 370|           log: (msg: string) => OllamaChatPanel.log(`[AutoPilot] ${msg}`),
+ 371|         };
+ 372|       },
+ 373|       getRecentTranscript: () => this._chatHistory.slice(-10).map(m => ({
+ 374|         role: m.role as 'user' | 'assistant' | 'tool',
+ 375|         content: (m.content ?? '').slice(0, 800),
+ 376|       })),
+ 377|     });
+ 378|     // ── QueryEngine ────────────────────────────────────────────────────────────
+ 379|     this._queryEngine = new QueryEngine(
+ 380|       {
+ 381|         postToWebview: (msg) => this._postToWebview(msg as Record<string, unknown>),
+ 382|         log: (msg) => OllamaChatPanel.log(msg),
+ 383|         getChatHistory: () => this._chatHistory,
+ 384|         getActiveSessionId: () => this._activeSessionId,
+ 385|         getLongTermMemory: () => this.getLongTermMemory(),
+ 386|         trackUsage: (m, t, mul, tc) => this.trackUsage(m, t, mul, tc),
+ 387|         trackLatency: (m, ms) => this.trackLatency(m, ms),
+ 388|         switchChatSession: (sid) => this.switchChatSession(sid),
+ 389|       },
+ 390|       {
+ 391|         getOllamaUrls,
+ 392|         decodeOllamaModel,
+ 393|         encodeOllamaModelId,
+ 394|         ollamaDisplayLabel,
+ 395|         ollamaListModels,
+ 396|         fetchOpenAiCompatModels,
+ 397|         ollamaGetContextLength,
+ 398|         ollamaWarmupModel,
+ 399|         ollamaUnloadModel,
+ 400|         ollamaListRunningModels,
+ 401|         ollamaGetRunningModels,
+ 402|         ollamaCheckConnection,
+ 403|         ollamaGenerate,
+ 404|         ollamaGenerateStream,
+ 405|         openaiCompatChatCallStream: openaiCompatChatCallStream as QueryEngineServices['openaiCompatChatCallStream'],
+ 406|         getCopilotMultiplier,
+ 407|         getCopilotMultiplierById,
+ 408|         copilotStreamText,
+ 409|         estimateTokens,
+ 410|         ollamaChatCallStream: ollamaChatCallStream as QueryEngineServices['ollamaChatCallStream'],
+ 411|         executeTool: (name, args) => this.executeTool(name, args),
+ 412|         getToolIcon,
+ 413|         formatToolTitle,
+ 414|         filterSensitiveInfo,
+ 415|         agentTools: ALL_TOOLS,
+ 416|         clearModelCtxCache,
+ 417|       }
+ 418|     );
+ 419|     // ── AgentExecutor ──────────────────────────────────────────────────────────
+ 420|     this._agentExecutor = new AgentExecutor(
+ 421|       {
+ 422|         postToWebview: (msg) => this._postToWebview(msg as Record<string, unknown>),
+ 423|         log: (msg) => OllamaChatPanel.log(msg),
+ 424|         getChatHistory: () => this._chatHistory,
+ 425|         getActiveSessionId: () => this._activeSessionId,
+ 426|         getLongTermMemory: () => this.getLongTermMemory(),
+ 427|         getProjectRules: () => this._rulesCache,
+ 428|         trackUsage: (m, t, mul, tc) => this.trackUsage(m, t, mul, tc),
+ 429|         trackLatency: (m, ms) => this.trackLatency(m, ms),
+ 430|         ensureModelReady: (url, mdl) => this._queryEngine.ensureModelReady(url, mdl),
+ 431|         executeTool: (name, args) => this.executeTool(name, args),
+ 432|         handleInsert: (code) => this.handleInsert(code),
+ 433|         setWaAgentMode: (v) => this._wa.setAgentMode(v),
+ 434|         clearAgentTodos: () => this._tools.clearAgentTodos(),
+ 435|         recordAuditEntry: (tool, args, error) => this._tools.recordAuditEntry(tool, args, error),
+ 436|         expandFileMentions: (p) => this._queryEngine.expandFileMentions(p),
+ 437|         getSessionNotes: () => loadSessionNotes(),
+ 438|         onSessionNotesUpdate: (notes) => saveSessionNotes(notes),
+ 439|         notifyWaOwner: (text) => this._wa.notifyOwner(text),
+ 440|       },
+ 441|       {
+ 442|         getOllamaUrls,
+ 443|         decodeOllamaModel,
+ 444|         ollamaChatCallStream: ollamaChatCallStream as AgentExecutorServices['ollamaChatCallStream'],
+ 445|         openaiCompatChatCallStream: openaiCompatChatCallStream as AgentExecutorServices['openaiCompatChatCallStream'],
+ 446|         copilotChatCallWithCts: copilotChatCallWithCts as AgentExecutorServices['copilotChatCallWithCts'],
+ 447|         ollamaGenerate,
+ 448|         ollamaGetContextLength,
+ 449|         estimateTokens,
+ 450|         getCopilotMultiplierById,
+ 451|         filterSensitiveInfo,
+ 452|         getToolIcon,
+ 453|         formatToolTitle,
+ 454|         agentTools: ALL_TOOLS,
+ 455|       }
+ 456|     );
+ 457|     // Initialise WhatsApp manager (delegates all WA state and messaging)
+ 458|     this._wa = new WhatsAppManager(context, {
+ 459|       onAgentTrigger: (prompt, model) => this._agentExecutor.handleAgent(prompt, model || undefined, true, true),
+ 460|       postToWebview:  (msg) => this._postToWebview(msg as Record<string, unknown>),
+ 461|       requestPermission: (category, description, toolName) => this.requestPermission(category, description, toolName),
+ 462|       isAgentRunning: () => this._agentExecutor.isAgentRunning(),
+ 463|       isDisposed:     () => this._disposed,
+ 464|       log:            (msg) => OllamaChatPanel.log(msg),
+ 465|     });
+ 466|     this._team = new TeamManager({
+ 467|       getWebview: () => this._panel.webview,
+ 468|       getChatHistory: () => this._chatHistory,
+ 469|       setChatHistory: (history) => { this._chatHistory = (history as any)?.__isProxy ? history : this.createHistoryProxy(history ?
+ 470|       getChatHistories: () => this._chatHistories,
+ 471|       getActiveSessionId: () => this._activeSessionId,
+ 472|       getAgentMessages: () => this._agentExecutor.getAgentMessages(),
+ 473|       setAgentMessages: (messages) => { this._agentExecutor.setAgentMessages(messages); },
+ 474|       getAgentMessagesBySession: () => this._agentExecutor.getAgentMessagesBySession(),
+ 475|       executeAgent: (prompt, model, recordToShortTerm, waTriggered) => this._agentExecutor.handleAgent(prompt, model, recordToShor
+ 476|       executeTool: (name, args) => this.executeTool(name, args),
+ 477|       getSystemContent: (includeAtlassian = true) => this._queryEngine.buildSystemContent(includeAtlassian),
+ 478|       trackUsage: (model, tokens, multiplier, toolCall) => this.trackUsage(model, tokens, multiplier, toolCall),
+ 479|       trackLatency: (model, ms) => this.trackLatency(model, ms),
+ 480|       getAgentTools: () => ALL_TOOLS,
+ 481|     }, {
+ 482|       getOllamaUrls,
+ 483|       decodeOllamaModel,
+ 484|       ollamaGenerateStreamWithRetry,
+ 485|       ollamaGenerateStream,
+ 486|       ollamaChatStream,
+ 487|       ollamaChatCallStream,
+ 488|       copilotStreamText,
+ 489|       estimateTokens,
+ 490|       getCopilotMultiplierById,
+ 491|     });
+ 492|     this._debate = new DebateEngine({
+ 493|       getWebview: () => this._panel.webview,
+ 494|       getChatHistory: () => this._chatHistory,
+ 495|       setChatHistory: (history) => { this._chatHistory = (history as any)?.__isProxy ? history : this.createHistoryProxy(history ?
+ 496|       getChatHistories: () => this._chatHistories,
+ 497|       getActiveSessionId: () => this._activeSessionId,
+ 498|       ensureModelReady: (baseUrl, model) => this._queryEngine.ensureModelReady(baseUrl, model),
+ 499|     }, {
+ 500|       getOllamaUrls,
+ 501|       decodeOllamaModel,
+ 502|       ollamaChatStream,
+ 503|     });
+ 504|     // 載入持久化的使用量統計
+ 505|     this._usageStats = context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: num
+ 506|     // Eager-load LTM from file so first request never uses stale globalState
+ 507|     void (async () => {
+ 508|       try {
+ 509|         const fileLtm = await memdir.readMemoryIndex();
+ 510|         this._ltmCache = fileLtm.trim()
+ 511|           ? fileLtm
+ 512|           : (this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '');
+ 513|         // Load rules layer (always-injected project conventions)
+ 514|         try { this._rulesCache = await memdir.loadRulesLayer(); } catch { this._rulesCache = ''; }
+ 515|       } catch {
+ 516|         this._ltmCache = this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
+ 517|       }
+ 518|     })();
+ 519|     // 載入先前序列化的短期對話（优先從 workspaceState 讀，後已寫入用 workspaceState）
+ 520|     const persistedChats =
+ 521|       this._context.workspaceState.get<Record<string, ChatMessage[]>>('amiAiClaw.chatHistories') ??
+ 522|       this._context.globalState.get<Record<string, ChatMessage[]>>('amiAiClaw.chatHistories') ??
+ 523|       undefined;
+ 524|     if (persistedChats) {
+ 525|       this._chatHistories = persistedChats as Record<string, ChatMessage[]>;
+ 526|     }
+ 527|     OllamaChatPanel.log('Constructor: start');
+ 528|     OllamaChatPanel.reportDiagnostic('constructor:start');
+ 529|     vscode.window.showInformationMessage('AmiClaw: Extension activated');
+ 530| 
+ 531|     // Seed long-term memory with Atlassian rules (re-seed when version tag changes)
+ 532|     const LTM_SEED_VER = 'atlassian-v3';
+ 533|     const existingLtm = context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '';
+ 534|     const atlassianSeed = `[${LTM_SEED_VER}]
+ 535| 【Atlassian for VS Code — atlassian.atlascode】
+ 536| 
+ 537| 【強制規則，絕對不得違反】
+ 538| 1. 訊息中出現 [A-Z][A-Z0-9]*-\\d+（例 UOEM2-3476、BIOS-123）→ Jira Issue Key。
+ 539| 2. 分析 / RCA / 查看內容：第一步必須立即呼叫 jira_fetch，取得內容後再回答。
+ 540| 3. 「我將」「我會」「我打算」等宣告意圖而不伴隨工具呼叫，一律禁止。
+ 541| 4. 工具判斷：jira_fetch=取得內容供分析; jira_open=開 VS Code UI; jira_create=建立; jira_transition=轉狀態; bb_create_pr=開 PR; rovo_ask=問 Rovo Dev（回傳
+ 542|     if (!existingLtm.includes(LTM_SEED_VER)) {
+ 543|       // Remove any previous atlassian seed block before re-seeding
+ 544|       const stripped = existingLtm.replace(/\[atlassian-v\d+\][\s\S]*?(?=\n\n\[|$)/g, '').trim();
+ 545|       const seeded = stripped ? stripped + '\n\n' + atlassianSeed : atlassianSeed;
+ 546|       context.globalState.update('amiAiClaw.longTermMemory', seeded);
+ 547|     }
+ 548| 
+ 549|     // 載入先前序列化的 Agent 對話記錄
+ 550|     const persistedAgent = this._context.workspaceState.get<Record<string, { role: string; content: string | null }[]>>('amiAiClaw
+ 551|     if (persistedAgent && Object.keys(persistedAgent).length > 0) {
+ 552|       for (const [sid, msgs] of Object.entries(persistedAgent)) {
+ 553|         this._agentExecutor.setAgentMessagesForSession(sid, msgs as AgentExecutorChatMessage[]);
+ 554|       }
+ 555|       OllamaChatPanel.log(`Restored agentMessages for ${Object.keys(persistedAgent).length} sessions`);
+ 556|     }
+ 557| 
+ 558|     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+ 559| 
+ 560|     this._panel.webview.onDidReceiveMessage(async message => {
+ 561|       OllamaChatPanel.log('Received message: ' + message.type);
+ 562|       try {
+ 563|         switch (message.type) {
+ 564|           case 'send':
+ 565|             OllamaChatPanel.log(`[Route] send (Ask模式) model=${message.model ?? '(none)'} modeSelect=${(message as Record<string,un
+ 566|             await this._queryEngine.handleSend(message.prompt, message.model, message.sessionId, message.images as string[] | unde
+ 567|             break;
+ 568|           case 'insert':
+ 569|             await this.handleInsert(message.code);
+ 570|             break;
+ 571|           case 'toggleStream':
+ 572|             this._streamMode = !!message.enabled;
+ 573|             this._panel.webview.postMessage({ type: 'streamMode', enabled: this._streamMode });
+ 574|             break;
+ 575|           case 'summarize':
+ 576|             await this._queryEngine.summarizeText(message.text, message.model);
+ 577|             break;
+ 578|           case 'generateChatTitle':
+ 579|             void this._queryEngine.generateChatTitle(message.sessionId as string, message.userMsg as string, message.assistantMsg 
+ 580|             break;
+ 581|           case 'saveWebviewState':
+ 582|             this.scheduleWebviewSessionsPersist({ sessions: message.sessions, activeId: message.activeId, seq: message.seq });
+ 583|             break;
+ 584|           case 'startAuto':
+ 585|             this._agentExecutor.startAuto(message.prompt, message.model);
+ 586|             break;
+ 587|           case 'stopAuto':
+ 588|             this._agentExecutor.cancelAuto();
+ 589|             break;
+ 590|           case 'fetchModels':
+ 591|             await this._queryEngine.fetchModelsFromServer();
+ 592|             break;
+ 593|           case 'testConnection':
+ 594|             await this._queryEngine.testConnectionStatus();
+ 595|             break;
+ 596|           case 'pickFile':
+ 597|             await this.handlePickFile();
+ 598|             break;
+ 599|           case 'organizePhotosPick':
+ 600|             await this.handleOrganizePhotosPick();
+ 601|             break;
+ 602|           case 'webviewReady':
+ 603|             OllamaChatPanel.log('webviewReady received — calling fetchModelsFromServer');
+ 604|             if (!this._isWebviewReady) {
+ 605|               this._isWebviewReady = true;
+ 606|               this._resolveReady();
+ 607|               // flush messages that arrived before webview was ready
+ 608|               for (const m of this._messageQueue) { this._panel.webview.postMessage(m); }
+ 609|               this._messageQueue = [];
+ 610|             }
+ 611|             {
+ 612|               const cfg = vscode.workspace.getConfiguration('amiAiClaw');
+ 613|               const autoPilotCfg = cfg.get<boolean>('autoPilotEnabled', false);
+ 614|               const autoApproveCfg = cfg.get<boolean>('agentAutoApproveWrite', false);
+ 615|               // 啟動時同步設定到 module-level 狀態，確保 webview UI 與後端一致
+ 616|               setAutoPilotEnabledBySetting(autoPilotCfg);
+ 617|               setAutoPilotActive(autoPilotCfg);
+ 618|               const defaultKws = ['分析','審查','review','analyze','讀取','檢查','debug','refactor','重構','架構','程式','code','找','問題','修正','實
+ 619|               this._panel.webview.postMessage({
+ 620|                 type: 'initialState',
+ 621|                 providerInfo: this.buildProviderInfo(),
+ 622|                 streamMode: this._streamMode,
+ 623|                 autoPilotEnabled: isAutoPilotActive(),
+ 624|                 autoApproveWrite: autoApproveCfg,
+ 625|                 thinkLevel: getCurrentThinkingLevel(),
+ 626|                 contextDepth: getCurrentContextDepth(),
+ 627|                 shadowTriggerKeywords: cfg.get<string[]>('shadowTriggerKeywords', defaultKws),
+ 628|                 webviewSessions: this._context.workspaceState.get('amiAiClaw.webviewSessions') ?? null,
+ 629|               });
+ 630|             }
+ 631|             await this._queryEngine.fetchModelsFromServer();
+ 632|             break;
+ 633|           case 'agentSend':
+ 634|             OllamaChatPanel.log(`[Route] agentSend (Coordinator+Worker) model=${message.model ?? '(none)'}`);
+ 635|             this.switchChatSession(message.sessionId);
+ 636|             await this._agentExecutor.handleCoordinator(message.prompt, message.model);
+ 637|             this.scheduleAgentPersist();
+ 638|             break;
+ 639|           case 'agentStop':
+ 640|             this._agentExecutor.cancelAgent();
+ 641|             this._queryEngine.cancelSend();
+ 642|             break;
+ 643|           case 'autoApproveWrite': {
+ 644|             await vscode.workspace.getConfiguration('amiAiClaw').update('agentAutoApproveWrite', !!message.enabled, vscode.Configu
+ 645|             break;
+ 646|           }
+ 647|           case 'autoPilot': {
+ 648|             const enabled = !!message.enabled;
+ 649|             await vscode.workspace.getConfiguration('amiAiClaw').update('autoPilotEnabled', enabled, vscode.ConfigurationTarget.Wo
+ 650|             setAutoPilotEnabledBySetting(enabled);
+ 651|             setAutoPilotActive(enabled);
+ 652|             this._panel.webview.postMessage({ type: 'autoPilotState', enabled: isAutoPilotActive() });
+ 653|             break;
+ 654|           }
+ 655|           case 'thinkLevel': {
+ 656|             const raw = String(message.level ?? 'medium');
+ 657|             const level: ThinkingLevel = (raw === 'off' || raw === 'low' || raw === 'medium' || raw === 'high' || raw === 'max') ?
+ 658|             await vscode.workspace.getConfiguration('amiAiClaw').update('thinkingLevel', level, vscode.ConfigurationTarget.Workspa
+ 659|             this._panel.webview.postMessage({ type: 'thinkLevelState', level });
+ 660|             break;
+ 661|           }
+ 662|           case 'contextDepth': {
+ 663|             const raw = String(message.depth ?? 'file');
+ 664|             const depth = (raw === 'outline' || raw === 'full') ? raw : 'file';
+ 665|             await vscode.workspace.getConfiguration('amiAiClaw').update('contextDepth', depth, vscode.ConfigurationTarget.Workspac
+ 666|             // 切換深度層級會讓既有 digest 失效，立即清掉快取
+ 667|             invalidateWorkspaceDigestCache();
+ 668|             this._panel.webview.postMessage({ type: 'contextDepthState', depth });
+ 669|             break;
+ 670|           }
+ 671|           case 'updateShadowKeywords': {
+ 672|             const kws = Array.isArray(message.keywords) ? (message.keywords as string[]).map(k => String(k).trim()).filter(k => k.
+ 673|             await vscode.workspace.getConfiguration('amiAiClaw').update('shadowTriggerKeywords', kws, vscode.ConfigurationTarget.W
+ 674|             break;
+ 675|           }
+ 676|           case 'openFile': {
+ 677|             const fp = message.filePath as string;
+ 678|             if (fp) { await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(fp)); }
+ 679|             break;
+ 680|           }
+ 681|           case 'diffFiles': {
+ 682|             const fpA = message.pathA as string;
+ 683|             const fpB = message.pathB as string;
+ 684|             if (fpA && fpB) {
+ 685|               await vscode.commands.executeCommand('vscode.diff',
+ 686|                 vscode.Uri.file(fpA), vscode.Uri.file(fpB),
+ 687|                 `${fpA.split(/[\\/]/).pop()} ↔ ${fpB.split(/[\\/]/).pop()}`
+ 688|               );
+ 689|             }
+ 690|             break;
+ 691|           }
+ 692|           case 'shadowInspectFile': {
+ 693|             const orig   = message.original as string;
+ 694|             const shadow = message.shadow   as string;
+ 695|             if (orig && shadow) {
+ 696|               await vscode.commands.executeCommand('vscode.diff',
+ 697|                 vscode.Uri.file(orig), vscode.Uri.file(shadow),
+ 698|                 `${orig.split(/[\\/]/).pop()} (原始) ↔ (影子變更)`
+ 699|               );
+ 700|             }
+ 701|             break;
+ 702|           }
+ 703|           case 'shadowApplyFile': {
+ 704|             const origPath   = message.original as string;
+ 705|             const shadowPath = message.shadow   as string;
+ 706|             if (origPath && shadowPath) {
+ 707|               try {
+ 708|                 const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(shadowPath));
+ 709|                 await vscode.workspace.fs.writeFile(vscode.Uri.file(origPath), bytes);
+ 710|                 vscode.window.showInformationMessage(`✅ 已套用變更至: ${origPath.split(/[\\/]/).pop()}`);
+ 711|               } catch (e) {
+ 712|                 vscode.window.showErrorMessage(`套用失敗: ${e instanceof Error ? e.message : String(e)}`);
+ 713|               }
+ 714|             }
+ 715|             break;
+ 716|           }
+ 717|           case 'diffWithGit': {
+ 718|             // 與 git HEAD 比對；git scheme 不可用時退回直接開啟
+ 719|             const fp = message.filePath as string;
+ 720|             if (fp) {
+ 721|               const uri = vscode.Uri.file(fp);
+ 722|               const gitUri = uri.with({ scheme: 'git', query: JSON.stringify({ path: fp, ref: 'HEAD' }) });
+ 723|               await vscode.commands.executeCommand('vscode.diff', gitUri, uri, `${fp.split(/[\\/]/).pop()} (HEAD) ↔ (目前)`)
+ 724|                 .then(undefined, () => vscode.commands.executeCommand('vscode.open', uri));
+ 725|             }
+ 726|             break;
+ 727|           }
+ 728|           case 'shadowVerify': {
+ 729|             const sandbox = this._tools.getSandboxManager();
+ 730|             const result  = await sandbox.verify();
+ 731|             this._panel?.webview.postMessage({ type: 'agentStepProgress', text: result.passed ? '✅ 影子驗證通過' : `❌ 驗證失敗：${result.erro
+ 732|             break;
+ 733|           }
+ 734|           case 'shadowApprove': {
+ 735|             const sandbox = this._tools.getSandboxManager();
+ 736|             const files   = await sandbox.commit();
+ 737|             this._panel?.webview.postMessage({ type: 'agentStepProgress', text: `✅ 已提交 ${files.length} 個檔案至工作區` });
+ 738|             break;
+ 739|           }
+ 740|           case 'shadowReject': {
+ 741|             this._tools.getSandboxManager().rollback();
+ 742|             this._panel?.webview.postMessage({ type: 'agentStepProgress', text: '🗑️ 影子變更已回滾，工作區未修動' });
+ 743|             break;
+ 744|           }
+ 745|           case 'shadowInspect': {
+ 746|             const state = this._tools.getSandboxManager().getState();
+ 747|             if (state.shadowDir) {
+ 748|               await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(state.shadowDir), { forceNewWindow: false 
+ 749|             }
+ 750|             break;
+ 751|           }
+ 752|           case 'permissionResponse': {
+ 753|             if (this._tools.hasPendingPermission()) {
+ 754|               if (message.always) { this._tools.addAlwaysAllow(message.category as string); }
+ 755|               // "本次全允許"：將常見類別全部加入 session allow
+ 756|               if (message.alwaysSession) {
+ 757|                 for (const c of ['write', 'run', 'read', 'delete']) { this._tools.addAlwaysAllow(c); }
+ 758|               }
+ 759|               this._tools.resolvePendingPermission(!!message.allow);
+ 760|             }
+ 761|             break;
+ 762|           }
+ 763|           case 'fetchTeamModels':
+ 764|             await this.fetchTeamModels();
+ 765|             break;
+ 766|           case 'slashCommand': {
+ 767|             const sc = String(message.cmd ?? '').trim();
+ 768|             switch (sc) {
+ 769|               case 'doctor': {
+ 770|                 // 診斷：列出連線狀態、可用模型數、工具數
+ 771|                 const cfgSC = vscode.workspace.getConfiguration('amiAiClaw');
+ 772|                 const urlSC = (cfgSC.get<string[]>('ollamaUrls') ?? [cfgSC.get<string>('url') ?? 'http://localhost:11434'])[0];
+ 773|                 const modelSC = cfgSC.get<string>('model') ?? '（未設定）';
+ 774|                 const toolCount = 60; // ToolRegistry 常數
+ 775|                 const lines = [
+ 776|                   '## 🩺 AmiClaw Doctor',
+ 777|                   `- **Ollama URL**: ${urlSC}`,
+ 778|                   `- **目前模型**: ${modelSC}`,
+ 779|                   `- **工具數量**: ${toolCount} 個`,
+ 780|                   `- **Extension Host**: 運作中 ✅`,
+ 781|                   `- **Context Depth**: ${vscode.workspace.getConfiguration('amiAiClaw').get<string>('contextDepth', 'file')}`,
+ 782|                 ];
+ 783|                 this._panel.webview.postMessage({ type: 'assistant', text: lines.join('\n') });
+ 784|                 break;
+ 785|               }
+ 786|               case 'tools':
+ 787|               case 'audit':
+ 788|                 this.showAuditLog();
+ 789|                 break;
+ 790|               case 'compact': {
+ 791|                 // 壓縮：清除舊對話，只保留最近 10 則
+ 792|                 const hist = this._chatHistory.slice(-10);
+ 793|                 this._chatHistory.splice(0, this._chatHistory.length, ...hist);
+ 794|                 this._panel.webview.postMessage({ type: 'assistant', text: `🗜️ 對話歷史已壓縮，保留最近 ${hist.length} 則訊息。` });
+ 795|                 break;
+ 796|               }
+ 797|               case 'wa':
+ 798|                 this._panel.webview.postMessage({ type: 'assistant', text: `📱 WhatsApp：${this._wa.agentMode ? '✅ 已連線（Agent 模式）' : 
+ 799|                 break;
+ 800|               case 'workflow': {
+ 801|                 // /workflow list | save <name> | run <name> | delete <name>
+ 802|                 const { listWorkflows, saveWorkflow, loadWorkflow, deleteWorkflow, buildWorkflowCoordinatorPrompt } = await import
+ 803|                 const parts = sc === 'workflow' ? [] : message.args as string[] ?? [];
+ 804|                 const sub = parts[0] ?? 'list';
+ 805|                 if (sub === 'list') {
+ 806|                   const wfs = await listWorkflows();
+ 807|                   const txt = wfs.length === 0
+ 808|                     ? '（尚無已儲存的工作流程）\n用 `/workflow save <名稱>` 儲存目前任務為工作流程'
+ 809|                     : wfs.map(w => `⚙️ **${w.name}** （${w.steps.length} 步）\n　${w.description}${w.lastRun ? `\n　上次執行：${w.lastRun.sl
+ 810|                   this._panel.webview.postMessage({ type: 'assistant', text: `## 工作流程清單\n\n${txt}` });
+ 811|                 } else if (sub === 'run') {
+ 812|                   const name = parts.slice(1).join(' ').trim();
+ 813|                   const wf = await loadWorkflow(name);
+ 814|                   if (!wf) { this._panel.webview.postMessage({ type: 'assistant', text: `找不到工作流程「${name}」` }); break; }
+ 815|                   const prompt = buildWorkflowCoordinatorPrompt(wf);
+ 816|                   this.switchChatSession(message.sessionId);
+ 817|                   await this._agentExecutor.handleCoordinator(prompt, message.model);
+ 818|                   this.scheduleAgentPersist();
+ 819|                 } else if (sub === 'save') {
+ 820|                   const name = parts.slice(1).join(' ').trim() || '未命名';
+ 821|                   const steps = this._chatHistory
+ 822|                     .filter(m => m.role === 'user' && m.content)
+ 823|                     .map(m => ({ prompt: (m.content ?? '').slice(0, 500), description: (m.content ?? '').slice(0, 60) }));
+ 824|                   if (steps.length === 0) { this._panel.webview.postMessage({ type: 'assistant', text: '對話記錄為空，無法儲存' }); break; }
+ 825|                   await saveWorkflow({ name, description: steps[0].prompt.slice(0, 120), steps, createdAt: new Date().toISOString(
+ 826|                   this._panel.webview.postMessage({ type: 'assistant', text: `✅ 已儲存工作流程「${name}」（${steps.length} 步）` });
+ 827|                 } else if (sub === 'delete') {
+ 828|                   const name = parts.slice(1).join(' ').trim();
+ 829|                   await deleteWorkflow(name);
+ 830|                   this._panel.webview.postMessage({ type: 'assistant', text: `🗑️ 已刪除工作流程「${name}」` });
+ 831|                 } else {
+ 832|                   this._panel.webview.postMessage({ type: 'assistant', text: '用法：`/workflow list` | `/workflow save <名稱>` | `/work
+ 833|                 }
+ 834|                 break;
+ 835|               }
+ 836|               default:
+ 837|                 this._panel.webview.postMessage({ type: 'assistant', text: `❓ 未知指令：/${sc}` });
+ 838|             }
+ 839|             break;
+ 840|           }
+ 841|           case 'teamSend':
+ 842|             this.switchChatSession(message.sessionId);
+ 843|             this.handleTeamSend(message.prompt, message.models, message.rounds, message.teamExecMode, message.maxParallel, message
+ 844|             break;
+ 845|           case 'teamStop':
+ 846|             this._team.cancel();
+ 847|             break;
+ 848|           case 'debateSend':
+ 849|             this.switchChatSession(message.sessionId);
+ 850|             this.handleDebateSend(message.prompt, message.models, message.rounds).catch(() => {});
+ 851|             break;
+ 852|           case 'debateStop':
+ 853|             this._debate.cancel();
+ 854|             break;
+ 855|           case 'waDisconnect':
+ 856|             this._wa.disconnect().catch(() => {});
+ 857|             break;
+ 858|           case 'switchChatSession':
+ 859|             this.switchChatSession(message.sessionId);
+ 860|             this._panel.webview.postMessage({ type: 'historyCount', count: this._chatHistory.length, sessionId: this._activeSessio
+ 861|             break;
+ 862|           case 'applyToFile':
+ 863|             await this.handleApplyToFile(message.code);
+ 864|             break;
+ 865|           case 'clearHistory':
+ 866|             this._agentExecutor.clearSessionMessages(this.resolveSessionId(message.sessionId));
+ 867|             this.switchChatSession(message.sessionId);
+ 868|             const empty = this.createHistoryProxy([], this._activeSessionId);
+ 869|             this._chatHistory = empty;
+ 870|             this._chatHistories[this._activeSessionId] = this._chatHistory;
+ 871|             this._panel.webview.postMessage({ type: 'historyCount', count: 0, sessionId: this._activeSessionId });
+ 872|             break;
+ 873|           case 'deleteSession': {
+ 874|             const delSid = this.resolveSessionId(message.sessionId);
+ 875|             this._agentExecutor.clearSessionMessages(delSid);
+ 876|             delete this._chatHistories[delSid];
+ 877|             if (delSid === this._activeSessionId) {
+ 878|               const nextSid = Object.keys(this._chatHistories).find(k => k !== delSid);
+ 879|               if (nextSid) this.switchChatSession(nextSid);
+ 880|             }
+ 881| 
+ 882|             this.schedulePersistChatHistories();
+ 883|             console.log('[DEBUG ollama-chat] deleteSession complete for', delSid, 'Remaining keys:', Object.keys(this._chatHistori
+ 884|             break;
+ 885|           }
+ 886|           case 'memoryGet': {
+ 887|             this.switchChatSession(message.sessionId);
+ 888|             const cfg2 = vscode.workspace.getConfiguration('amiAiClaw');
+ 889|             const persona2 = cfg2.get<string>('systemPrompt') ?? '';
+ 890|             const previewMsgs = this._chatHistory.slice(-10);
+ 891|             const historyPreview = previewMsgs.map(m => {
+ 892|               const role = m.role === 'user' ? '👤 你' : '🤖 AI';
+ 893|               const text = (m.content ?? '').slice(0, 200);
+ 894|               return `${role}：${text}${(m.content ?? '').length > 200 ? '…' : ''}`;
+ 895|             }).join('\n\n');
+ 896|             this._panel.webview.postMessage({ type: 'memoryLoaded', ltm: this.getLongTermMemory(), persona: persona2, historyCount
+ 897|             break;
+ 898|           }
+ 899|           case 'memorySave':
+ 900|             await this.saveLongTermMemory(message.ltm as string);
+ 901|             this._panel.webview.postMessage({ type: 'memorySaved' });
+ 902|             break;
+ 903|           case 'exportChat': {
+ 904|             // 將指定 session 的 _chatHistory 存檔
+ 905|             const exportSid = (message.sessionId as string) || this._activeSessionId;
+ 906|             const exportHist = this._chatHistories[exportSid] ?? [];
+ 907|             const exportTitle = (message.title as string) || exportSid;
+ 908|             const exportFmt = (message.format as string) || 'json';
+ 909|             let exportContent = '';
+ 910|             if (exportFmt === 'markdown') {
+ 911|               exportContent = `# ${exportTitle}\n\n` + exportHist.map(m => {
+ 912|                 const role = m.role === 'user' ? '**👤 你**' : '**🤖 AI**';
+ 913|                 return `${role}\n\n${m.content ?? ''}\n`;
+ 914|               }).join('\n---\n\n');
+ 915|             } else {
+ 916|               exportContent = JSON.stringify({ title: exportTitle, sessionId: exportSid, exportedAt: new Date().toISOString(), mes
+ 917|             }
+ 918|             const exportUri = await vscode.window.showSaveDialog({
+ 919|               defaultUri: vscode.Uri.file(`${exportTitle.replace(/[/\\?%*:|"<>]/g, '_')}.${exportFmt === 'markdown' ? 'md' : 'json
+ 920|               filters: exportFmt === 'markdown' ? { 'Markdown': ['md'] } : { 'JSON': ['json'] }
+ 921|             });
+ 922|             if (exportUri) {
+ 923|               await vscode.workspace.fs.writeFile(exportUri, Buffer.from(exportContent, 'utf-8'));
+ 924|               this._panel.webview.postMessage({ type: 'exportDone', path: exportUri.fsPath });
+ 925|             }
+ 926|             break;
+ 927|           }
+ 928|           case 'importChat': {
+ 929|             const importUris = await vscode.window.showOpenDialog({
+ 930|               canSelectMany: false,
+ 931|               filters: { 'JSON 對話': ['json'] },
+ 932|               title: '匯入對話 JSON'
+ 933|             });
+ 934|             if (!importUris || !importUris[0]) { break; }
+ 935|             try {
+ 936|               const raw = Buffer.from(await vscode.workspace.fs.readFile(importUris[0])).toString('utf-8');
+ 937|               const parsed = JSON.parse(raw) as { title?: string; sessionId?: string; messages?: { role: string; content?: string 
+ 938|               if (!Array.isArray(parsed.messages)) { throw new Error('無效的 JSON 格式：缺少 messages 陣列'); }
+ 939|               const importId = 'chat-import-' + Date.now();
+ 940|               const importTitle = (parsed.title ?? '匯入的對話').slice(0, 30);
+ 941|               this._chatHistories[importId] = this.createHistoryProxy(parsed.messages.map(m => ({ role: m.role as 'user' | 'assist
+ 942|               this._panel.webview.postMessage({ type: 'importDone', sessionId: importId, title: importTitle });
+ 943|             } catch (e) {
+ 944|               this._panel.webview.postMessage({ type: 'error', text: '匯入失敗：' + (e instanceof Error ? e.message : String(e)) });
+ 945|             }
+ 946|             break;
+ 947|           }
+ 948|           case 'searchConversations': {
+ 949|             const q = ((message.query as string) || '').toLowerCase().trim();
+ 950|             if (!q) { this._panel.webview.postMessage({ type: 'searchResults', results: [] }); break; }
+ 951|             const results: { sessionId: string; title: string; snippet: string }[] = [];
+ 952|             for (const [sid, hist] of Object.entries(this._chatHistories)) {
+ 953|               for (const m of hist) {
+ 954|                 const text = (m.content ?? '').toLowerCase();
+ 955|                 const idx = text.indexOf(q);
+ 956|                 if (idx !== -1) {
+ 957|                   const start = Math.max(0, idx - 30);
+ 958|                   const snippet = (idx > 30 ? '\u2026' : '') + (m.content ?? '').slice(start, start + 120) + (start + 120 < (m.con
+ 959|                   results.push({ sessionId: sid, title: sid, snippet });
+ 960|                   break; // one hit per session
+ 961|                 }
+ 962|               }
+ 963|             }
+ 964|             this._panel.webview.postMessage({ type: 'searchResults', results });
+ 965|             break;
+ 966|           }
+ 967|           case 'resetUsage':
+ 968|             this._usageStats = {};
+ 969|             this._latencyLog = [];
+ 970|             this._context.globalState.update('amiAiClaw.usageStats', {});
+ 971|             this._panel.webview.postMessage({ type: 'usageUpdate', stats: {} });
+ 972|             this._panel.webview.postMessage({ type: 'latencyUpdate', log: [] });
+ 973|             break;
+ 974|           case 'statsOpen':
+ 975|             this._panel.webview.postMessage({ type: 'usageUpdate', stats: this._usageStats });
+ 976|             this._panel.webview.postMessage({ type: 'latencyUpdate', log: this._latencyLog });
+ 977|             break;
+ 978|           case 'debateSwapModel':
+ 979|             if (message.speaker === 'A' || message.speaker === 'B' || message.speaker === 'J') {
+ 980|               this._debate.swapModel(message.speaker as 'A' | 'B' | 'J', message.modelId);
+ 981|             }
+ 982|             break;
+ 983|           case 'memoryConsolidate':
+ 984|             await this.handleMemoryConsolidate(message.sessionId);
+ 985|             break;
+ 986|           case 'saveModel': {
+ 987|             const newModel = message.model as string;
+ 988|             if (newModel) {
+ 989|               const cfg3 = vscode.workspace.getConfiguration('amiAiClaw');
+ 990|               await cfg3.update('model', newModel, vscode.ConfigurationTarget.Global);
+ 991|               OllamaChatPanel.log('saveModel: ' + newModel);
+ 992|               this._panel.webview.postMessage({
+ 993|                 type: 'providerInfo',
+ 994|                 providerInfo: this.buildProviderInfo(newModel),
+ 995|               });
+ 996|             }
+ 997|             break;
+ 998|           }
+ 999|           case 'openSettings':
+1000|             vscode.commands.executeCommand('workbench.action.openSettings', 'amiAiClaw.systemPrompt');
+1001|             break;
+1002|           case 'editMessage': {
+1003|             // 訊息編輯：截斷歷史到第 userIdx 個 user 訊息之前，再重新送出
+1004|             this.switchChatSession(message.sessionId);
+1005|             const editUserIdx = message.userIdx as number;
+1006|             let uc2 = 0, histCut = 0;
+1007|             for (let i = 0; i < this._chatHistory.length; i++) {
+1008|               if (this._chatHistory[i].role === 'user') {
+1009|                 if (uc2 === editUserIdx) { histCut = i; break; }
+1010|                 uc2++;
+1011|               }
+1012|             }
+1013|             this._chatHistory = this._chatHistory.slice(0, histCut);
+1014|             this._chatHistories[this._activeSessionId] = this._chatHistory;
+1015|             this._agentExecutor.clearSessionMessages(this._activeSessionId);
+1016|             await this._queryEngine.handleSend(message.newText as string, message.model as string | undefined, message.sessionId);
+1017|             break;
+1018|           }
+1019|           case 'forkSession': {
+1020|             // 對話分支：依 userCount 複製歷史，建立新 session

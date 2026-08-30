@@ -6,11 +6,24 @@
 import * as path from 'path';
 
 // ── Core tool names — always sent to LLM on every request ────────────────────
+// 27 tools: matches claude-code CORE scope (read/write/search/git/memory/lsp/meta)
 const CORE_TOOL_NAMES = new Set([
-  'get_active_file','read_file','read_files','write_file','replace_in_file',
-  'list_dir','run_command','search_workspace','manage_todo','run_python',
-  'jira_fetch','jira_search','git_status','git_diff','memory_read',
-  'search_tools','workflow_run',  // discovery + workflow meta-tools
+  // file I/O (primary)
+  'get_active_file','read_file','read_files','read_file_smart','write_file',
+  'replace_in_file','insert_in_file',
+  // navigation & search
+  'list_dir','outline_file','search_workspace','search_regex','agentic_file_search',
+  // execution
+  'run_command','run_python',
+  // git
+  'git_status','git_diff','git_log','git_commit',
+  // project management
+  'manage_todo','memory_read','memory_write',
+  'jira_fetch','jira_search','jira_open',
+  // LSP (diagnostics always-on; definition/references on demand via search_tools)
+  'lsp_diagnostics',
+  // meta-tools
+  'search_tools','workflow_run',
 ]);
 
 // ── search_tools — lets the model discover and unlock extra tools ─────────────
@@ -20,26 +33,45 @@ const SEARCH_TOOLS_TOOL = { type: 'function', function: { name: 'search_tools', 
 const WORKFLOW_RUN_TOOL = { type: 'function', function: { name: 'workflow_run', description: 'Execute a saved named workflow (sequence of agent tasks). Use workflow_list first to see available workflows.', parameters: { type: 'object', properties: { name: { type: 'string', description: 'Workflow name to run' } }, required: ['name'] } } };
 const WORKFLOW_LIST_TOOL = { type: 'function', function: { name: 'workflow_list', description: 'List all saved workflows with their descriptions and step counts.', parameters: { type: 'object', properties: {} } } };
 
+/** Worker completion report — sent back to Coordinator as the only visible output. */
+export const REPORT_RESULT_TOOL = {
+  type: 'function',
+  function: {
+    name: 'report_result',
+    description: 'Report task completion to the Coordinator. **Call this ONCE when all work is done.** The Coordinator sees ONLY this summary — not your raw tool outputs. Keep summary ≤500 chars.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status:        { type: 'string', enum: ['completed', 'failed', 'blocked'], description: 'Task outcome: completed=done; failed=could not finish; blocked=needs more info' },
+        summary:       { type: 'string', description: '任務完成摘要（≤500 字）：做了什麼、結果如何、關鍵發現' },
+        files_changed: { type: 'array', items: { type: 'string' }, description: '已修改或建立的檔案路徑清單（可選）' },
+        errors:        { type: 'string', description: '遭遇的錯誤描述（status=failed/blocked 時填寫，可選）' },
+      },
+      required: ['status', 'summary'],
+    },
+  },
+};
+
 export const AGENT_TOOLS = [
-  { type: 'function', function: { name: 'get_active_file', description: '取得目前編輯器開啟的檔案路徑與內容', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'read_file', description: '讀取工作區內檔案的完整內容。**僅用於確實需要整個檔案的小型檔案（< 30KB）**。較大的程式碼檔案請優先：① outline_file 了解結構與行號 → ② read_file_smart(start_line/end_line) 只讀所需區段，避免載入過多無關 context。', parameters: { type: 'object', properties: { path: { type: 'string', description: '相對或絕對路徑' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'read_files', description: '一次批次讀取多個檔案內容（自動限制總量避免 token 爆量）。適合需同時參考數個相關檔案的場景，比連續呼叫 read_file 更省 round-trip。回傳格式：每個檔案以「=== <path> ===」分隔。', parameters: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' }, description: '檔案路徑陣列（相對或絕對），最多 30 個' }, max_per_file_kb: { type: 'number', description: '單檔最大讀取 KB（預設 64，超過截斷）' }, max_total_kb: { type: 'number', description: '所有檔案合計最大 KB（預設 256，超過停止並回報剩餘檔案清單）' } }, required: ['paths'] } } },
-  { type: 'function', function: { name: 'write_file', description: '寫入(建立/覆寫)檔案。支援所有文字檔案類型（.c .h .inf .dec .dsc .ts .py 等）', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
-  { type: 'function', function: { name: 'replace_in_file', description: '在檔案中替換特定字串（第一個匹配）。支援所有文字檔（.c .h .inf .ts 等）', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '要替換的原始字串（需包含足夠 context 以唯一定位）' }, new_str: { type: 'string', description: '替換後的字串' } }, required: ['path', 'old_str', 'new_str'] } } },
-  { type: 'function', function: { name: 'insert_in_file', description: '在檔案指定行號後插入內容（支援多行）。適合在 .c/.h 函式間插入新函式、在 .inf [Sources] 段落新增檔案，或在任何位置插入程式碼。自動保留原始行尾（CRLF/LF）。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑（絕對或相對工作區）' }, line: { type: 'number', description: '在此行號後插入（1-based；0 = 在最前面插入）' }, content: { type: 'string', description: '要插入的內容（支援多行，以 \n 分隔）' } }, required: ['path', 'line', 'content'] } } },
-  { type: 'function', function: { name: 'list_dir', description: '列出目錄內容', parameters: { type: 'object', properties: { path: { type: 'string', description: '目錄路徑，空白表示工作區根目錄' } }, required: [] } } },
-  { type: 'function', function: { name: 'run_terminal', description: '在 VS Code 終端機執行命令（無輸出捕獲）', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
-  { type: 'function', function: { name: 'search_workspace', description: '在工作區中搜尋檔案名稱、函式名稱、類別名稱或程式碼關鍵字。處理任何問題前請優先呼叫此工具確認工作區現有程式碼', parameters: { type: 'object', properties: { query: { type: 'string', description: '搜尋關鍵字（如檔案名稱、函式名稱、類別名稱、變數名稱）' } }, required: ['query'] } } },
-  { type: 'function', function: { name: 'delete_file', description: '刪除檔案或目錄', parameters: { type: 'object', properties: { path: { type: 'string' }, recursive: { type: 'boolean', description: '是否遞迴刪除目錄' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'create_dir', description: '建立目錄（包含中間目錄）', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'run_command', description: '執行指令並回傳輸出結果（stdout+stderr）。適合需要知道執行結果的場合', parameters: { type: 'object', properties: { command: { type: 'string' }, cwd: { type: 'string', description: '執行目錄，空白表示工作區根目錄' } }, required: ['command'] } } },
-  { type: 'function', function: { name: 'fetch_url', description: '下載網頁內容（自動去除 HTML 標籤）。適合查閱文件、API 文件、搜尋網路資料', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' } }, required: ['url'] } } },
-  { type: 'function', function: { name: 'open_browser', description: '在 VS Code 簡易瀏覽器中開啟網址', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
-  { type: 'function', function: { name: 'manage_todo', description: 'Agent 內部任務清單。複雜任務請先建立任務清單，逐一完成後標記为done', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=新增, done=完成, list=查看, clear=清空' }, text: { type: 'string', description: '任務內容（action=add 時必須）' }, id: { type: 'number', description: '任務 ID（action=done 時必須）' } }, required: ['action'] } } },
-  { type: 'function', function: { name: 'vscode_action', description: 'VS Code 操作：開啟檔案到指定行、取得工作區信息、顯示通知、執行 VS Code 內建指令', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'], description: 'open_file=開檔, get_workspace_info=工作區信息, show_notification=通知, run_command=執行内建指令' }, path: { type: 'string', description: 'open_file 用' }, line: { type: 'number', description: '開啟到哪一行' }, message: { type: 'string', description: 'show_notification 用' }, command: { type: 'string', description: 'run_command 用，VS Code 指令 ID' }, args: { type: 'array', items: { type: 'string' }, description: '指令參數' } }, required: ['action'] } } },
-  { type: 'function', function: { name: 'jira_search', description: '用 JQL 搜尋 Jira Issues，支援列出指定人的工作項目（assignee/reporter）、專案、狀態過濾。例：列出我的/某人的待辦、列出某專案所有進行中 Issue。', parameters: { type: 'object', properties: { jql: { type: 'string', description: '完整 JQL 查詢語句（優先）。例：assignee = currentUser() AND status != Done ORDER BY updated DESC' }, assignee: { type: 'string', description: '指派人帳號名稱或 displayName（可選，自動組 JQL）' }, reporter: { type: 'string', description: '建立人帳號名稱（可選）' }, project: { type: 'string', description: '專案 Key，例如 BIOS、UOEM2（可選）' }, status: { type: 'string', description: '狀態篩選，例如 "In Progress"、"To Do"、"Done"（可選）' }, text: { type: 'string', description: '全文搜尋關鍵字（可選）' }, max_results: { type: 'number', description: '最多回傳筆數（預設 20，最多 50）' } }, required: [] } } },
-  { type: 'function', function: { name: 'jira_fetch', description: '【立即執行】直接呼叫 Jira REST API 取得 Issue 完整詳情（Summary、Description、Status、Assignee、Priority、最近留言、附件清單）供分析。看到 Jira Key 就呼叫，禁止先說「我將查詢」等意圖語句而不行動。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 UOEM2-3476' } }, required: ['issue_key'] } } },
-  { type: 'function', function: { name: 'jira_attachment_download', description: '下載 Jira Issue 附件（URL 來自 jira_fetch 結果的 url= 欄位）。ZIP 檔案自動解壓縮並列出內容及文字檔內容；文字/patch/log 檔直接顯示。', parameters: { type: 'object', properties: { url: { type: 'string', description: '附件下載 URL（來自 jira_fetch 附件清單的 url= 後方網址）' }, filename: { type: 'string', description: '指定儲存檔名（可選，預設從 URL 推斷）' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'get_active_file', description: '取得目前 VS Code 編輯器作用中的檔案路徑與完整內容。適合快速存取正在編輯的程式碼。', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'read_file', description: '讀取工作區檔案完整內容。**小型檔案首選（< 30 KB）**；超過 30 KB 請改用 outline_file 了解結構後再用 read_file_smart 分段讀取。Log/trace 檔案自動切換為錯誤優先策略（顯示錯誤點 + 尾端）。', parameters: { type: 'object', properties: { path: { type: 'string', description: '相對或絕對路徑' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'read_files', description: '批次讀取多個檔案。**需同時參考數個相關檔案時優先用此工具**，比多次 read_file 省時。每個檔案以 `=== <path> ===` 分隔。最多 30 個檔案。', parameters: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' }, description: '檔案路徑陣列，最多 30 個' }, max_per_file_kb: { type: 'number', description: '單檔上限 KB（預設 64）' }, max_total_kb: { type: 'number', description: '合計上限 KB（預設 256）' } }, required: ['paths'] } } },
+  { type: 'function', function: { name: 'write_file', description: '建立或完全覆寫檔案。**會寫入整個 content，請確保 content 是完整的檔案內容**。局部修改請用 replace_in_file，它更安全且省 token。寫入前系統會偵測外部修改衝突。', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string', description: '完整的新檔案內容（非差異，是全文）' } }, required: ['path', 'content'] } } },
+  { type: 'function', function: { name: 'replace_in_file', description: '以 old_str → new_str 精準替換檔案中的一段文字。**這是修改現有檔案的首選方法**。重要規則：① old_str 必須在檔案中唯一——如有多處相符會被拒絕，請加入更多前後 context；② 使用前必須先 read_file 確認確切內容（系統會偵測衝突）；③ old_str 找不到時回傳含行號提示。', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string', description: '要替換的原始字串（必須在檔案中唯一，包含足夠前後 context）' }, new_str: { type: 'string', description: '替換後的字串（空字串 = 刪除）' } }, required: ['path', 'old_str', 'new_str'] } } },
+  { type: 'function', function: { name: 'insert_in_file', description: '在指定行號後插入多行內容。適合插入新函式、新段落，或在任何精確位置新增程式碼。自動保留原始行尾（CRLF/LF）。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑' }, line: { type: 'number', description: '在此行號後插入（1-based；0 = 最前面）' }, content: { type: 'string', description: '要插入的內容（支援 \\n 多行）' } }, required: ['path', 'line', 'content'] } } },
+  { type: 'function', function: { name: 'list_dir', description: '列出目錄內容（子目錄和檔案）。探索不熟悉的工作區結構時首選。', parameters: { type: 'object', properties: { path: { type: 'string', description: '目錄路徑，空白 = 工作區根目錄' } }, required: [] } } },
+  { type: 'function', function: { name: 'run_terminal', description: '在 VS Code 整合終端機中執行命令（**不捕獲輸出**）。適合長時間執行的背景程序。需要看輸出結果請改用 run_command。', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'search_workspace', description: '在工作區搜尋符號、檔案名稱或程式碼關鍵字。**開始任何程式碼任務前請先呼叫此工具確認現有程式碼位置**。比 search_regex 快，適合關鍵字定位；需要正規表達式時改用 search_regex。', parameters: { type: 'object', properties: { query: { type: 'string', description: '關鍵字（檔案名稱、函式名稱、類別名稱、變數名稱）' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'delete_file', description: '永久刪除檔案或目錄。此操作**不可逆**，執行前系統會要求確認。', parameters: { type: 'object', properties: { path: { type: 'string' }, recursive: { type: 'boolean', description: '遞迴刪除目錄（預設 false）' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'create_dir', description: '建立目錄及所有中間目錄（等同 mkdir -p）。', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'run_command', description: '執行 shell 命令並**同步回傳 stdout+stderr**（最多等 30 秒）。適合需要看執行結果的場合（編譯、測試、git 操作等）。系統會自動阻擋危險命令（rm -rf /、curl|bash 等）。長時間命令請用 run_terminal。', parameters: { type: 'object', properties: { command: { type: 'string', description: '要執行的命令' }, cwd: { type: 'string', description: '執行目錄（可選，預設工作區根目錄）' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'fetch_url', description: '下載網頁並**自動去除 HTML 標籤**回傳純文字。適合讀取文件、API 規格、搜尋結果。需要 JavaScript 渲染的 SPA 頁面請改用 browser_navigate。', parameters: { type: 'object', properties: { url: { type: 'string', description: '完整 HTTP/HTTPS URL' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'open_browser', description: '在 VS Code 內建簡易瀏覽器開啟 URL（供人工檢視，不回傳內容）。', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'manage_todo', description: '管理 Agent 的任務清單。**收到複雜任務時請先用 add 建立清單，每完成一步用 done 標記**，讓使用者可以看到進度。', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['add','done','list','clear'], description: 'add=新增, done=完成, list=查看, clear=清空' }, text: { type: 'string', description: '任務內容（action=add 時必填）' }, id: { type: 'number', description: '任務 ID（action=done 時必填）' } }, required: ['action'] } } },
+  { type: 'function', function: { name: 'vscode_action', description: 'VS Code IDE 操作：開啟檔案到指定行、查詢工作區資訊、顯示通知訊息、執行 VS Code 內建指令。', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['open_file','get_workspace_info','show_notification','run_command'] }, path: { type: 'string', description: 'open_file 用的路徑' }, line: { type: 'number', description: '行號（open_file）' }, message: { type: 'string', description: 'show_notification 的訊息' }, command: { type: 'string', description: 'VS Code 內建指令 ID（run_command）' }, args: { type: 'array', items: { type: 'string' }, description: '指令參數' } }, required: ['action'] } } },
+  { type: 'function', function: { name: 'jira_search', description: 'JQL 搜尋 Jira Issues。適合列出待辦清單、按專案/狀態篩選。例：`assignee = currentUser() AND status != Done ORDER BY updated DESC`。', parameters: { type: 'object', properties: { jql: { type: 'string', description: 'JQL 語句（優先使用）' }, assignee: { type: 'string', description: '指派人（可選，自動組 JQL）' }, reporter: { type: 'string', description: '建立人（可選）' }, project: { type: 'string', description: '專案 Key，例如 BIOS、UOEM2（可選）' }, status: { type: 'string', description: '狀態篩選（可選）' }, text: { type: 'string', description: '全文關鍵字（可選）' }, max_results: { type: 'number', description: '最多筆數（預設 20）' } }, required: [] } } },
+  { type: 'function', function: { name: 'jira_fetch', description: '**【看到 Jira Key 立刻呼叫，禁止說「我將查詢」】** 直接取得 Issue 完整詳情：Summary、Description、Status、Assignee、Priority、最近留言、附件清單。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 UOEM2-3476' } }, required: ['issue_key'] } } },
+  { type: 'function', function: { name: 'jira_attachment_download', description: '下載 Jira 附件（URL 來自 jira_fetch 結果）。ZIP 自動解壓並列出內容；文字/patch/log 直接顯示。', parameters: { type: 'object', properties: { url: { type: 'string', description: '附件下載 URL（來自 jira_fetch 附件清單）' }, filename: { type: 'string', description: '儲存檔名（可選）' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'jira_open', description: '在 VS Code 中開啟 Jira Issue UI 面板（不回傳內容，純介面操作）。需要 Issue 內容供分析時請用 jira_fetch 而非此工具。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123 或 PROJ-456' } }, required: ['issue_key'] } } },
   { type: 'function', function: { name: 'jira_log_time', description: '記錄 Jira Issue 工時（Worklog）。支援 "16h"、"2h 30m"、"1d" 等格式，可指定日期（today/yesterday/YYYY-MM-DD），預設今天。', parameters: { type: 'object', properties: { issue_key: { type: 'string', description: 'Jira Issue Key，例如 BIOS-123' }, time_spent: { type: 'string', description: '工時，例如 "16h"、"2h 30m"、"1d"、"90m"' }, date: { type: 'string', description: '日期（可選）："today"（預設）、"yesterday"、或 "YYYY-MM-DD"' }, comment: { type: 'string', description: '備註（可選）' } }, required: ['issue_key', 'time_spent'] } } },
   { type: 'function', function: { name: 'jira_create', description: '開啟 Jira 建立 Issue 面板（需要安裝 Atlassian 插件）', parameters: { type: 'object', properties: { summary: { type: 'string', description: 'Issue 標題（可選，預填）' }, description: { type: 'string', description: 'Issue 詳細描述（可選，預填）' } } } } },
@@ -85,6 +117,26 @@ export const AGENT_TOOLS = [
   { type: 'function', function: { name: 'batch_replace', description: '使用正規表達式跨多個檔案批次搜尋取代，回傳修改的檔案清單與替換次數。適合全域重新命名 symbol 或修正 typo。', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'JavaScript 正規表達式字串（不含 //）' }, replace: { type: 'string', description: '取代字串（可用 $1 $2 back-reference）' }, include: { type: 'string', description: 'glob 篩選檔案（預設 **/*），例如 **/*.{c,h}' }, flags: { type: 'string', description: 'regex flags（預設 gi）' } }, required: ['pattern', 'replace'] } } },
   { type: 'function', function: { name: 'file_info', description: '取得檔案/目錄詳細資訊：大小、行數、行尾格式（CRLF/LF）、BOM/編碼偵測、最後修改時間。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑（相對或絕對）' } }, required: [] } } },
   { type: 'function', function: { name: 'organize_photos', description: '批次辨識並整理照片：給「一個照片目錄」（可遞迴含子目錄），用 Ollama 視覺模型逐張辨識。若提供「一張參考人臉照片」，會逐張判斷是否為同一個人，再辨識其行為/場景，將符合者依「人物/行為」兩層資料夾複製（或移動）到輸出目錄；未提供參考人臉時改為只依「行為/場景」分類。需要 Ollama 視覺模型（如 llava、llama3.2-vision、qwen2.5vl，需先 ollama pull）。', parameters: { type: 'object', properties: { source_dir: { type: 'string', description: '要掃描的照片來源目錄（遞迴含子目錄）' }, reference_image: { type: 'string', description: '參考人臉照片路徑（可選）。提供時依「人物/行為」兩層整理；未提供時只依行為/場景分類' }, output_dir: { type: 'string', description: '整理後輸出目錄（可選，預設為來源目錄下的 _organized）' }, person_name: { type: 'string', description: '人物資料夾名稱（可選，預設取參考照片檔名）' }, behaviors: { type: 'array', items: { type: 'string' }, description: '行為/場景分類選項（可選），例如 ["用餐","戶外","運動","工作"]；提供時模型只能從中擇一，未提供則由模型自由命名簡短標籤' }, vision_model: { type: 'string', description: 'Ollama 視覺模型名稱（可選，預設讀設定 amiAiClaw.visionModel）' }, mode: { type: 'string', enum: ['copy','move'], description: 'copy=複製並保留原檔（預設）、move=移動原檔' }, min_confidence: { type: 'number', description: '人物比對最低信心 0~100（預設 60，僅在有 reference_image 時生效）' }, max_images: { type: 'number', description: '最多處理張數（預設 200，最多 1000）' } }, required: ['source_dir'] } } },
+  // ── Background execution tools ─────────────────────────────────────────
+  { type: 'function', function: { name: 'run_in_background', description: '在背景執行 shell 命令（非同步，不等待完成）。立刻回傳 taskId 和輸出檔案路徑。**適合長時間執行的命令**（建置、測試、伺服器啟動等）；需要查看輸出時用 bg_task_status 或 bg_task_read。', parameters: { type: 'object', properties: { command: { type: 'string', description: '要執行的 shell 命令' }, cwd: { type: 'string', description: '執行目錄（可選，預設工作區根目錄）' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'bg_task_status', description: '查詢背景任務狀態與輸出預覽（最後 80 行）。不傳 task_id 則列出所有任務。', parameters: { type: 'object', properties: { task_id: { type: 'string', description: '任務 ID（來自 run_in_background 回傳；省略則列出全部）' } }, required: [] } } },
+  { type: 'function', function: { name: 'bg_task_read', description: '讀取背景任務的完整輸出（持久化到磁碟的日誌檔）。支援行範圍讀取，適合分析大型輸出。', parameters: { type: 'object', properties: { task_id: { type: 'string', description: '任務 ID' }, start_line: { type: 'number', description: '起始行（1-based，可選）' }, end_line: { type: 'number', description: '結束行（可選）' }, tail: { type: 'number', description: '只取最後 N 行（優先於 start/end_line）' } }, required: ['task_id'] } } },
+  { type: 'function', function: { name: 'bg_task_kill', description: '終止指定的背景任務（發送 SIGTERM）。', parameters: { type: 'object', properties: { task_id: { type: 'string', description: '要終止的任務 ID' } }, required: ['task_id'] } } },
+  // ── Computer Use tools ─────────────────────────────────────────────────
+  { type: 'function', function: { name: 'computer_screenshot', description: '截取螢幕截圖並儲存為 PNG。需要 Python pyautogui（pip install pyautogui pillow）。截圖後可用 organize_photos 或 browser_screenshot 分析圖片內容。', parameters: { type: 'object', properties: { save_path: { type: 'string', description: '儲存路徑（可選，預設 .amiclaw/outputs/screenshot_<ts>.png）' }, region: { type: 'array', items: { type: 'number' }, description: '截取區域 [left, top, width, height]（可選，預設全螢幕）' } }, required: [] } } },
+  { type: 'function', function: { name: 'computer_type', description: '在目前焦點位置輸入文字。優先使用剪貼板貼上（支援 Unicode）。需要 Python pyautogui（pip install pyautogui）。', parameters: { type: 'object', properties: { text: { type: 'string', description: '要輸入的文字' }, interval: { type: 'number', description: '每個字元間隔秒數（預設 0.02）' } }, required: ['text'] } } },
+  { type: 'function', function: { name: 'computer_key', description: '按下按鍵或組合鍵。支援單鍵（"enter","esc","tab"）和組合鍵（"ctrl+s","alt+f4","ctrl+shift+t"）。需要 Python pyautogui。', parameters: { type: 'object', properties: { key: { type: 'string', description: '按鍵名稱，組合鍵用 + 連接，例如 "ctrl+s"、"enter"、"alt+tab"' } }, required: ['key'] } } },
+  { type: 'function', function: { name: 'computer_click', description: '在指定螢幕坐標點擊滑鼠。需要 Python pyautogui。', parameters: { type: 'object', properties: { x: { type: 'number', description: '螢幕 X 坐標（像素）' }, y: { type: 'number', description: '螢幕 Y 坐標（像素）' }, button: { type: 'string', enum: ['left', 'right', 'middle'], description: '滑鼠按鍵（預設 left）' }, clicks: { type: 'number', description: '點擊次數（預設 1，雙擊傳 2）' } }, required: ['x', 'y'] } } },
+  { type: 'function', function: { name: 'computer_scroll', description: '在指定坐標滾動滑鼠滾輪。需要 Python pyautogui。', parameters: { type: 'object', properties: { x: { type: 'number', description: '螢幕 X 坐標' }, y: { type: 'number', description: '螢幕 Y 坐標' }, direction: { type: 'string', enum: ['up', 'down'], description: '滾動方向（預設 down）' }, clicks: { type: 'number', description: '滾動格數（預設 3）' } }, required: ['x', 'y'] } } },
+  { type: 'function', function: { name: 'computer_clipboard_read', description: '讀取系統剪貼板的文字內容。', parameters: { type: 'object', properties: {}, required: [] } } },
+  { type: 'function', function: { name: 'computer_clipboard_write', description: '將文字寫入系統剪貼板。配合 computer_type 可快速貼入任何應用程式。', parameters: { type: 'object', properties: { text: { type: 'string', description: '要寫入剪貼板的文字' } }, required: ['text'] } } },
+  // ── LSP tools ─────────────────────────────────────────────────────────────
+  { type: 'function', function: { name: 'lsp_goto_definition', description: '跳至 symbol 定義位置（使用語言伺服器）。回傳定義所在的 file:line:col。適合追蹤函式/變數/型別宣告位置。需要目標語言的 VS Code 語言擴充（TypeScript/C/Python 等）已啟動。', parameters: { type: 'object', properties: { path: { type: 'string', description: '包含 symbol 的檔案路徑' }, line: { type: 'number', description: 'Symbol 所在行號（1-based）' }, col: { type: 'number', description: 'Symbol 所在欄號（1-based，預設 1）' } }, required: ['path', 'line'] } } },
+  { type: 'function', function: { name: 'lsp_find_references', description: '找出 symbol 在整個工作區的所有參考位置（使用語言伺服器）。回傳 file:line:col 清單。適合重構前確認影響範圍，或找出哪些地方呼叫了此函式。', parameters: { type: 'object', properties: { path: { type: 'string', description: '包含 symbol 的檔案路徑' }, line: { type: 'number', description: 'Symbol 所在行號（1-based）' }, col: { type: 'number', description: 'Symbol 所在欄號（1-based，預設 1）' }, include_declaration: { type: 'boolean', description: '是否包含宣告位置（預設 true）' } }, required: ['path', 'line'] } } },
+  { type: 'function', function: { name: 'lsp_hover', description: '取得 symbol 的 hover 資訊（型別簽名、JSDoc/Doxygen 文件、參數說明）。使用語言伺服器，等同於在 VS Code 中把滑鼠移到 symbol 上。適合快速確認函式簽名或型別定義。', parameters: { type: 'object', properties: { path: { type: 'string', description: '包含 symbol 的檔案路徑' }, line: { type: 'number', description: 'Symbol 所在行號（1-based）' }, col: { type: 'number', description: 'Symbol 所在欄號（1-based，預設 1）' } }, required: ['path', 'line'] } } },
+  { type: 'function', function: { name: 'lsp_diagnostics', description: '取得語言伺服器的診斷資訊（錯誤/警告/提示）。**不指定 path 時回傳整個工作區所有診斷問題**；指定 path 時只回傳該檔案。適合確認編譯錯誤、型別錯誤、未使用 import 等問題。優先在 write_file/replace_in_file 之後呼叫此工具確認無錯誤。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑（可選，空白 = 全工作區）' }, severity: { type: 'string', enum: ['error', 'warning', 'all'], description: '過濾嚴重度（預設 all）' } }, required: [] } } },
+  { type: 'function', function: { name: 'lsp_rename_symbol', description: '透過語言伺服器跨工作區重新命名 symbol（等同 VS Code F2 Rename）。會更新所有參考檔案，回傳修改的檔案清單。**比 batch_replace 更精準**（只改真正的 symbol 參考，不改字串常數或注解中的同名文字）。操作前需使用者確認。', parameters: { type: 'object', properties: { path: { type: 'string', description: '包含 symbol 的檔案路徑' }, line: { type: 'number', description: 'Symbol 所在行號（1-based）' }, col: { type: 'number', description: 'Symbol 所在欄號（1-based，預設 1）' }, new_name: { type: 'string', description: '新名稱' } }, required: ['path', 'line', 'new_name'] } } },
+  { type: 'function', function: { name: 'lsp_document_symbols', description: '列出檔案中所有 symbol（函式、類別、介面、變數、enum 等）及其行號與層次結構。使用語言伺服器，比 outline_file 更精準（使用真正的語法分析）。適合快速了解大型檔案的 API surface 或確認類別成員。', parameters: { type: 'object', properties: { path: { type: 'string', description: '檔案路徑' } }, required: ['path'] } } },
 ];
 
 // ── Derived exports ───────────────────────────────────────────────────────────
@@ -102,23 +154,64 @@ export const ALL_TOOLS = [...AGENT_TOOLS, SEARCH_TOOLS_TOOL, WORKFLOW_RUN_TOOL, 
 /** LLM-facing toolset: core tools + meta-tools. */
 export const LLM_TOOLS = [...CORE_TOOLS, SEARCH_TOOLS_TOOL, WORKFLOW_RUN_TOOL, WORKFLOW_LIST_TOOL];
 
+// ── TF-IDF tool search ──────────────────────────────────────────────────────
+
+function _tokenize(text: string): string[] {
+  return text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(t => t.length > 1);
+}
+
+/** Smoothed IDF: log((N+1)/(df+1)) + 1, computed once at module load. */
+const _idf: ReadonlyMap<string, number> = (() => {
+  const N = EXTRA_TOOLS.length;
+  const df = new Map<string, number>();
+  for (const tool of EXTRA_TOOLS) {
+    const terms = new Set(_tokenize(`${tool.function.name} ${tool.function.description}`));
+    for (const t of terms) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+  const idf = new Map<string, number>();
+  for (const [term, count] of df) idf.set(term, Math.log((N + 1) / (count + 1)) + 1);
+  return idf;
+})();
+
+function _tfidfVec(tokens: string[]): Map<string, number> {
+  const tf = new Map<string, number>();
+  for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
+  const vec = new Map<string, number>();
+  const len = tokens.length || 1;
+  // unseen terms get IDF = log((N+1)/1)+1 ≈ high weight for novel query terms
+  const unseenIdf = Math.log(EXTRA_TOOLS.length + 2) + 1;
+  for (const [t, count] of tf) vec.set(t, (count / len) * (_idf.get(t) ?? unseenIdf));
+  return vec;
+}
+
+function _cosine(a: Map<string, number>, b: Map<string, number>): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (const [t, v] of a) { dot += v * (b.get(t) ?? 0); normA += v * v; }
+  for (const v of b.values()) normB += v * v;
+  return normA === 0 || normB === 0 ? 0 : dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+/** Pre-computed TF-IDF vectors for all EXTRA_TOOLS (avoids recompute per query). */
+const _toolVecs: ReadonlyMap<string, Map<string, number>> = (() => {
+  const m = new Map<string, Map<string, number>>();
+  for (const tool of EXTRA_TOOLS) {
+    m.set(tool.function.name, _tfidfVec(_tokenize(`${tool.function.name} ${tool.function.description}`)));
+  }
+  return m;
+})();
+
 /**
- * Simple keyword-based search over EXTRA_TOOLS.
- * Returns up to topK matching tool definitions.
+ * TF-IDF + cosine similarity search over EXTRA_TOOLS.
+ * Returns up to topK tool definitions ranked by semantic relevance.
  */
 export function searchExtraTools(query: string, topK = 5): typeof EXTRA_TOOLS {
-  const terms = query.toLowerCase().split(/\W+/).filter(t => t.length > 2);
-  if (terms.length === 0) return EXTRA_TOOLS.slice(0, topK);
-  const scored = EXTRA_TOOLS.map(tool => {
-    const text = `${tool.function.name} ${tool.function.description}`.toLowerCase();
-    let score = 0;
-    for (const term of terms) {
-      // Exact name match is a strong signal
-      if (tool.function.name.includes(term)) score += 3;
-      else if (text.includes(term)) score += 1;
-    }
-    return { tool, score };
-  });
+  const queryTokens = _tokenize(query);
+  if (queryTokens.length === 0) return EXTRA_TOOLS.slice(0, topK);
+  const queryVec = _tfidfVec(queryTokens);
+  const scored = EXTRA_TOOLS.map(tool => ({
+    tool,
+    score: _cosine(queryVec, _toolVecs.get(tool.function.name)!),
+  }));
   return scored
     .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
@@ -127,7 +220,10 @@ export function searchExtraTools(query: string, topK = 5): typeof EXTRA_TOOLS {
 }
 
 export function getToolIcon(name: string): string {
-  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', read_files: '📚', write_file: '💾', replace_in_file: '✏️', insert_in_file: '📌', glob: '📂', outline_file: '📑', todo_write: '✅', memory_read: '🧠', memory_write: '📝', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_search: '🔍', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_log_time: '⏱️', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', agentic_file_search: '🧠', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_connect: '📱', whatsapp_disconnect: '📵', whatsapp_status: '📶', whatsapp_save_credentials: '🔐', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊', read_workspace: '🗂️', agent_run_tool: '🔁', 'agent:run_tool': '🔁', read_file_smart: '🔬', rename_file: '✂️', copy_file: '📋', diff_files: '🔀', replace_all_in_file: '✏️', batch_replace: '🔁', file_info: 'ℹ️', organize_photos: '🖼️', search_tools: '🔭', workflow_run: '⚙️', workflow_list: '📋' };
+  const m: Record<string, string> = { get_active_file: '📝', read_file: '📄', read_files: '📚', write_file: '💾', replace_in_file: '✏️', insert_in_file: '📌', glob: '📂', outline_file: '📑', todo_write: '✅', memory_read: '🧠', memory_write: '📝', list_dir: '📁', run_terminal: '⚡', search_workspace: '🔍', delete_file: '🗑️', create_dir: '📂', run_command: '▶️', fetch_url: '🌐', open_browser: '💻', manage_todo: '📝', vscode_action: '🎨', jira_search: '🔍', jira_fetch: '📋', jira_open: '🎫', jira_create: '🎫', jira_transition: '🔄', jira_log_time: '⏱️', jira_attachment_download: '📎', bb_create_pr: '🔀', rovo_ask: '🤖', run_python: '🐍', git_status: '📊', git_diff: '🔀', git_log: '📜', git_commit: '✅', http_request: '📡', db_query: '🗃️', search_regex: '🔎', agentic_file_search: '🧠', lint_fix: '🧹', run_tests: '🧪', browser_navigate: '🧭', browser_screenshot: '📸', browser_script: '🎭', generate_docs: '📚', refactor_suggest: '🔬', whatsapp_connect: '📱', whatsapp_disconnect: '📵', whatsapp_status: '📶', whatsapp_save_credentials: '🔐', whatsapp_send: '💬', whatsapp_send_template: '📣', jenkins_build: '🛠️', jenkins_status: '📊', read_workspace: '🗂️', agent_run_tool: '🔁', 'agent:run_tool': '🔁', read_file_smart: '🔬', rename_file: '✂️', copy_file: '📋', diff_files: '🔀', replace_all_in_file: '✏️', batch_replace: '🔁', file_info: 'ℹ️', organize_photos: '🖼️', search_tools: '🔭', workflow_run: '⚙️', workflow_list: '📋',
+    lsp_goto_definition: '🔗', lsp_find_references: '🔎', lsp_hover: '💡', lsp_diagnostics: '🩺', lsp_rename_symbol: '✏️', lsp_document_symbols: '🗂️',
+    run_in_background: '⏳', bg_task_status: '📊', bg_task_read: '📖', bg_task_kill: '⏹️',
+    computer_screenshot: '📸', computer_type: '⌨️', computer_key: '⌨️', computer_click: '🖱️', computer_scroll: '🖥️', computer_clipboard_read: '📋', computer_clipboard_write: '📋' };
   return m[name] ?? '🔧';
 }
 
@@ -204,6 +300,23 @@ export function formatToolTitle(name: string, args: Record<string, unknown>): st
     case 'batch_replace': return `批次取代: /${args.pattern}/ → "${(args.replace as string || '').slice(0, 40)}" (${args.include || '**/*'})`;
     case 'file_info': return `檔案資訊: ${args.path}`;
     case 'organize_photos': return `整理照片: ${args.source_dir}${args.reference_image ? ' (比對 ' + path.basename(String(args.reference_image)) + ')' : ' (依行為)'}`;
+    case 'lsp_goto_definition':    return `LSP 跳至定義: ${args.path}:${args.line}`;
+    case 'lsp_find_references':    return `LSP 找參考: ${args.path}:${args.line}`;
+    case 'lsp_hover':              return `LSP Hover: ${args.path}:${args.line}`;
+    case 'lsp_diagnostics':        return args.path ? `LSP 診斷: ${args.path}` : 'LSP 診斷: 全工作區';
+    case 'lsp_rename_symbol':      return `LSP 重新命名: ${args.path}:${args.line} → "${args.new_name}"`;
+    case 'lsp_document_symbols':   return `LSP Symbol 清單: ${args.path}`;
+    case 'run_in_background': return `背景執行: ${args.command}`;
+    case 'bg_task_status':    return `背景任務狀態${args.task_id ? ': ' + args.task_id : ' (全部)'}` ;
+    case 'bg_task_read':      return `背景任務讀取: ${args.task_id}${args.tail ? ' (tail=' + args.tail + ')' : ''}`;
+    case 'bg_task_kill':      return `終止背景任務: ${args.task_id}`;
+    case 'computer_screenshot':      return `截圖${args.save_path ? '儲存: ' + args.save_path : ''}`;
+    case 'computer_type':            return `輸入文字: ${String(args.text || '').slice(0, 60)}`;
+    case 'computer_key':             return `按鈕: ${args.key}`;
+    case 'computer_click':           return `滑鼠點擊 (${args.x}, ${args.y})${args.button && args.button !== 'left' ? ' ' + args.button : ''}`;
+    case 'computer_scroll':          return `滑鼠滚動 (${args.x}, ${args.y}) ${args.direction ?? 'down'} ${args.clicks ?? 3}`;
+    case 'computer_clipboard_read':  return '讀取剪貼板';
+    case 'computer_clipboard_write': return `寫入剪貼板: ${String(args.text || '').slice(0, 60)}`;
     case 'agent_run_tool':
     case 'agent:run_tool': {
       const targetN = (args.name ?? args.tool_name ?? args.target ?? '(未知)') as string;

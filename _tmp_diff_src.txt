@@ -1,0 +1,364 @@
+diff --git a/src/chat/AgentExecutor.ts b/src/chat/AgentExecutor.ts
+index d1e18cb..36bfb23 100644
+--- a/src/chat/AgentExecutor.ts
++++ b/src/chat/AgentExecutor.ts
+@@ -6,6 +6,7 @@ import { buildWorkspaceDigest, getCurrentContextDepth, fmtSize } from '../contex
+ import { buildAgentSystemPrompt, buildShadowSupervisorPrompt } from '../context/SystemPromptBuilder';
+ import { AgentCarryover } from './AgentCarryover';
+ import { isRefusalResponse, isChoiceConfirmation } from './RefusalDetector';
++import { TaskStore } from './TaskStore';
+ import { HeartbeatService } from '../services/HeartbeatService';
+ import {
+   buildSessionNotes,
+@@ -47,6 +48,8 @@ export interface AgentExecutorCallbacks {
+   getAgentTodos?: () => Array<{id: number; text: string; done: boolean}>;
+   /** Session Notes — Agent 執行中每 N 次工具呼叫後自動呼叫，持久化筆記 */
+   onSessionNotesUpdate: (notes: string) => Promise<void>;
++  /** 專案規則層（RULES.md）——必常注入，優先級高於記憶 */
++  getProjectRules?: () => string;
+ }
+ 
+ export interface AgentExecutorServices {
+@@ -181,18 +184,43 @@ export class AgentExecutor {
+ 
+     await this._callbacks.ensureModelReady(baseUrl, model);
+ 
+-    // Coordinator 只有兩個工具
++    // Coordinator 4 tools: task lifecycle + worker spawn
+     const coordinatorTools = [
++      {
++        type: 'function',
++        function: {
++          name: 'create_task',
++          description: 'Create a tracked task before spawning a worker. Builds a visible task plan. Returns the task_id to pass to spawn_worker.',
++          parameters: {
++            type: 'object',
++            properties: {
++              id:          { type: 'string',  description: 'Short stable identifier, e.g. "explore-auth", "implement-login" (auto-generated if omitted)' },
++              description: { type: 'string',  description: 'What the worker should accomplish' },
++              context:     { type: 'string',  description: 'Background info / constraints for the worker (optional)' },
++            },
++            required: ['description'],
++          },
++        },
++      },
++      {
++        type: 'function',
++        function: {
++          name: 'list_tasks',
++          description: 'Show all tasks and their current status (created/claimed/completed/failed/blocked). Call after spawning workers to review progress.',
++          parameters: { type: 'object', properties: {} },
++        },
++      },
+       {
+         type: 'function',
+         function: {
+           name: 'spawn_worker',
+-          description: 'Spawn a Worker agent that has access to all tools (read, write, execute). The worker will independently complete the subtask and report back. Use this to delegate concrete work.',
++          description: 'Spawn a Worker agent to execute a subtask. If you created a task with create_task, pass its id via task_id to link them.',
+           parameters: {
+             type: 'object',
+             properties: {
+               task:    { type: 'string', description: 'Clear description of the specific subtask for the worker' },
+               context: { type: 'string', description: 'Optional background context or constraints for the worker' },
++              task_id: { type: 'string', description: 'Optional: ID of a task created with create_task (transitions it created→claimed)' },
+             },
+             required: ['task'],
+           },
+@@ -202,7 +230,7 @@ export class AgentExecutor {
+         type: 'function',
+         function: {
+           name: 'coordinator_done',
+-          description: 'Signal that all subtasks have been delegated and completed. Provide a summary of what was accomplished.',
++          description: 'Signal that all subtasks are complete. Provide a summary of what was accomplished.',
+           parameters: {
+             type: 'object',
+             properties: {
+@@ -216,9 +244,10 @@ export class AgentExecutor {
+ 
+     const systemPrompt = [
+       '你是任務協調員（Coordinator）。你的職責是：',
+-      '1. 分析使用者的任務，規劃執行步驟',
++      '1. 分析使用者的任務，先呼叫 create_task 建立計劃（可選，但建議）',
+       '2. 使用 spawn_worker 將具體工作委派給 Worker agent（Worker 有完整工具存取）',
+-      '3. 收到 Worker 回傳結果後，決定下一步或使用 coordinator_done 完成',
++      '3. 收到 Worker 回傳結果後，可用 list_tasks 查看全局進度，再決定下一步',
++      '4. 全部完成後呼叫 coordinator_done',
+       '',
+       '規則：',
+       '- 你自己不執行任何工具操作，只做規劃和協調',
+@@ -233,6 +262,7 @@ export class AgentExecutor {
+     ];
+ 
+     let workerCount = 0;
++    const taskStore = new TaskStore();
+     const MAX_STEPS = 20;
+ 
+     try {
+@@ -276,22 +306,51 @@ export class AgentExecutor {
+           if (fn.name === 'coordinator_done') {
+             const summary = String(args.summary ?? '');
+             this._callbacks.postToWebview({ type: 'agentStep', icon: '✅', title: `協調完成：${summary.slice(0, 80)}`, fullPath: '' });
++            this._callbacks.postToWebview({ type: 'taskUpdate', tasks: taskStore.getAll() });
+             coordinatorMessages.push({ role: 'tool', content: 'done', tool_call_id: toolCall.id ?? fn.name });
+             allDone = true;
+             break;
+           }
+ 
++          if (fn.name === 'create_task') {
++            const t = taskStore.create(
++              String(args.description ?? ''),
++              String(args.context ?? '') || undefined,
++              String(args.id ?? '') || undefined,
++            );
++            this._callbacks.postToWebview({ type: 'taskUpdate', tasks: taskStore.getAll() });
++            coordinatorMessages.push({ role: 'tool', content: `任務 [${t.id}] 已建立：${t.description}`, tool_call_id: toolCall.id ?? fn.name });
++            continue;
++          }
++
++          if (fn.name === 'list_tasks') {
++            coordinatorMessages.push({ role: 'tool', content: taskStore.format(), tool_call_id: toolCall.id ?? fn.name });
++            continue;
++          }
++
+           if (fn.name === 'spawn_worker') {
+             workerCount++;
+             const task    = String(args.task    ?? '');
+             const context = String(args.context ?? '');
+-            this._callbacks.postToWebview({ type: 'agentStep', icon: '🔧', title: `Worker #${workerCount}：${task.slice(0, 80)}`, fullPath: '' });
++            const taskId  = String(args.task_id ?? '').trim();
++
++            // Ensure task is tracked: link to existing or auto-create
++            const trackId = taskId && taskStore.get(taskId)
++              ? taskId
++              : taskStore.create(task, context || undefined, taskId || undefined).id;
++            taskStore.claim(trackId, workerCount);
++            this._callbacks.postToWebview({ type: 'taskUpdate', tasks: taskStore.getAll() });
++            this._callbacks.postToWebview({ type: 'agentStep', icon: '🔧', title: `Worker #${workerCount} [${trackId}]：${task.slice(0, 70)}`, fullPath: '' });
++
++            const result = await this._runWorker(task, context, model, baseUrl, workerCount);
+ 
+-            const workerResult = await this._runWorker(task, context, model, baseUrl, workerCount);
++            const resolveStatus = result.status === 'error' ? 'failed' : result.status as 'completed' | 'failed' | 'blocked';
++            taskStore.resolve(trackId, resolveStatus, result.text);
++            this._callbacks.postToWebview({ type: 'taskUpdate', tasks: taskStore.getAll() });
+ 
+-            const preview = workerResult.length > 300 ? workerResult.slice(0, 300) + '…' : workerResult;
+-            this._callbacks.postToWebview({ type: 'agentStepDone', result: preview, isError: false });
+-            coordinatorMessages.push({ role: 'tool', content: workerResult, tool_call_id: toolCall.id ?? fn.name });
++            const preview = result.text.length > 300 ? result.text.slice(0, 300) + '…' : result.text;
++            this._callbacks.postToWebview({ type: 'agentStepDone', result: preview, isError: result.status !== 'completed' });
++            coordinatorMessages.push({ role: 'tool', content: result.text, tool_call_id: toolCall.id ?? fn.name });
+           }
+         }
+ 
+@@ -313,14 +372,17 @@ export class AgentExecutor {
+     model: string,
+     baseUrl: string,
+     workerIdx: number,
+-  ): Promise<string> {
+-    const { LLM_TOOLS, searchExtraTools } = await import('../tools/ToolRegistry');
++  ): Promise<{ text: string; status: 'completed' | 'failed' | 'blocked' | 'error' }> {
++    const { LLM_TOOLS, REPORT_RESULT_TOOL, searchExtraTools } = await import('../tools/ToolRegistry');
+     const { loadWorkflow, listWorkflows, buildWorkflowCoordinatorPrompt } = await import('../services/WorkflowEngine');
+ 
+     const workerSystemPrompt = [
+       `你是 Worker Agent #${workerIdx}。你有 CORE 工具集；如需其他工具，呼叫 search_tools(query) 找到後即可使用。`,
+-      '你的職責：接收協調員委派的子任務，使用工具完成後回傳結果文字。',
+-      '規則：直接用工具完成工作，完成後輸出清晰的結果摘要。',
++      '你的職責：使用工具完成協調員委派的子任務，最後**必須**呼叫 report_result 回報。',
++      '規則：',
++      '1. 直接用工具完成任務，勿過多解說',
++      '2. 完成後呼叫 report_result(status, summary, files_changed?)，summary 限 500 字',
++      '3. 協調員只看 report_result 的摘要，不看工具輸出詳情',
+       `工作區：${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()}`,
+     ].join('\n');
+ 
+@@ -329,12 +391,14 @@ export class AgentExecutor {
+       { role: 'user', content: context ? `任務：${task}\n\n背景：${context}` : `任務：${task}` },
+     ];
+ 
+-    // Dynamically extended tool set — starts with LLM_TOOLS, grows as model calls search_tools
+-    let activeLlmTools: unknown[] = [...LLM_TOOLS];
++    // Dynamically extended tool set — starts with LLM_TOOLS + report_result
++    let activeLlmTools: unknown[] = [...LLM_TOOLS, REPORT_RESULT_TOOL];
+     const MAX_WORKER_STEPS = 30;
+     let finalText = '';
++    let finalStatus: 'completed' | 'failed' | 'blocked' | 'error' = 'completed';
++    let workerDone = false;
+ 
+-    for (let step = 0; step < MAX_WORKER_STEPS && !this._agentCancel; step++) {
++    for (let step = 0; step < MAX_WORKER_STEPS && !this._agentCancel && !workerDone; step++) {
+       let response: AgentExecutorChatMessage;
+       try {
+         if (model.startsWith('copilot::')) {
+@@ -351,7 +415,7 @@ export class AgentExecutor {
+           );
+         }
+       } catch (err) {
+-        return `Worker 錯誤：${err instanceof Error ? err.message : String(err)}`;
++        return { text: `Worker 錯誤：${err instanceof Error ? err.message : String(err)}`, status: 'error' };
+       }
+ 
+       workerMessages.push({ role: 'assistant', content: response.content ?? null, tool_calls: response.tool_calls });
+@@ -362,6 +426,26 @@ export class AgentExecutor {
+         const fn = toolCall.function;
+         const args = (typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments) as Record<string, unknown>;
+ 
++        // ── report_result: Worker summary → Coordinator (only visible output) ──
++        if (fn.name === 'report_result') {
++          const status       = String(args.status ?? 'completed');
++          const summary      = String(args.summary ?? '').slice(0, 500);
++          const filesChanged = Array.isArray(args.files_changed) ? (args.files_changed as string[]) : [];
++          const errors       = String(args.errors ?? '');
++          const icon         = status === 'completed' ? '✅' : status === 'failed' ? '❌' : '⚠️';
++
++          const parts = [`[Worker #${workerIdx} ${icon} ${status}]`, `摘要：${summary}`];
++          if (filesChanged.length) parts.push(`修改檔案：${filesChanged.join(', ')}`);
++          if (errors) parts.push(`錯誤：${errors}`);
++          finalText = parts.join('\n');
++          finalStatus = status as 'completed' | 'failed' | 'blocked';
++
++          this._callbacks.postToWebview({ type: 'agentStepDone', result: summary.slice(0, 200), isError: status !== 'completed' });
++          workerMessages.push({ role: 'tool', content: 'done', tool_call_id: toolCall.id ?? fn.name });
++          workerDone = true;
++          break; // exits inner for-loop; outer loop exits via !workerDone
++        }
++
+         // ── search_tools: TF-IDF deferred tool discovery ─────────────────────
+         if (fn.name === 'search_tools') {
+           const query = String(args.query ?? '');
+@@ -428,7 +512,7 @@ export class AgentExecutor {
+       }
+     }
+ 
+-    return finalText || '（Worker 完成但無文字輸出）';
++    return { text: finalText || '（Worker 完成但無文字輸出）', status: finalStatus };
+   }
+ 
+   public switchSession(sessionId: string): void {
+@@ -582,6 +666,7 @@ export class AgentExecutor {
+ 
+       this._callbacks.clearAgentTodos();
+       const ltm = this._callbacks.getLongTermMemory();
++      const projectRules = this._callbacks.getProjectRules?.() ?? '';
+       // Session Notes：載入上次筆記（若有），注入 system prompt 讓模型知道上次進度
+       const sessionNotes = await this._callbacks.getSessionNotes();
+       if (sessionNotes) {
+@@ -599,6 +684,7 @@ export class AgentExecutor {
+           activeFileBlock,
+           workspaceDigestBlock,
+           longTermMemory: ltm,
++          projectRules: projectRules || undefined,
+           sessionNotes: sessionNotes || undefined,
+         }),
+       });
+diff --git a/src/context/SystemPromptBuilder.ts b/src/context/SystemPromptBuilder.ts
+index 5b5bc3e..e4ada3a 100644
+--- a/src/context/SystemPromptBuilder.ts
++++ b/src/context/SystemPromptBuilder.ts
+@@ -22,6 +22,8 @@ export interface BuildSystemPromptInput {
+   persona?: string;
+   /** Hard policy rules（如 Atlassian / 不要修改某些檔案） */
+   policy?: string;
++  /** 專案規則層（RULES.md）——必常注入，優先級高於記憶索引 */
++  rules?: string;
+   /** MEMORY.md index 內容（短期 + 長期記憶索引） */
+   memoryIndex?: string;
+   /** Workspace 概況（git status, project root, open files 計數等） */
+@@ -50,6 +52,10 @@ export function buildSystemPrompt(input: BuildSystemPromptInput): string {
+     parts.push(`## Policy\n\n${input.policy.trim()}`);
+   }
+ 
++  if (input.rules?.trim()) {
++    parts.push(`## Project Rules\n\n${input.rules.trim()}`);
++  }
++
+   if (input.memoryIndex?.trim()) {
+     parts.push(`## Long-term memory index\n\n${input.memoryIndex.trim()}`);
+   }
+@@ -219,8 +225,10 @@ export interface BuildAgentSystemPromptInput {
+   activeFileBlock?: string;
+   /** 工作區深度解析摘要區塊（可空） */
+   workspaceDigestBlock?: string;
+-  /** 長期記憶內容（可空） */
++  /** 長期記憶內容（可空）——惰性第2層 */
+   longTermMemory?: string;
++  /** 專案規則層（RULES.md）——必常注入，優先級高於記憶 */
++  projectRules?: string;
+   /** Webview 当前狀態資訊（任務進度、面板名稱等） */
+   webviewContext?: string;
+   /**
+@@ -248,6 +256,7 @@ export function buildAgentSystemPrompt(input: BuildAgentSystemPromptInput): stri
+   const ltm = (input.longTermMemory ?? '').trim();
+   const sn = (input.sessionNotes ?? '').trim();
+   const wv = (input.webviewContext ?? '').trim();
++  const pr = (input.projectRules ?? '').trim();
+   return `【AGENT 模式 — 非 Ask/Chat 模式】你是 AmiClaw Agent，一個在 VS Code 內直接呼叫工具、自主執行任務的程式開發代理人，不是被動問答助手。你的職責是：呼叫工具取得資訊 → 執行操作 → 回報結果。絕對不能說「你可以執行…」「建議你…」「以下步驟…」——這些是 Ask 模式才有的行為；在此模式下你必須自己呼叫工具。
+ 工作區資料夾: ${input.folderList}。${activeFileText}${openFilesText}${input.activeFileBlock ?? ''}${input.workspaceDigestBlock ?? ''}
+ 
+@@ -258,6 +267,7 @@ ${CODE_ANALYSIS_METHOD}
+ ${AGENT_TOOLS_OVERVIEW}
+ 
+ ${AGENT_ATLASSIAN_RULES}
++${pr ? `\n## Project Rules (RULES.md)\n\n${pr}` : ''}
+ ${ltm ? `\n## 長期記憶\n${ltm}` : ''}
+ ${sn ? `\n## 上次 Session 記錄\n\n> 以下是你上次執行時自動儲存的筆記，請據此繼續未完成的工作。\n\n${sn}` : ''}
+ ${wv ? `\n## Webview 当前狀態\n\n${wv}` : ''}
+diff --git a/src/memdir/memdir.ts b/src/memdir/memdir.ts
+index e6c2262..4dfb58c 100644
+--- a/src/memdir/memdir.ts
++++ b/src/memdir/memdir.ts
+@@ -112,4 +112,23 @@ export default {
+   readMemoryIndex,
+   saveMemoryIndex,
+   listMemoryFiles,
++  loadRulesLayer,
+ };
++
++const RULES_NAME = 'RULES.md';
++
++/**
++ * 載入「規則層」——每次請求必常注入的專案規範 / 編碼規則 / flow 描述。
++ * 搜尋順序： workspace/.amiclaw/RULES.md → ~/.amiclaw/RULES.md
++ */
++export async function loadRulesLayer(): Promise<string> {
++  // 1. 各工作區根目錄 .amiclaw/RULES.md
++  const folders = vscode.workspace.workspaceFolders ?? [];
++  for (const folder of folders) {
++    const candidate = path.join(folder.uri.fsPath, '.amiclaw', RULES_NAME);
++    try { return (await fs.readFile(candidate, 'utf8')).trim(); } catch { /* 試下一個 */ }
++  }
++  // 2. 全域： ~/.amiclaw/RULES.md
++  try { return (await fs.readFile(path.join(paths.getMemoryBaseDir(), RULES_NAME), 'utf8')).trim(); } catch {}
++  return '';
++}
+diff --git a/src/ollama-chat.ts b/src/ollama-chat.ts
+index 2dcde55..f864126 100644
+--- a/src/ollama-chat.ts
++++ b/src/ollama-chat.ts
+@@ -67,6 +67,7 @@ export class OllamaChatPanel {
+   private _webviewSessionsPersistTimer: NodeJS.Timeout | null = null;
+   private _latestWebviewSessions: unknown = null; // dispose 時強制 flush 用
+   private _ltmCache = '';  // eager-loaded at init; avoids async race in getLongTermMemory()
++  private _rulesCache = '';  // eager-loaded RULES.md (layer-1, always injected)
+   // ── 工作檔對話記錄模式 ────────────────────────────────────────────────────────
+   private _todoModePrompt: string | undefined;   // 非 undefined 表示目前在 todo 模式
+   private _todoAccumulator = '';                  // 累積 agentChunk / assistant 文字
+@@ -423,6 +424,7 @@ export class OllamaChatPanel {
+         getChatHistory: () => this._chatHistory,
+         getActiveSessionId: () => this._activeSessionId,
+         getLongTermMemory: () => this.getLongTermMemory(),
++        getProjectRules: () => this._rulesCache,
+         trackUsage: (m, t, mul, tc) => this.trackUsage(m, t, mul, tc),
+         trackLatency: (m, ms) => this.trackLatency(m, ms),
+         ensureModelReady: (url, mdl) => this._queryEngine.ensureModelReady(url, mdl),
+@@ -505,6 +507,8 @@ export class OllamaChatPanel {
+       try {
+         const fileLtm = await memdir.readMemoryIndex();
+         this._ltmCache = fileLtm.trim()
++        // Load rules layer (always-injected project conventions)
++        try { this._rulesCache = await memdir.loadRulesLayer(); } catch { this._rulesCache = ''; }
+           ? fileLtm
+           : (this._context.globalState.get<string>('amiAiClaw.longTermMemory') ?? '');
+       } catch {

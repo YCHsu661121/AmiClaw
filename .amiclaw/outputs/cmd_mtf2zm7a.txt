@@ -1,0 +1,267 @@
+D:\Tools\AmiClaw\node_modules\.bin\tsc
+C:\Users\YCHsu\AppData\Local\Programs\DockerDesktop\frontend\resources\app.asar.unpacked\build\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\DockerDesktop\frontend\resources\app.asar.unpacked\build\node_modules\@bugsnag\plugin-electron-app\build\Release\bugsnag_plugin_electron_app_bindings.node
+C:\Users\YCHsu\AppData\Local\Programs\DockerDesktop\frontend\resources\app.asar.unpacked\build\node_modules\@bugsnag\plugin-electron-client-state-persistence\build\Release\bugsnag_pecsp_bindings.node
+C:\Users\YCHsu\AppData\Local\Programs\DockerDesktop\frontend\resources\app.asar.unpacked\build\Release\conpty.node
+C:\Users\YCHsu\AppData\Local\Programs\DockerDesktop\frontend\resources\app.asar.unpacked\build\Release\conpty_console_list.node
+C:\Users\YCHsu\AppData\Local\Programs\DockerDesktop\frontend\resources\app.asar.unpacked\build\Release\pty.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\copilot\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\copilot\node_modules\@github\copilot\sdk\prebuilds\win32-x64\cli-native.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\copilot\node_modules\@github\copilot\sdk\prebuilds\win32-x64\runtime.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\css-language-features\client\dist\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\css-language-features\server\dist\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\emmet\dist\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\emmet\dist\node\emmetNodeMain.js
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\git\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\html-language-features\client\dist\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\html-language-features\server\dist\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\ipynb\dist\ipynbMain.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\json-language-features\client\dist\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\json-language-features\server\dist\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\microsoft-authentication\dist\msal-node-runtime.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\ms-vscode.js-debug\resources\dark\node.svg
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\ms-vscode.js-debug\resources\light\node.svg
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\ms-vscode.js-debug\src\win32-app-container-tokens.win32-arm64-msvc-4ZJZ3U55.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\ms-vscode.js-debug\src\win32-app-container-tokens.win32-x64-msvc-VCQE7GJP.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\ms-vscode.js-debug\src\targets\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\extensions\typescript-language-features\resources\walkthroughs\install-node-js.svg
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules\@vscode\sandbox-runtime\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules\vsda\build\Release\vsda.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\node-pty
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@github\copilot-win32-x64\napi-oop-runtime\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@github\copilot-win32-x64\prebuilds\win32-x64\cli-native.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@github\copilot-win32-x64\prebuilds\win32-x64\msal-node-runtime.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@github\copilot-win32-x64\prebuilds\win32-x64\runtime.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@parcel\watcher\build\Release\watcher.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\deviceid\build\Release\windows.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\native-watchdog\build\Release\watchdog.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\os-proxy-resolver-win32-x64-msvc\os_proxy_resolver.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\policy-watcher\build\Release\vscode-policy-watcher.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\spdlog\build\Release\spdlog.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\sqlite3\build\Release\vscode-sqlite3.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\windows-ca-certs\build\Release\crypt32.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\windows-mutex\build\Release\CreateMutex.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\windows-process-tree\build\Release\windows_process_tree.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\@vscode\windows-registry\build\Release\winregistry.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\kerberos\build\Release\kerberos.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\native-is-elevated\build\Release\iselevated.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\native-keymap\build\Release\keymapping.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\node-pty\build\Release\conpty.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\node-pty\build\Release\conpty_console_list.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\vsda\build\Release\vsda.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\node_modules.asar.unpacked\windows-foreground-love\build\Release\foreground_love.node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\out\vs\base\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\out\vs\code\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\out\vs\platform\agentHost\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\out\vs\platform\files\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\out\vs\platform\localTranscription\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\out\vs\platform\terminal\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\out\vs\workbench\api\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\out\vs\workbench\contrib\debug\node
+C:\Users\YCHsu\AppData\Local\Programs\Microsoft VS Code\08d4889f9e\resources\app\out\vs\workbench\contrib\externalTerminal\node
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\formdata-node
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\node-abi
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\node-domexception
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\node-fetch
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\shims\node.d.ts.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\shims\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\shims\node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\shims\node.mjs
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\shims\node.mjs.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\src\shims\node.ts
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\src\_shims\node-runtime.ts
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\src\_shims\node-types.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\src\_shims\node-types.mjs
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\src\_shims\auto\runtime-node.ts
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\src\_shims\auto\types-node.ts
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\node-runtime.d.ts.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\node-runtime.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\node-runtime.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\node-runtime.mjs
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\node-runtime.mjs.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\node-types.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\node-types.mjs
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\runtime-node.d.ts.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\runtime-node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\runtime-node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\runtime-node.mjs
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\runtime-node.mjs.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\types-node.d.ts.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\types-node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\types-node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\types-node.mjs
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@anthropic-ai\sdk\_shims\auto\types-node.mjs.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@hono\node-server
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@img\sharp-win32-x64\lib\sharp-win32-x64.node
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@next\swc-win32-x64-msvc\next-swc.win32-x64-msvc.node
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@open-design\daemon\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@open-design\daemon\node_modules\body-parser\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@open-design\daemon\node_modules\debug\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@open-design\daemon\node_modules\debug\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@open-design\daemon\node_modules\debug\src\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@open-design\daemon\node_modules\iconv-lite\lib\extend-node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@open-design\web\.next\server\chunks\ssr\node_modules__pnpm_0t3osk2._.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@open-design\web\.next\server\chunks\ssr\node_modules__pnpm_0t3osk2._.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@types\node
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\@types\node-fetch
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\better-sqlite3\build\Release\better_sqlite3.node
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\body-parser\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\caniuse-lite\data\features\childnode-remove.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\concat-stream\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\debug\src\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\express\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\form-data\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\hono\dist\cjs\router\reg-exp-router\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\hono\dist\cjs\router\trie-router\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\hono\dist\router\reg-exp-router\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\hono\dist\router\trie-router\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\humanize-ms\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\jszip\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\jszip\lib\nodejs
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\jszip\lib\nodejsUtils.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\jszip\lib\nodejs\NodejsStreamInputAdapter.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\jszip\lib\nodejs\NodejsStreamOutputAdapter.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\jszip\lib\reader\NodeBufferReader.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\build\adapter\setup-node-env.external.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\build\adapter\setup-node-env.external.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\node-html-parser
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\@vercel\og\index.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom\server.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom\static.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom\cjs\react-dom-server-legacy.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom\cjs\react-dom-server-legacy.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom\cjs\react-dom-server.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom\cjs\react-dom-server.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom-experimental\server.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom-experimental\static.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom-experimental\cjs\react-dom-server-legacy.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom-experimental\cjs\react-dom-server-legacy.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom-experimental\cjs\react-dom-server.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-dom-experimental\cjs\react-dom-server.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack\client.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack\server.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack\static.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack\cjs\react-server-dom-turbopack-client.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack\cjs\react-server-dom-turbopack-client.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack\cjs\react-server-dom-turbopack-server.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack\cjs\react-server-dom-turbopack-server.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack-experimental\client.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack-experimental\server.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack-experimental\static.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack-experimental\cjs\react-server-dom-turbopack-client.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack-experimental\cjs\react-server-dom-turbopack-client.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack-experimental\cjs\react-server-dom-turbopack-server.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-turbopack-experimental\cjs\react-server-dom-turbopack-server.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack\client.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack\node-register.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack\server.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack\static.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack\cjs\react-server-dom-webpack-client.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack\cjs\react-server-dom-webpack-client.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack\cjs\react-server-dom-webpack-node-register.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack\cjs\react-server-dom-webpack-server.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack\cjs\react-server-dom-webpack-server.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack-experimental\client.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack-experimental\node-register.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack-experimental\server.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack-experimental\static.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack-experimental\cjs\react-server-dom-webpack-client.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack-experimental\cjs\react-server-dom-webpack-client.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack-experimental\cjs\react-server-dom-webpack-node-register.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack-experimental\cjs\react-server-dom-webpack-server.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\react-server-dom-webpack-experimental\cjs\react-server-dom-webpack-server.node.production.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\webpack\lazy-compilation-node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\webpack\NodeEnvironmentPlugin.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\webpack\NodeTargetPlugin.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\compiled\webpack\NodeTemplatePlugin.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\build\adapter\setup-node-env.external.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\build\adapter\setup-node-env.external.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\next-devtools\server\attach-nodejs-debugger-middleware.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\next-devtools\server\attach-nodejs-debugger-middleware.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\next-devtools\userspace\app\segment-explorer-node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\next-devtools\userspace\app\segment-explorer-node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\node-environment-baseline.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\node-environment-baseline.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\node-environment-extensions
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\node-environment.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\node-environment.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\node-polyfill-crypto.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\node-polyfill-crypto.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\api-utils\node
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\app-render\react-server.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\app-render\react-server.node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\base-http\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\base-http\node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\dev\node-stack-frames.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\dev\node-stack-frames.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\lib\node-fs-methods.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\lib\node-fs-methods.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\lib\module-loader\node-module-loader.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\lib\module-loader\node-module-loader.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\lib\router-utils\instrumentation-node-extensions.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\lib\router-utils\instrumentation-node-extensions.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\node-environment-extensions\node-crypto.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\node-environment-extensions\node-crypto.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\route-matcher-providers\helpers\manifest-loaders\node-manifest-loader.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\route-matcher-providers\helpers\manifest-loaders\node-manifest-loader.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\stream-utils\node-web-streams-helper.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\esm\server\stream-utils\node-web-streams-helper.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\next-devtools\server\attach-nodejs-debugger-middleware.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\next-devtools\server\attach-nodejs-debugger-middleware.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\next-devtools\userspace\app\segment-explorer-node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\next-devtools\userspace\app\segment-explorer-node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\node-environment-baseline.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\node-environment-baseline.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\node-environment-extensions
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\node-environment.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\node-environment.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\node-polyfill-crypto.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\node-polyfill-crypto.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\api-utils\node
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\app-render\react-server.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\app-render\react-server.node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\base-http\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\base-http\node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\dev\node-stack-frames.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\dev\node-stack-frames.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\lib\node-fs-methods.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\lib\node-fs-methods.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\lib\module-loader\node-module-loader.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\lib\module-loader\node-module-loader.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\lib\router-utils\instrumentation-node-extensions.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\lib\router-utils\instrumentation-node-extensions.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\node-environment-extensions\node-crypto.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\node-environment-extensions\node-crypto.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\route-matcher-providers\helpers\manifest-loaders\node-manifest-loader.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\route-matcher-providers\helpers\manifest-loaders\node-manifest-loader.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\stream-utils\node-web-streams-helper.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\next\dist\server\stream-utils\node-web-streams-helper.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\openai\internal\ws-adapter-node.d.mts
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\openai\internal\ws-adapter-node.d.mts.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\openai\internal\ws-adapter-node.d.ts.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\openai\internal\ws-adapter-node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\openai\internal\ws-adapter-node.js.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\openai\internal\ws-adapter-node.mjs
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\openai\internal\ws-adapter-node.mjs.map
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\openai\src\internal\ws-adapter-node.ts
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\pkce-challenge\dist\index.node.cjs
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\pkce-challenge\dist\index.node.d.cts
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\pkce-challenge\dist\index.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\postcss\lib\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\pump\test-node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\react-dom\server.node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\react-dom\cjs\react-dom-server-legacy.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\react-dom\cjs\react-dom-server-legacy.node.production.min.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\react-dom\cjs\react-dom-server.node.development.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\react-dom\cjs\react-dom-server.node.production.min.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\source-map-js\lib\source-node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\string_decoder\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\type-is\node_modules
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\util-deprecate\node.js
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\app\node_modules\which\bin\node-which
+C:\Users\YCHsu\AppData\Local\Programs\Open Design\resources\open-design\bin\node.exe

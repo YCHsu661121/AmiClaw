@@ -1,0 +1,325 @@
+================================================================
+ AmiClaw PLANNING SURVEY — full re-update of line-by-line code analysis
+ Workspace: d:\Tools\AmiClaw
+ Generated: 2026-08-29 (by Worker Agent)
+ Purpose: plan a full re-update of line-by-line code analysis covering
+           every line of every code file.
+================================================================
+
+================================================================
+ (a) FULL PER-DIRECTORY FILE LIST (from _inventory.txt)
+     Paths + line counts, verbatim from _inventory.txt
+================================================================
+
+AmiClaw File Inventory
+Generated for line-by-line code analysis re-update
+Excluded: node_modules, out, dist, .git, .vscode, .research, logs, media
+
+[root]
+  .dockerignore  (14 lines)
+  .gitignore  (7 lines)
+  .vscodeignore  (22 lines)
+  Dockerfile  (25 lines)
+  agent-training.jsonl  (33 lines)
+  build.bat  (174 lines)
+  docker-compose.yml  (93 lines)
+  knip.json  (11 lines)
+  package-lock.json  (4495 lines)
+  package.json  (486 lines)
+  tsconfig.json  (16 lines)
+
+[.github]/
+  .github/UEFI Code review.agent.md  (2 lines)
+  .github/copilot-instructions.md  (6 lines)
+  .github/uefi-code-review-skills.instructions.md  (21 lines)
+
+[.github/instructions]/
+  .github/instructions/mermaid.instructions.md  (85 lines)
+
+[.github/skills/ami-firmware-coding-standards]/
+  .github/skills/ami-firmware-coding-standards/Firmware_Coding_Standards.md  (924 lines)
+  .github/skills/ami-firmware-coding-standards/SKILL.md  (163 lines)
+
+[.github/skills/ami-module-developer-standards]/
+  .github/skills/ami-module-developer-standards/Module_Developer_Standards.md  (603 lines)
+  .github/skills/ami-module-developer-standards/SKILL.md  (327 lines)
+
+[.github/skills/build-log-analyzer]/
+  .github/skills/build-log-analyzer/SKILL.md  (82 lines)
+
+[.github/skills/build-log-analyzer/scripts]/
+  .github/skills/build-log-analyzer/scripts/find-errors.ps1  (117 lines)
+
+[.github/skills/sdl-handling]/
+  .github/skills/sdl-handling/SKILL.md  (1 lines)
+
+[.github/skills/unit-test-review]/
+  .github/skills/unit-test-review/SKILL.md  (1 lines)
+
+[scripts]/
+  scripts/Dockerfile.tailscale  (22 lines)
+  scripts/WhatsAppManager.ts  (0 lines)
+  scripts/auto_cleanup_todo.py  (45 lines)
+  scripts/clean_ollama_chat.py  (0 lines)
+  scripts/create_chat_modules.js  (0 lines)
+  scripts/get_instant_status.py  (54 lines)
+  scripts/health-check.js  (153 lines)
+  scripts/log_agent_activity.py  (21 lines)
+  scripts/mk-integrations.js  (0 lines)
+  scripts/ollama-codex-proxy.js  (266 lines)
+  scripts/split_webview_renderer.py  (121 lines)
+  scripts/status_reporter.py  (70 lines)
+
+[src]/
+  src/chat-AgentExecutor.txt  (0 lines)
+  src/chat-QueryEngine.txt  (0 lines)
+  src/extension.ts  (593 lines)
+  src/ollama-chat.ts  (3052 lines)
+
+[src/autopilot]/
+  src/autopilot/AutoPilotClassifier.ts  (126 lines)
+  src/autopilot/AutoPilotDenials.ts  (70 lines)
+  src/autopilot/AutoPilotPolicy.ts  (176 lines)
+  src/autopilot/AutoPilotPrompt.ts  (123 lines)
+  src/autopilot/AutoPilotState.ts  (46 lines)
+  src/autopilot/index.ts  (68 lines)
+  src/autopilot/safeAllowlist.ts  (40 lines)
+
+[src/chat]/
+  src/chat/AgentCarryover.ts  (107 lines)
+  src/chat/AgentExecutor.ts  (1717 lines)
+  src/chat/QueryEngine.ts  (1032 lines)
+  src/chat/RefusalDetector.ts  (347 lines)
+  src/chat/TaskQueue.ts  (63 lines)
+  src/chat/TaskStore.ts  (77 lines)
+
+[src/context]/
+  src/context/HistoryCompactor.ts  (225 lines)
+  src/context/MicroCompactor.ts  (128 lines)
+  src/context/SystemPromptBuilder.ts  (313 lines)
+  src/context/TokenBudgetManager.ts  (118 lines)
+  src/context/WorkspaceDigest.ts  (264 lines)
+
+[src/debate]/
+  src/debate/DebateEngine.ts  (345 lines)
+
+[src/integrations]/
+  src/integrations/WhatsAppManager.ts  (1101 lines)
+
+[src/memdir]/
+  src/memdir/findRelevantMemories.ts  (40 lines)
+  src/memdir/memdir.ts  (134 lines)
+  src/memdir/memoryScan.ts  (20 lines)
+  src/memdir/memoryTypes.ts  (87 lines)
+  src/memdir/paths.ts  (58 lines)
+
+[src/panels]/
+  src/panels/ChatPanelAdapter.ts  (34 lines)
+
+[src/providers]/
+  src/providers/ProviderRegistry.ts  (79 lines)
+
+[src/services]/
+  src/services/HeartbeatService.ts  (114 lines)
+  src/services/SessionNotes.ts  (157 lines)
+  src/services/WorkflowEngine.ts  (70 lines)
+
+[src/services/extractMemories]/
+  src/services/extractMemories/extractMemories.ts  (281 lines)
+
+[src/team]/
+  src/team/TeamCallModel.ts  (127 lines)
+  src/team/TeamContextStore.ts  (43 lines)
+  src/team/TeamManager.ts  (1619 lines)
+  src/team/TeamShared.ts  (57 lines)
+  src/team/TeamWorkspaceScanner.ts  (153 lines)
+
+[src/tools]/
+  src/tools/AmiClaw.code-workspace  (15 lines)
+  src/tools/SandboxManager.ts  (222 lines)
+  src/tools/SandboxTypes.ts  (56 lines)
+  src/tools/ToolAuditLog.ts  (45 lines)
+  src/tools/ToolCache.ts  (33 lines)
+  src/tools/ToolExecutor.ts  (3333 lines)
+  src/tools/ToolPolicies.ts  (227 lines)
+  src/tools/ToolRegistry.ts  (328 lines)
+  src/tools/ToolTypes.ts  (18 lines)
+
+[src/tools/providers]/
+  src/tools/providers/AtlassianProvider.ts  (354 lines)
+  src/tools/providers/BackgroundProvider.ts  (166 lines)
+  src/tools/providers/ComputerUseProvider.ts  (201 lines)
+  src/tools/providers/DevToolsProvider.ts  (248 lines)
+  src/tools/providers/DockerHelpers.ts  (39 lines)
+  src/tools/providers/FileSystemProvider.ts  (597 lines)
+  src/tools/providers/GitProvider.ts  (75 lines)
+  src/tools/providers/IToolProvider.ts  (47 lines)
+  src/tools/providers/IntegrationProvider.ts  (20 lines)
+  src/tools/providers/JenkinsProvider.ts  (189 lines)
+  src/tools/providers/LspProvider.ts  (193 lines)
+  src/tools/providers/NetworkProvider.ts  (171 lines)
+  src/tools/providers/ProcessProvider.ts  (128 lines)
+  src/tools/providers/SearchProvider.ts  (109 lines)
+  src/tools/providers/VscodeProvider.ts  (90 lines)
+
+[src/webview]/
+  src/webview/WebviewRenderer.test.js  (136 lines)
+  src/webview/WebviewRenderer.ts  (4127 lines)
+
+[tools]/
+  tools/check_html.js  (18 lines)
+  tools/check_newline.js  (13 lines)
+  tools/check_return.js  (8 lines)
+  tools/check_return2.js  (5 lines)
+  tools/check_return3.js  (10 lines)
+  tools/check_surr.js  (11 lines)
+  tools/check_wai.js  (14 lines)
+  tools/decode_atlascode.py  (120 lines)
+  tools/find_l144.js  (15 lines)
+
+Total files: 110
+
+Note: _inventory.txt excludes node_modules, out, dist, .git, .vscode,
+.research, logs, media. (out/ is compiled build output of src/; a full
+re-update normally targets source files only.)
+
+================================================================
+ (b) EXISTING ANALYSIS DOCS — path, line count, coverage, depth,
+     date/last-updated note
+================================================================
+
+1) _audit_1.md  (85 lines)
+   - Covers: full src/ directory tree (depth 2, folders+files) and the
+     package.json "scripts" section, both quoted.
+   - Depth: STRUCTURAL / summary-level (inventory listing + verbatim
+     package.json scripts excerpt; no per-line code analysis).
+   - Date note: none in file. File mtime: 2026-08-29 10:12.
+
+2) _audit_3.md  (12 lines)
+   - Covers: chat message rendering — src/webview/WebviewRenderer.ts,
+     src/webview/WebviewRenderer.test.js, src/panels/ChatPanelAdapter.ts.
+   - Depth: SUMMARY-LEVEL (behavioral notes on rendering approach:
+     custom markdown renderer, highlightCode tokenizer, innerHTML
+     templates, session snapshot via chat.innerHTML).
+   - Date note: none in file. File mtime: 2026-08-29 10:37.
+
+3) _audit_4.md  (20 lines)
+   - Covers: src/providers/ProviderRegistry.ts (whole directory), plus
+     cross-references to src/tools/providers/IToolProvider.ts and
+     src/tools/ToolExecutor.ts (provider registration/dispatch).
+   - Depth: SUMMARY-LEVEL (Q&A notes on provider interface, registered
+     provider names, tool registration mechanics).
+   - Date note: none in file. File mtime: 2026-08-29 10:40.
+
+4) Consolidated_Notes.md  (226 lines)  <-- MOST RECENT ANALYSIS DOC
+   - Covers: project-wide architecture — git history timeline, feature
+     comparison vs claude-code (execution architecture, tool system,
+     context management, security/permissions, multi-agent, UI),
+     refactor priority P0–P3, unique features, technical debt
+     (ollama-chat.ts god class, ToolExecutor giant switch, TF-IDF).
+     References src/ modules generally (ollama-chat.ts, WebviewRenderer,
+     ToolExecutor, TaskStore, AutoPilot, HeartbeatService, etc.).
+   - Depth: SUMMARY-LEVEL (comparison matrices and roadmap; not
+     line-by-line).
+   - Date note: header "> 更新：2026-08-29 | AmiClaw commit 2d3800e+
+     (190+ commits)"; footer "最後更新：2026-08-29（本次 session 顯著
+     完成 P1 x5 + P2 x5 項）". File mtime: 2026-08-29 10:35.
+
+5) AmiClawToDo.md  (41 lines)
+   - Covers: strategic roadmap — AmiClaw vs claude-code evolution
+     comparison, 4-phase priority list (Artifacts engine, Ami-ACP,
+     prompt caching, observability). Concept-level; names providers
+     (FileSystem, Atlassian, WhatsApp) but does not analyze code.
+   - Depth: SUMMARY-LEVEL (strategic planning, no code analysis).
+   - Date note: none in file. File mtime: 2026-08-29 23:37 (most recent
+     mtime of any doc, but content is a roadmap, not code analysis).
+
+6) docs/HEARTBEAT_DESIGN.md  (29 lines)
+   - Covers: design spec for the heartbeat feature — src/services/
+     HeartbeatService.ts, src/ollama-chat.ts, src/webview/WebviewRenderer.ts.
+   - Depth: SUMMARY-LEVEL (design spec: interval, observer pattern,
+     webview light UI, implementation plan).
+   - Date note: none in file. File mtime: 2026-08-09 02:35.
+
+7) .research/claude_code_analysis.md  (404 lines)  [other doc with code
+   analysis, for reference]
+   - Covers: Claude Code (Anthropic) local installation under
+     C:\Users\YCHsu\.claude (changelog, settings, tool architecture) —
+     external evidence base for the AmiClaw vs claude-code comparison;
+     not an analysis of AmiClaw source files.
+   - Depth: SUMMARY-LEVEL structured analysis (evidence tables).
+   - Date note: footer "*Generated by Worker Agent #7 — evidence
+     collected from local installation...*" (no explicit date).
+     File mtime: 2026-08-29 09:09.
+
+8) .research/amiclawn_inventory.md  (82 lines)  [other doc, for reference]
+   - Covers: project inventory — top-2-level file tree + key file notes.
+   - Depth: SUMMARY-LEVEL (auto-generated inventory).
+   - Date note: "> Generated: coordination inventory step
+     (auto-generated)"; mentions Consolidated_Notes.md (2026-08-10).
+     File mtime: 2026-08-29 08:52.
+
+Other .md files present (non-analysis context/config docs, listed for
+completeness): .github/copilot-instructions.md (6), .github/UEFI Code
+review.agent.md (2), .github/uefi-code-review-skills.instructions.md (21),
+.github/instructions/mermaid.instructions.md (85), .github/skills/**
+SKILL.md + standards docs (163/924/327/603/82/1/1),
+.amiclaw/memory/MEMORY.md (0), .amiclaw/memory/session-notes.md (34),
+.amiclaw/outputs/full_dump_v2/manifest.md (274).
+
+CONCLUSION (b): No existing doc is a line-by-line analysis. All existing
+docs are summary-level (structural inventories, audit Q&As, design spec,
+comparison/roadmap). A full line-by-line re-update must be written from
+scratch.
+
+================================================================
+ (c) FORMATTING CONVENTIONS OF THE MOST RECENT ANALYSIS DOC
+     doc chosen: Consolidated_Notes.md (2026-08-29, most recent
+     dated analysis doc; AmiClawToDo.md is newer by mtime but is a
+     roadmap without code analysis and has no date note)
+================================================================
+
+Conventions observed:
+- H1 title on line 1 (no leading blank line).
+- H2 blockquote metadata line: "> 更新：YYYY-MM-DD | <commit context>".
+- Horizontal rule "---" between top-level sections.
+- Numbered Chinese-labeled H2 sections (一、二、三...), with H3
+  subsections (### 2.1, ### 2.2 ...).
+- Heavy use of pipe tables (|---|---|) for matrices; status markers
+  ✅ / ⚠️ / ❌ inside table cells.
+- Bold (**...**) for emphasis, backticks for code identifiers.
+- Checkbox lists ("- [ ]" / "- [x]") for action items.
+- Italic footer line with generation attribution + last-update note.
+- zh-TW language; code identifiers left in English.
+
+First 25 lines verbatim:
+
+# AmiClaw vs. claude-code — 深度對比與重構優先路徑
+> 更新：2026-08-29 | AmiClaw commit `2d3800e+` (190+ commits) vs. claude-code packages/builtin-tools
+
+---
+
+## 一、演進時間軸（Git History 摘要）
+
+| 階段 | AmiClaw commits | 里程碑 |
+|---|---|---|
+| 基礎建設 | 1–30 | ollama-chat.ts 9740 行 God Class，WebviewRenderer 抽出 |
+| 架構分解 | 31–80 | Provider Pattern Phase 1+2，65 工具提取，ToolRegistry 建立 |
+| 能力擴展 | 81–130 | Shadow Supervisor、Team modes (5 種)、AutoPilot 模組、UEFI Code Review |
+| 智慧壓縮 | 131–160 | HistoryCompactor L2/L3/L4、Context budget、MicroCompactor |
+| 新架構 | 161–190 | **Coordinator+Worker、Workflow Engine、TF-IDF、AutoPilot 接線、AmiClaw 更名** |
+
+---
+
+## 二、功能對比矩陣
+
+### 2.1 核心執行架構
+
+| 功能 | AmiClaw | claude-code | 差距 |
+|---|---|---|---|
+| 主要執行模式 | Coordinator+Worker（預設）+ Ask + Team + Debate | Coordinator+Worker（唯一主流） | ✅ 已移植 |
+| Worker 工具集 | CORE_TOOLS(27) + search_tools 動態解鎖 | CORE_TOOLS 38 + TF-IDF | ✅ 已擴充到 27 |
+
+================================================================
+ END OF SURVEY
+================================================================

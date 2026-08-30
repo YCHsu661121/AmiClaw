@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 YCHsu. All rights reserved.
+// Copyright (c) 2026 YCHsu. All rights reserved.
 // Licensed under the MIT License.
 // WebviewRenderer — extracted from OllamaChatPanel.getHtmlForWebview
 // Sonnet refactor: Priority-1 split (pure HTML/CSS/JS, no side-effects)
@@ -589,6 +589,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       <div id="inputRow">
         <div id="slashPopup"></div>
         <textarea id="prompt" rows="1" placeholder="輸入訊息… (Enter 送出 / Ctrl+Enter 換行)"></textarea>
+        <div id="breathLight" title="AI 思考狀態"><div class="bl-ring"></div><div class="bl-core"></div><div class="bl-ewrap"><div class="bl-e"></div></div></div>
         <button id="sendBtn" title="送出">&#9658;</button>
       </div>
       <div id="permissionBar">
@@ -928,7 +929,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'thinkChunk')    { clearStreamThinkingPlaceholder(); appendThinkChunk(msg.chunk, msg.model); }
           else if (msg.type === 'assistantChunk'){ clearStreamThinkingPlaceholder(); _currentStreamText += msg.chunk; appendChunk(msg.chunk); }
           else if (msg.type === 'streamAbort')   { setBreathState(false); clearStreamThinkingPlaceholder(); if (_streamNode && chat.contains(_streamNode)) { _streamNode.remove(); } _streamNode = null; }
-          else if (msg.type === 'streamEnd')     { setBreathState(false); clearStreamThinkingPlaceholder(); _agentStepNode = null; setRunningState(false);
+          else if (msg.type === 'streamEnd')     { setBreathState(false); clearStreamThinkingPlaceholder(); _agentStepNode = null; if (!_agentStatusRunning) { setRunningState(false); }
             var _sbE = _streamNode && chat.contains(_streamNode) ? _streamNode.querySelector('.bubble') : null;
             if (_sbE) {
               var _tb = _sbE.querySelector('.stream-token-badge');
@@ -1018,7 +1019,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               setBreathState(false);
               if (statusBar) statusBar.textContent = _lastTokenInfo || (agentMode ? '\ud83e\udd16 Agent \u6a21\u5f0f' : '');
             }
-            setRunningState(msg.running);
+            _agentStatusRunning = !!msg.running; setRunningState(msg.running);
           }
           else if (msg.type === 'agentStep')     { appendAgentStep(msg.icon, msg.title, msg.fullPath, !!msg.isShadow); }
           else if (msg.type === 'compactUpdate')  { handleCompactUpdate(msg); }
@@ -1095,7 +1096,8 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
               if (statusBar) statusBar.textContent = '';
               if (pb) pb.classList.remove('proactive-active');
             }
-            setRunningState(msg.running);
+            _agentStatusRunning = !!msg.running;
+            _agentStatusRunning = !!msg.running; setRunningState(msg.running);
           }
           else if (msg.type === 'autoPaused')    { appendMessage('assistant', '\u5df2\u6682\u505c\uff0c\u9700\u5b58\u53d6 ' + (msg.path || '\u672a\u77e5\u8def\u5f91')); if (statusBar) statusBar.textContent = '\u23f8 \u6682\u505c'; }
           else if (msg.type === 'streamMode')    { const t = document.getElementById('toggleStream'); streamMode = !!msg.enabled; if (t) t.classList.toggle('active', streamMode); }
@@ -1677,6 +1679,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
       }
 
       var _agentRunning = false;
+      var _agentStatusRunning = false; // set by agentStatus; guards streamEnd from resetting button mid-agent
       function setRunningState(running) {
         _agentRunning = running;
         if (!sendBtn) return;

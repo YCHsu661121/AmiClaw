@@ -1,0 +1,502 @@
+�Ϻа� D �����ϺЬO DATA
+ �ϺаϧǸ�:  5059-3334
+
+ d:\Tools\AmiClaw\node_modules\typescript\bin ���ؿ�
+
+2026/04/02  �W�� 11:45                45 tsc
+               1 ���ɮ�              45 �줸��
+               0 �ӥؿ�  71,344,160,768 �줸�եi��
+ �Ϻа� D �����ϺЬO DATA
+ �ϺаϧǸ�:  5059-3334
+
+ d:\Tools\AmiClaw\node_modules\typescript ���ؿ�
+
+2026/04/02  �W�� 11:46             3,620 package.json
+               1 ���ɮ�           3,620 �줸��
+               0 �ӥؿ�  71,344,160,768 �줸�եi��
+{
+  "name": "ami-ai-claw",
+  "displayName": "AmiClaw",
+  "description": "AmiClaw - Local Ollama AI assistant for code generation, Agent automation, and multi-model collaboration.",
+  "author": "Y.C. Hsu",
+  "license": "MIT",
+  "version": "1.0.1",
+  "publisher": "localdev",
+  "icon": "AmiClaw.png",
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p .",
+    "watch": "tsc -p . -w",
+    "package": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && npx vsce package --out ./dist/amiclaw.vsix",
+    "check:unused": "knip",
+    "health": "node scripts/health-check.js",
+    "test": "npm run compile && node --test src/webview/WebviewRenderer.test.js",
+    "test:webview": "npm run compile && node --test src/webview/WebviewRenderer.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.4.2",
+    "knip": "^6.0.0",
+    "@types/vscode": "^1.90.0",
+    "@types/qrcode": "^1.5.5",
+    "vsce": "^2.12.0"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "qrcode": "^1.5.4"
+  },
+  "activationEvents": ["*"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "amiAiClaw",
+          "title": "AmiClaw",
+          "icon": "media/ami-ai-claw-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "amiAiClaw": [
+        {
+          "id": "amiAiClaw.chatView",
+          "name": "AmiClaw",
+          "type": "webview"
+        },
+        {
+          "id": "amiAiClaw.openChat",
+          "name": "聊天記錄",
+          "visibility": "hidden"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "amiAiClaw.chat",
+        "title": "AmiClaw"
+      },
+      {
+        "command": "amiAiClaw.runTodoFile",
+        "title": "AmiClaw: 執行 AmiClawToClaudeToDo.md"
+      },
+      {
+        "command": "amiAiClaw.sendToChat",
+        "title": "傳送到 AmiClaw"
+      },
+      {
+        "command": "amiAiClaw.newChatSession",
+        "title": "新增聊天",
+        "icon": "$(add)"
+      },
+      {
+        "command": "amiAiClaw.switchChatSession",
+        "title": "切換到此聊天"
+      },
+      {
+        "command": "amiAiClaw.renameChatSession",
+        "title": "重新命名"
+      },
+      {
+        "command": "amiAiClaw.deleteChatSession",
+        "title": "刪除聊天"
+      },
+      {
+        "command": "amiAiClaw.focusInput",
+        "title": "AmiClaw: 聚焦輸入框"
+      },
+      {
+        "command": "amiAiClaw.showAuditLog",
+        "title": "AmiClaw: 顯示稽核日誌"
+      },
+      {
+        "command": "amiAiClaw.jira",
+        "title": "AmiClaw: Jira 快速指令",
+        "icon": "$(tasklist)"
+      }
+      ,
+      {
+        "command": "amiAiClaw.uefiCodeReview",
+        "title": "AmiClaw: UEFI Code Review",
+        "icon": "$(shield)"
+      }
+      ,
+      {
+        "command": "amiAiClaw.debugWriteMemory",
+        "title": "AmiClaw: Debug Write MEMORY.md"
+      }
+      ,
+      {
+        "command": "amiAiClaw.migrateMemory",
+        "title": "AmiClaw: Migrate global MEMORY to workspace"
+      }
+      ,
+      {
+        "command": "amiAiClaw.showFileCount",
+        "title": "AmiClaw: Show workspace file count"
+      }
+      ,
+      {
+        "command": "amiAiClaw.execFileCountShell",
+        "title": "AmiClaw: Exec shell file-count (ls/dir)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "amiAiClaw.chat",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i",
+        "when": "editorTextFocus && !terminalFocus"
+      },
+      {
+        "command": "amiAiClaw.focusInput",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "activeWebviewPanelId == 'amiAiClaw.chat'"
+      },
+      {
+        "command": "amiAiClaw.jira",
+        "key": "ctrl+shift+j",
+        "mac": "cmd+shift+j"
+      },
+      {
+        "command": "amiAiClaw.uefiCodeReview",
+        "key": "ctrl+shift+u",
+        "mac": "cmd+shift+u"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "amiAiClaw.sendToChat",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "amiAiClaw.sendToChat",
+          "group": "navigation@99"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "amiAiClaw.newChatSession",
+          "when": "view == amiAiClaw.openChat",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "amiAiClaw.renameChatSession",
+          "when": "view == amiAiClaw.openChat && viewItem == chatSession",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "amiAiClaw.deleteChatSession",
+          "when": "view == amiAiClaw.openChat && viewItem == chatSession",
+          "group": "1_modify@2"
+        }
+      ]
+    },
+    "configuration": [
+      {
+        "id": "amiAiClaw",
+        "title": "AmiClaw",
+        "properties": {
+          "amiAiClaw.urls": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["http://localhost:11434"],
+            "description": "Ollama 伺服器 URL 列表，例如 [\"http://localhost:11434\", \"http://192.168.1.100:11434\"]。重複出現的 URL 視為停用。"
+          },
+          "amiAiClaw.model": {
+            "type": "string",
+            "default": "llama3",
+            "description": "Ollama model name"
+          },
+          "amiAiClaw.openaiCompatApiKey": {
+            "type": "string",
+            "default": "",
+            "description": "OpenAI-compatible 伺服器（LM Studio、vLLM 等）的 API Key，對應 Authorization: Bearer <key>。留空表示不帶認證。"
+          },
+          "amiAiClaw.openaiUrls": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "OpenAI-compatible 伺服器 URL 列表（LM Studio、vLLM 等），重整模型時會以 openaiCompatApiKey 查詢 /v1/models。例如 [\"http://intelnode2:1234\"]。"
+          },
+          "amiAiClaw.models": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["llama3", "llama2", "vicuna", "mistral"],
+            "description": "Available model options shown in the chat UI"
+          },
+          "amiAiClaw.visionModel": {
+            "type": "string",
+            "default": "",
+            "description": "organize_photos 照片整理工具使用的 Ollama 視覺模型名稱（例如 llava、llama3.2-vision、qwen2.5vl）。需先以 ollama pull 下載。留空時必須在呼叫工具時以 vision_model 參數指定。"
+          },
+          "amiAiClaw.systemPrompt": {
+            "type": "string",
+            "editPresentation": "multilineText",
+            "default": "你是一位資深頂尖全端軟體工程師，精通 TypeScript/JavaScript、Python、C/C++、Rust、Go、Shell/PowerShell、UEFI/BIOS 韌體工程。你邏輯嚴密、思路清晰，能直接找出問題根因並提供完整可執行的解法，不說廢話。請用繁體中文回答，技術術語附上英文原文。",
+            "description": "AI 角色設定（System Prompt），每次對話都會自動套用。可在此自訂角色、背景知識與回答風格。"
+          },
+          "amiAiClaw.jiraBaseUrl": {
+            "type": "string",
+            "default": "",
+            "description": "（選填）Jira server base URL，例如 https://yourcompany.atlassian.net。若已安裝 atlassian.atlascode 並登入，系統會自動取得，無需手動設定。僅在無 atlascode 時作為 fallback。"
+          },
+          "amiAiClaw.jiraEmail": {
+            "type": "string",
+            "default": "",
+            "description": "（選填）Jira 登入 Email（Jira Cloud Basic Auth fallback 用）。已安裝 atlascode 時不需要設定。"
+          },
+          "amiAiClaw.jiraPat": {
+            "type": "string",
+            "default": "",
+            "description": "（選填）Jira API Token（Cloud）或 Personal Access Token（Server/DC）。已安裝 atlascode 時不需要設定。"
+          },
+          "amiAiClaw.sendKey": {
+            "type": "string",
+            "enum": ["Enter", "Ctrl+Enter"],
+            "enumDescriptions": ["按 Enter 送出訊息（Ctrl+Enter 換行）", "按 Ctrl+Enter 送出（Enter 換行）"],
+            "default": "Enter",
+            "description": "聊天輸入框的送出鍵設定"
+          },
+          "amiAiClaw.filterSensitiveInfo": {
+            "type": "boolean",
+            "default": true,
+            "description": "啟用敏感資訊過濾：自動偵測並遮蔽工具回傳中的 API key、JWT token、密碼等敏感內容，避免模型學習或外洩。"
+          },
+          "amiAiClaw.agentAutoApproveWrite": {
+            "type": "boolean",
+            "default": false,
+            "description": "Agent 模式中自動允許鍪案寫入與變更（write_file、replace_in_file），不彈出確認提示。刪除與機密操作仍然需要確認。"
+          },
+          "amiAiClaw.agentShadowSupervisor": {
+            "type": "boolean",
+            "default": true,
+            "description": "Agent 模式影子督促人格（Monitor）：主人格產出最終答案時，喚醒一個影子 agent 依六階段分析法審查是否真正完成，未完成則注入督促指令要求繼續（最多 3 次）。思考過程不顯示於對話，僅在除錯日誌可追蹤；失敗時自動降級為單人格。"
+          },
+          "amiAiClaw.shadowTriggerKeywords": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["分析", "審查", "review", "analyze", "讀取", "檢查", "debug", "refactor", "重構", "架構", "程式", "code", "找", "問題", "修正", "實作"],
+            "description": "影子督促人格觸發詞：任務 prompt 含任一詞時，主人格回覆後喚醒影子審查。可透過面板「附加與思考」群組即時編輯。"
+          },
+          "amiAiClaw.autoPilotEnabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "AutoPilot：用小型分類器自動判斷工具呼叫是否安全（中間檔，介於手動確認與全自動之間）。讀檔等唯讀工具直接放行；具風險的動作交給分類器評估，連續被拒會自動回退到人工確認。"
+          },
+          "amiAiClaw.thinkingLevel": {
+            "type": "string",
+            "enum": ["off", "low", "medium", "high"],
+            "enumDescriptions": [
+              "強制關閉思考：即使是 thinking 模型（qwen3/deepseek-r1/qwq）也跳過 reasoning 階段，回應更快、token 更省",
+              "低度思考：啟用思考，預期淺度推理（Ollama 目前僅支援 boolean，等級差異留待 API 支援）",
+              "中度思考（預設）：thinking 模型的標準推理模式",
+              "高度思考：保留欄位，預期長度較長的深度推理"
+            ],
+            "default": "medium",
+            "description": "Thinking 模型的推理等級。off = 強制關閉思考；low/medium/high = 啟用思考（Ollama API 目前僅接受 boolean，等級差異等 API 升級後生效；OpenAI o-系列 / Anthropic extended thinking 整合 TBD）。"
+          },
+          "amiAiClaw.autoIncludeActiveFile": {
+            "type": "boolean",
+            "default": true,
+            "description": "自動把目前作用中編輯器的檔案內容附帶到 system prompt（類似 GitHub Copilot 的隱含上下文），Ask 與 Agent 模式皆生效。關閉可節省 token。"
+          },
+          "amiAiClaw.autoIncludeActiveMaxKb": {
+            "type": "number",
+            "default": 16,
+            "minimum": 1,
+            "maximum": 64,
+            "description": "自動附帶作用中檔案內容的最大 KB（超過會截斷，模型可呼叫 read_file 取完整內容）。"
+          },
+          "amiAiClaw.contextDepth": {
+            "type": "string",
+            "enum": ["file", "outline", "full"],
+            "enumDescriptions": [
+              "一般：只附帶作用中編輯器的檔案（預設，最省 token）",
+              "摘要：在 system prompt 注入工作區結構摘要（檔案樹 + 副檔名分佈 + 最大檔的前 N 行 outline）",
+              "全讀：把整個工作區原始碼倒進 system prompt（受 deepAnalysisMaxKb 容量上限保護）"
+            ],
+            "default": "file",
+            "description": "深度解析層級。Ask 與 Agent 模式皆生效。提升到 outline/full 可讓模型在 thinking 前先看完整個 codebase，但會大幅增加 token 消耗。"
+          },
+          "amiAiClaw.deepAnalysisMaxKb": {
+            "type": "number",
+            "default": 64,
+            "minimum": 8,
+            "maximum": 512,
+            "description": "contextDepth = full 時整個工作區原始碼注入的總容量上限（KB）。預設 64 KB 避免卡住；超出上限會提早停止，剩餘檔案可由模型呼叫 read_workspace / read_files 取得。"
+          },
+          "amiAiClaw.outlineMaxKb": {
+            "type": "number",
+            "default": 24,
+            "minimum": 4,
+            "maximum": 256,
+            "description": "contextDepth = outline 時工作區結構摘要的總容量上限（KB）。"
+          },
+          "amiAiClaw.expandFileMentions": {
+            "type": "boolean",
+            "default": true,
+            "description": "自動展開使用者訊息中的檔案/目錄提及（#file:path、#path:path、@path、`path.ext`），讀取內容附加到 prompt（類似 GitHub Copilot 的 #file 機制）。"
+          },
+          "amiAiClaw.autoMemoryEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "啟用檔案型自動記憶（將長期記憶儲存於 workspace 對應的 memory 目錄，如 .amiclaw/projects/{proj}/memory）。關閉時僅使用 globalState 快取。"
+          },
+          "amiAiClaw.memoryDir": {
+            "type": "string",
+            "default": "",
+            "description": "可選：指定記憶資料夾完整路徑以覆寫預設（支援絕對路徑）。若留空則使用預設計算的 workspace-scoped memory 目錄。"
+          },
+          "amiAiClaw.askModeTools": {
+            "type": "boolean",
+            "default": true,
+            "description": "💬 Ask 模式下允許模型使用唯讀工具（read_file、read_files、list_dir、search_workspace、search_regex、git_status/diff/log），自動讀取需要的檔案上下文。寫入/執行類工具會被拒絕。需要支援 tools API 的模型（如 qwen2.5、llama3.1）；不支援時自動退回純對話。"
+          },
+          "amiAiClaw.waAgentAllowedSenders": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["886919327569"],
+            "description": "允許透過 WhatsApp 觸發 Agent 的號碼白名單（不含 + 號，例如 \"886919327569\"）。空陣列表示允許所有來源（不建議）。"
+          },
+          "amiAiClaw.waAgentModel": {
+            "type": "string",
+            "default": "",
+            "description": "WhatsApp 觸發 Agent 時使用的模型。支援 Ollama（如 qwen2.5:14b）、GitHub Copilot（如 copilot::gpt-4o）、OpenAI 相容（如 openai::http://host:port||modelname）。空白表示使用目前 UI 選擇的模型（amiAiClaw.model）。"
+          },
+          "amiAiClaw.waWhisperModel": {
+            "type": "string",
+            "default": "whisper-1",
+            "description": "WhatsApp 語音訊息轉文字使用的 Whisper 模型名。須在 OpenAI 相容 /v1/audio/transcriptions 端點可用。"
+          },
+          "amiAiClaw.waWhisperBaseUrl": {
+            "type": "string",
+            "default": "",
+            "description": "Whisper API baseUrl（含 scheme，如 http://localhost:11434 或 https://api.openai.com/v1）。白空 = 不启用語音轉文字。"
+          },
+          "amiAiClaw.waWhisperApiKey": {
+            "type": "string",
+            "default": "",
+            "description": "Whisper API Bearer Token（本地 Ollama 留空即可）。"
+          },
+          "amiAiClaw.toolAlwaysAllow": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "永遠自動允許的工具類別或工具名稱（不提示確認）。類別：write、run、delete；工具名稱：run_command、lint_fix 等。例：[\"read_file\", \"run_command\"]"
+          },
+          "amiAiClaw.toolAlwaysConfirm": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "永遠要求確認的工具名稱（即使 session 中按過「永遠允許」仍每次詢問）。例：[\"run_terminal\", \"delete_file\", \"git_commit\"]"
+          },
+          "amiAiClaw.browserUseDocker": {
+            "type": "boolean",
+            "default": false,
+            "description": "瀏覽器工具使用 Docker 執行（沙箱隔離、不需在噥主機安裝 playwright）。需要將 Docker Desktop 正在執行並已拉取指定影像。"
+          },
+          "amiAiClaw.browserDockerImage": {
+            "type": "string",
+            "default": "mcr.microsoft.com/playwright/python:v1.49.0-jammy",
+            "description": "瀏覽器 Docker 模式使用的影像名稱。預設為內建 playwright + Chromium 的官方影像。送出前請先執行: docker pull mcr.microsoft.com/playwright/python:v1.49.0-jammy"
+          },
+          "amiAiClaw.sandboxUseDocker": {
+            "type": "boolean",
+            "default": false,
+            "description": "將 run_terminal、run_command、run_python 導入 Docker 沙箱執行（沙箱隔離，不會影響呆主機）。需要 Docker Desktop 正在執行且已拉取 sandboxDockerImage 指定影像。"
+          },
+          "amiAiClaw.sandboxDockerImage": {
+            "type": "string",
+            "default": "ubuntu:24.04",
+            "description": "沙箱 Docker 影像名稱。run_terminal/run_command 使用此影像的 sh；run_python 若此影像不含 'python' 一詞則自動改用 python:3.12-slim。建議先執行: docker pull ubuntu:24.04"
+          },
+          "amiAiClaw.autoSummarizeHistory": {
+            "type": "boolean",
+            "default": true,
+            "description": "Agent 模式對話歷史超過 token 閾值時，自動呼叫 AI 摘要舊訊息以釋放上下文視窗。關閉時改用直接裁剪（丟棄舊訊息對）。"
+          },
+          "amiAiClaw.autoSummarizeThreshold": {
+            "type": "number",
+            "default": 8000,
+            "description": "自動摘要觸發 token 閾值（預設 8000）。Agent 歷史估算 token 數超過此值時啟動摘要壓縮。建議設為模型 context window 的 50%-70%。"
+          },
+          "amiAiClaw.jenkinsUrl": {
+            "type": "string",
+            "default": "http://localdev.visualebios",
+            "description": "Jenkins 伺服器 URL（預設 http://localdev.visualebios）。可使用 http 或 https，結尾不需要斜線。"
+          },
+          "amiAiClaw.jenkinsUser": {
+            "type": "string",
+            "default": "",
+            "description": "Jenkins 使用者名稱（用於 HTTP Basic Auth）。搭配 jenkinsToken 使用。留空則以匿名模式連線（需要 Jenkins 允許匿名 Build）。"
+          },
+          "amiAiClaw.jenkinsToken": {
+            "type": "string",
+            "default": "",
+            "description": "Jenkins 使用者 API Token（非密碼）。在 Jenkins → 使用者設定 → API Token → 新增 Token 取得。"
+          },
+          "amiAiClaw.jenkinsDefaultJob": {
+            "type": "string",
+            "default": "SeamlessBuild",
+            "description": "jenkins_build / jenkins_status 工具未指定 job 時使用的預設 Job 名稱（預設 SeamlessBuild）。"
+          },
+          "amiAiClaw.jenkinsUseVscodeCommand": {
+            "type": "boolean",
+            "default": true,
+            "description": "啟用後，jenkins_build / jenkins_status 改為呼叫 VS Code 外掛指令（VisualeBios），不走 Jenkins HTTP API。可避免內網域名解析（如 localdev.visualebios）失敗。關閉則走 jenkinsUrl 進行 HTTP 觸發。"
+          },
+          "amiAiClaw.jenkinsBuildCommand": {
+            "type": "string",
+            "default": "visualebios.jenkins.build",
+            "description": "啟用 jenkinsUseVscodeCommand 時，jenkins_build (mode=build) 對應的 VS Code 指令 ID。預設使用 VisualeBios 外掛。"
+          },
+          "amiAiClaw.jenkinsRebuildCommand": {
+            "type": "string",
+            "default": "visualebios.jenkins.rebuild",
+            "description": "啟用 jenkinsUseVscodeCommand 時，jenkins_build (mode=rebuild) 對應的 VS Code 指令 ID。"
+          },
+          "amiAiClaw.jenkinsHistoryCommand": {
+            "type": "string",
+            "default": "visualebios.jenkins.showBuildHistory",
+            "description": "啟用 jenkinsUseVscodeCommand 時，jenkins_status 對應的 VS Code 指令 ID（顯示建置歷史）。"
+          },
+          "amiAiClaw.enableDebugLog": {
+            "type": "boolean",
+            "default": false,
+            "description": "開啟延伸除錯日誌，輸出至 VS Code Output Channel \"AmiClaw\"(視窗 → 輸出 → 下拉選 AmiClaw)。無需時請保持關閉以避免額外計算負擔。"
+          },
+          "amiAiClaw.teamRoles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key":          { "type": "string", "description": "角色識別碼（如 planner / developer / reviewer / tester / writer，也可自訂）" },
+                "label":        { "type": "string", "description": "顯示名稱（如 規劃者）" },
+                "emoji":        { "type": "string", "description": "Emoji 圖示（如 🗺️）" },
+                "color":        { "type": "string", "description": "Badge 背景色 hex（如 #f7a534）" },
+                "systemPrompt": { "type": "string", "description": "傳給該角色的 system prompt" }
+              },
+              "required": ["key", "label", "emoji", "color", "systemPrompt"]
+            },
+            "default": [
+              { "key": "manager",   "label": "主管",   "emoji": "🏢", "color": "#f7cc65", "systemPrompt": "你是【🏢 技術主管】，整個開發團隊的決策者與品質守門人。\n職責 A（架構計劃）：分析需求，制定整體架構方向，明確將任務分配給各工程師。\n職責 B（審核計劃）：閱讀工程師的技術討論，確認方案可行後於回覆末尾輸出 [APPROVED]；否則給出具體調整意見（不輸出 [APPROVED]）。\n職責 C（Code Review）：工程師實作完成後，使用 read_file 工具逐一閱讀修改的檔案，檢查程式碼品質、命名規範、邏輯正確性、錯誤處理，給出具體 Review 意見與評分。\n你只負責審核與決策，不自行寫程式碼。風格：嚴謹直接，繁體中文。" },
+              { "key": "architect", "label": "架構工程師", "emoji": "🏗️", "color": "#4fc1ff", "systemPrompt": "你是【🏗️ 架構工程師】（工程師 #1）。\n專責：架構設計與模組拆分，主導整體結構決策，確保元件邊界清晰、依賴關係合理、擴充性良好。\n工作兩階段：\n  【討論階段】與其他工程師共同討論實作方案，提出你的技術觀點，明確說明你打算修改哪些檔案與函式。\n  【實作階段】主管核准後，使用 read_file 先理解現有程式碼，再用 write_file / replace_in_file 直接修改——不要只說計劃，立即行動。\n繁體中文。" },
+              { "key": "developer", "label": "開發工程師", "emoji": "💻", "color": "#89d185", "systemPrompt": "你是【💻 開發工程師】（工程師 #2）。\n專責：核心邏輯與功能實作，專注演算法正確性、資料流與商業邏輯的實現。\n工作兩階段：\n  【討論階段】與其他工程師共同討論實作方案，提出你的技術觀點，明確說明你打算修改哪些檔案與函式。\n  【實作階段】主管核准後，使用 read_file 先理解現有程式碼，再用 write_file / replace_in_file 直接修改——不要只說計劃，立即行動。\n繁體中文。" },
+              { "key": "integrator", "label": "整合工程師", "emoji": "🔗", "color": "#ce9178", "systemPrompt": "你是【🔗 整合工程師】（工程師 #3）。\n專責：整合層與 API 邊界，確保各模組協作順暢，並妥善處理錯誤情境與邊界條件。\n工作兩階段：\n  【討論階段】與其他工程師共同討論實作方案，提出你的技術觀點，明確說明你打算修改哪些檔案與函式。\n  【實作階段】主管核准後，使用 read_file 先理解現有程式碼，再用 write_file / replace_in_file 直接修改——不要只說計劃，立即行動。\n繁體中文。" },
+              { "key": "tester",    "label": "測試員",   "emoji": "🧪", "color": "#c586c0", "systemPrompt": "你是【🧪 測試員】。工程師實作完成後，你負責撰寫完整的自動化測試工具。\n工作流程：\n  1. 使用 read_file 工具閱讀工程師實作的每個重要模組，理解程式結構\n  2. 針對每個功能模組撰寫測試案例（unit test / integration test）\n  3. 使用 write_file 工具建立測試檔案（如 test_xxx.py、xxx.test.ts、xxx.spec.ts）\n  4. 測試案例必須覆蓋：正常情境、邊界條件、錯誤處理、異常輸入\n重要：不得修改非測試檔案；所有測試直接用工具寫入，不可只描述計劃。繁體中文。" }
+            ],
+            "description": "Team 模式角色定義，可自訂名稱、Emoji、Badge 顏色和 System Prompt。也可新增自訂角色或減少為 3 個。設定修改後需重新點擊團隊模式按鈕（🔄）刷新生效。"
+          }
+        }
+      }
+    ]
+  }
+}
