@@ -205,21 +205,25 @@ function searchTools(query: string): Tool[] {
 
 ---
 
-## 六、立即行動清單
+## 七、戰略路線圖 (Strategic Roadmap)
 
-- [x] 擴充 CORE_TOOLS 從 17 到 27（加 `git_diff`, `run_python`, `outline_file`, `search_regex`, `read_file_smart`, `agentic_file_search`, `git_commit`, `jira_open`, `lsp_diagnostics` 等）
-- [ ] Worker 角色定義（`workerRole: 'explorer' | 'implementer' | 'reviewer'`）
-- [x] TF-IDF 升級（餘弦相似度 + 預先計算）
-- [ ] USD 成本顯示
-- [ ] Workflow resume 功能
-- [x] ToolPolicies effect-based rule（write/shell/network/delete 4 種 effect + amiAiClaw.toolPolicyRules）
-- [ ] 背景執行支援（`run_in_background`）
-- [x] LSP 工具（goto_definition / find_references / hover / diagnostics / rename_symbol / document_symbols）
-- [x] Worker 結果摘要化（report_result 協議）
-- [x] Path-scoped rules（.amiclaw/RULES.md 工作區層必常注入）
-- [x] Task protocol（TaskStore: created/claimed/blocked/completed + create_task/list_tasks 工具）
-- [x] 記憶分層（Layer1 RULES.md + Layer2 MEMORY.md）
-- [x] AutoPilot toolArgs 完整傳入（path/old_str/command/url）
+### 第一階段：視覺與互動豐富度 (解決 "Artifacts" 差距)
+- [ ] **實作 AmiClaw Artifacts Engine**：開發一個 Webview 用戶介面渲染器，能夠顯示 Markdown、Mermaid 圖表與語法高亮的程式碼區塊。
+- [ ] **增強型 Markdown 上傳**：支援透過 Providers 上傳的文檔資產的直接渲染。
+
+### 第二階段：協定標準化與安全性 (解決 "可靠性" 差距)
+- [ ] **Ami-ACP (Agent Communication Protocol)**：為 Coordinator 與 Worker 的互動建立版本化的通訊標準。
+- [ ] **工作流 Schema 驗證**：為 Workflow Engine 實作嚴格的 JSON/YAML schema 驗證。
+- [ ] **標準化工具調用生命週期**：實作一套統一的方法，用以追蹤、記錄並重試所有 Providers 中的工具調用失敗。
+
+### 第三階段：優化與環境穩健性 (解決 "效能" 差距)
+- [ ] **提示詞快取與路由優化**：為支援的 LLM 提供者實作「黏性」提示詞快取鍵。
+- [ ] **跨平台 Shell 抽象化**：增強 `FileSystem` 與 `DevTools` providers，包含 Windows 與 Git Bash 環境的自動相容模式。
+- [ ] **會話邊界管理**：對訊息快取限制實施更嚴格的邊界，防止上下文導致的效能下降。
+
+### 第四階段：可觀察性與智能化 (解決 "進階" 差距)
+- [ ] **進階使用量分析**：擴展現有的使用量統計面板，包含每個 Provider 的 Token 成本追蹤。
+- [ ] **影子模式擴展 (Shadow Mode Expansion)**：擴展 "Shadow Mode" 功能，允許在不影響即時編排引擎的情況下測試新的 Provider 邏輯。
 
 ---
 

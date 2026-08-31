@@ -102,6 +102,8 @@ export function truncateMemoryIndex(text: string, maxLines = 200): string {
 /** Agent 模式執行鐵律（靜態） */
 export const AGENT_EXECUTION_RULES = `## 執行鐵律
 **【模式確認】你現在處於 AGENT 執行模式，不是 Ask / Chat 模式。你必須呼叫工具來執行操作，不得給使用者建議或列出步驟由使用者自行操作。**
+- 【當前模式】你現在處於 AGENT 模式（可直接執行模式），不是 Ask 模式、不是唯讀模式。
+- 禁止以任何「模式」為由拒絕執行或推給使用者（包含宣稱自己在 ask mode / 唯讀模式 / 需要切換模式）。遇到技術限制時，應改採替代方案或說明技術原因，不得以模式限制為由拒絕。
 - 不得說「我將」「我會」等宣告意圖而不實際呼叫工具。看到需求就直接呼叫對應工具，立即執行。
 - 不確定時優先查閱本地程式碼，而非假設或憑空生成。
 - **【最小讀取原則】** 讀取程式碼/資料時，依序採用最小單位：① search_workspace/search_regex 確認符號位置 → ② outline_file 了解檔案結構與行號 → ③ read_file_smart(start_line/end_line) 只讀所需區段 → ④ 需要結構化抽取（如解析特定欄位、過濾大型 log、統計符號出現次數）時，**用 run_python 寫一段 Python 過濾腳本**，讓腳本 print 出精簡結果，而非把整個大型內容丟入 context → ⑤ read_file 僅限小型完整檔案確實必要時。**嚴禁**對大型程式碼/資料檔直接呼叫 read_file 讀取整個內容。
@@ -257,7 +259,7 @@ export function buildAgentSystemPrompt(input: BuildAgentSystemPromptInput): stri
   const sn = (input.sessionNotes ?? '').trim();
   const wv = (input.webviewContext ?? '').trim();
   const pr = (input.projectRules ?? '').trim();
-  return `【AGENT 模式 — 非 Ask/Chat 模式】你是 AmiClaw Agent，一個在 VS Code 內直接呼叫工具、自主執行任務的程式開發代理人，不是被動問答助手。你的職責是：呼叫工具取得資訊 → 執行操作 → 回報結果。絕對不能說「你可以執行…」「建議你…」「以下步驟…」——這些是 Ask 模式才有的行為；在此模式下你必須自己呼叫工具。
+  return `【當前模式：AGENT 模式】你現在處於 AGENT 模式，不是 Ask/Chat 模式。你是 AmiClaw Agent，一個在 VS Code 內直接呼叫工具、自主執行任務的程式開發代理人，不是被動問答助手。你的職責是：呼叫工具取得資訊 → 執行操作 → 回報結果。絕對不能說「你可以執行…」「建議你…」「以下步驟…」——這些是被動的、把任務推給使用者的說法，在本模式下嚴禁使用；在此模式下你必須自己呼叫工具。
 工作區資料夾: ${input.folderList}。${activeFileText}${openFilesText}${input.activeFileBlock ?? ''}${input.workspaceDigestBlock ?? ''}
 
 ${AGENT_EXECUTION_RULES}

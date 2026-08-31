@@ -532,7 +532,7 @@ export class QueryEngine {
       : allTools.filter((t) => t.function?.name && READONLY_TOOL_NAMES.has(t.function.name));
     const messages: QueryEngineChatMessage[] = [];
     if (systemContent.trim()) {
-      const askOnlyGuide = isAgentMode ? '' : '\n\n## 工具使用守則（Ask 模式）\n- 你有唯讀工具：read_file、read_files、list_dir、search_workspace、search_regex、git_status、git_diff、git_log。\n- 任何修改檔案/執行命令的請求請拒絕並提示使用者切換到 🤖 Agent 模式。\n- 需要查看多個檔案時優先用 read_files 一次取得，避免連續 read_file。';
+      const askOnlyGuide = isAgentMode ? '' : '\n\n## 工具使用守則（Ask 模式）\n你現在處於 ASK 模式（唯讀問答模式）：只能回答問題與分析，不能修改檔案或執行命令。\n- 你有唯讀工具：read_file、read_files、list_dir、search_workspace、search_regex、git_status、git_diff、git_log。\n- 任何修改檔案/執行命令的請求請拒絕並提示使用者切換到 🤖 Agent 模式。\n- 需要查看多個檔案時優先用 read_files 一次取得，避免連續 read_file。';
       messages.push({ role: 'system', content: systemContent + askOnlyGuide });
     }
     for (const m of recent) {
