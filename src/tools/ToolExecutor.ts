@@ -21,6 +21,8 @@ import { LspProvider } from './providers/LspProvider';
 import { BackgroundProvider } from './providers/BackgroundProvider';
 import { ComputerUseProvider } from './providers/ComputerUseProvider';
 import { SandboxManager, SHADOW_WRITE_TOOLS } from './SandboxManager';
+import { ToolHook, createAuditHook, createTelemetryHook, createSlowToolWarningHook, ToolCallStats } from './ToolHooks';
+export type { ToolHook, ToolCallStats } from './ToolHooks';
 
 // 對外保留型別重新匯出，避免改動 consumer
 export type { AuditEntry } from './ToolAuditLog';
@@ -38,6 +40,9 @@ export class ToolExecutor {
   private _providerMap = new Map<string, IToolProvider>();
   private _vscodeProvider = new VscodeProvider();
   private _sandbox: SandboxManager;
+  // Lifecycle hooks: beforeTool / afterTool / onToolFailure
+  private _hooks: ToolHook[] = [];
+  private _telemetryHook: ReturnType<typeof createTelemetryHook> | undefined;
 
   public constructor(private readonly _callbacks: ToolExecutorCallbacks) {
     this._audit = new ToolAuditLog(this._callbacks.getExtensionContext());
@@ -69,6 +74,11 @@ export class ToolExecutor {
         this._providerMap.set(tool, provider);
       }
     }
+    // Wire built-in lifecycle hooks
+    this._hooks.push(createAuditHook(this._audit, () => this._callbacks.getActiveSessionId()));
+    this._telemetryHook = createTelemetryHook(this._callbacks.postToWebview);
+    this._hooks.push(this._telemetryHook);
+    this._hooks.push(createSlowToolWarningHook(this._callbacks.log));
   }
 
   public requestPermission(category: string, description: string, toolName = '', diff?: ToolPermissionDiff): Promise<boolean> {
@@ -117,6 +127,65 @@ export class ToolExecutor {
       argsSnippet: summarizeToolArgsForAudit(args),
       error,
     });
+  }
+
+  /**
+   * Register an external lifecycle hook. Returns an unsubscribe function.
+   * Built-in hooks (audit, telemetry, slow-warning) are always active.
+   */
+  public registerHook(hook: ToolHook): () => void {
+    this._hooks.push(hook);
+    return () => { const i = this._hooks.indexOf(hook); if (i >= 0) this._hooks.splice(i, 1); };
+  }
+
+  /** Per-tool call telemetry snapshot for the current session. */
+  public getToolTelemetry(): Readonly<Map<string, ToolCallStats>> | undefined {
+    return this._telemetryHook?.getStats();
+  }
+
+  /** Wraps provider dispatch with beforeTool / afterTool / onToolFailure hooks. */
+  private async _dispatchWithHooks(
+    name: string,
+    args: Record<string, unknown>,
+    ctx: ToolExecutionContext,
+    execute: (effectiveArgs: Record<string, unknown>) => Promise<string>,
+  ): Promise<string> {
+    // beforeTool — each hook may modify args; null = block execution
+    let effectiveArgs = args;
+    for (const hook of this._hooks) {
+      if (!hook.beforeTool) { continue; }
+      const modified = await hook.beforeTool(name, effectiveArgs, ctx);
+      if (modified === null) { return `\u26d4 \u5de5\u5177\u300c${name}\u300d\u88ab hook \u963b\u6b62\u57f7\u884c`; }
+      effectiveArgs = modified;
+    }
+
+    const startMs = Date.now();
+    let result: string;
+    let thrownError: Error | undefined;
+
+    try {
+      result = await execute(effectiveArgs);
+    } catch (e) {
+      thrownError = e instanceof Error ? e : new Error(String(e));
+      // onToolFailure — first hook that returns a string swallows the error
+      for (const hook of this._hooks) {
+        if (!hook.onToolFailure) { continue; }
+        const fallback = await hook.onToolFailure(name, effectiveArgs, thrownError, ctx);
+        if (fallback !== undefined) { return fallback; }
+      }
+      throw thrownError;
+    }
+
+    const durationMs = Date.now() - startMs;
+
+    // afterTool — each hook may modify the result
+    let finalResult = result;
+    for (const hook of this._hooks) {
+      if (!hook.afterTool) { continue; }
+      const modified = await hook.afterTool(name, effectiveArgs, finalResult, durationMs, ctx);
+      if (modified !== undefined) { finalResult = modified; }
+    }
+    return finalResult;
   }
 
   private static readonly TOOL_ALIASES: Record<string, string> = {
@@ -280,7 +349,7 @@ export class ToolExecutor {
     if (name === 'sandbox_rollback') { this._sandbox.rollback(); return '🗑️ 已回滚影子工作區，真實工作區未改動。'; }
     if (name === 'sandbox_status') { const s = this._sandbox.getState(); return JSON.stringify({ status: s.status, files: s.files.length, shadowDir: s.shadowDir, verifyPassed: s.verifyPassed }, null, 2); }
 
-    // Provider dispatch：已遷移的工具走 provider 路徑，其餘繼續走原始 switch
+    // Provider dispatch with lifecycle hooks (beforeTool / afterTool / onToolFailure)
     const _provider = this._providerMap.get(name);
     if (_provider) {
       const _ctx: ToolExecutionContext = {
@@ -295,7 +364,7 @@ export class ToolExecutor {
         executeTool: (n, a) => this.executeTool(n, a),
         handleWhatsApp: (n, a) => this._callbacks.handleWhatsAppTool(n, a),
       };
-      return _provider.execute(name, args, _ctx);
+      return this._dispatchWithHooks(name, args, _ctx, (eff) => _provider.execute(name, eff, _ctx));
     }
 
 
