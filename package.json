@@ -66,6 +66,10 @@
         "title": "AmiClaw: 執行 AmiClawToClaudeToDo.md"
       },
       {
+        "command": "amiAiClaw.clearTodoFile",
+        "title": "AmiClaw: 清空 AmiClawToClaudeToDo.md"
+      },
+      {
         "command": "amiAiClaw.sendToChat",
         "title": "傳送到 AmiClaw"
       },
