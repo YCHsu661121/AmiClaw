@@ -41,6 +41,21 @@ import {
 } from './providers/ProviderUtils';
 import type { ChatMessage, ThinkingLevel } from './types/chat-types';
 
+interface WebviewModelOption {
+  id: string;
+  label: string;
+  provider: string;
+  providerLabel: string;
+  multiplier?: string;
+}
+
+interface ProviderInfo {
+  id: string;
+  label: string;
+  modelId: string;
+  displayName: string;
+}
+
 // ── PanelLike：WebviewPanel 與 WebviewView 共用介面（搬到 ./panels/ChatPanelAdapter） ─
 
 // (Copied implementation from top-level file)
@@ -529,7 +544,8 @@ export class OllamaChatPanel {
       ollamaChatStream,
     });
     // 載入持久化的使用量統計
-    this._usageStats = context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }>>('amiAiClaw.usageStats') ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this._usageStats = context.globalState.get<any>('amiAiClaw.usageStats') ?? {};
     // Eager-load LTM from file so first request never uses stale globalState
     void (async () => {
       try {
