@@ -1,4 +1,4 @@
-// Copyright (c) 2026 YCHsu. All rights reserved.
+﻿// Copyright (c) 2026 YCHsu. All rights reserved.
 // Licensed under the MIT License.
 // WebviewRenderer — extracted from OllamaChatPanel.getHtmlForWebview
 // Sonnet refactor: Priority-1 split (pure HTML/CSS/JS, no side-effects)
@@ -1148,7 +1148,7 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
           else if (msg.type === 'historyCount')  { if (!msg.sessionId || msg.sessionId === _activeChatSessionId) { var hii = document.getElementById('historyInfo'); if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.count || 0) + ' \u689d\u8a0a\u606f'; } }
           else if (msg.type === 'consolidateStart') { var cs = document.getElementById('consolidateStatus'); if (cs) { cs.style.display = ''; cs.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026'; } var clb = document.getElementById('consolidateLtmBtn'); if (clb) clb.disabled = true; }
           else if (msg.type === 'consolidateChunk') { var cs2 = document.getElementById('consolidateStatus'); if (cs2) cs2.textContent = '\u2699\ufe0f AI \u6574\u7406\u4e2d\u2026 ' + (msg.chunk || '').slice(0, 40); }
-          else if (msg.type === 'usageUpdate') { renderUsageTable(msg.stats); renderStatsUsageTable(msg.stats); }
+          else if (msg.type === 'usageUpdate') { renderUsageTable(msg.stats, msg.totalCostUsd || 0); renderStatsUsageTable(msg.stats); }
           else if (msg.type === 'latencyUpdate') { renderLatencyChart(msg.log); }
           else if (msg.type === 'consolidateDone') {
             var clb2 = document.getElementById('consolidateLtmBtn'); if (clb2) clb2.disabled = false;
@@ -3314,51 +3314,60 @@ export function getHtmlForWebview(_webview: vscode.Webview): string {
         if (hii) hii.textContent = '\u5c0d\u8a71\u6b77\u53f2\uff1a' + (msg.historyCount || 0) + ' \u689d\u8a0a\u606f';
         var hp = document.getElementById('historyPreview');
         if (hp) hp.value = msg.historyPreview || (msg.historyCount ? '（歷史存在但無預覽）' : '（目前沒有對話歷史）');
-        if (msg.usageStats) { renderUsageTable(msg.usageStats); }
+        if (msg.usageStats) { renderUsageTable(msg.usageStats, msg.totalCostUsd || 0); }
       }
 
-      function renderUsageTable(stats) {
+      function renderUsageTable(stats, totalCostUsd) {
         var wrap = document.getElementById('usageTableWrap');
         if (!wrap) return;
         var keys = stats ? Object.keys(stats) : [];
         if (keys.length === 0) { wrap.innerHTML = '<p style="font-size:11px;opacity:0.55;margin:2px 0">尚無資料</p>'; return; }
-        var html = '<table class="usage-table"><thead><tr><th>模型</th><th>Tokens</th><th>費率</th></tr></thead><tbody>';
+        var sessionCost = totalCostUsd > 0 ? ('<span style="font-size:11px;font-weight:600;color:#89d185;margin-left:8px">本次 ' + formatCostUsd(totalCostUsd) + '</span>') : '';
+        var html = '<table class="usage-table"><thead><tr><th>模型</th><th>Tokens</th><th>費率</th><th>USD</th></tr></thead><tbody>';
         var totalTokens = 0;
         keys.forEach(function(k) {
           var v = stats[k];
           var mult = v.multiplier || (v.isCopilot ? '1x' : '-');
           var dispTokens = v.tokens.toLocaleString();
           totalTokens += v.tokens;
+          var costStr = (v.costUsd > 0) ? formatCostUsd(v.costUsd) : (v.isCopilot ? 'sub' : '-');
           var cls = v.isCopilot ? ' class="usage-copilot"' : '';
-          html += '<tr' + cls + '><td>' + k + '</td><td>' + dispTokens + '</td><td>' + mult + '</td></tr>';
+          html += '<tr' + cls + '><td>' + k + '</td><td>' + dispTokens + '</td><td>' + mult + '</td><td>' + costStr + '</td></tr>';
         });
-        if (keys.length > 1) { html += '<tr style="font-weight:600;border-top:1px solid rgba(128,128,128,0.3)"><td>合計</td><td>' + totalTokens.toLocaleString() + '</td><td></td></tr>'; }
+        if (keys.length > 1) { html += '<tr style="font-weight:600;border-top:1px solid rgba(128,128,128,0.3)"><td>合計' + sessionCost + '</td><td>' + totalTokens.toLocaleString() + '</td><td></td><td>' + (totalCostUsd > 0 ? formatCostUsd(totalCostUsd) : '-') + '</td></tr>'; }
         html += '</tbody></table>';
         wrap.innerHTML = html;
       }
 
       var _latencyLog = [];
+      function formatCostUsd(usd) {
+        if (!usd || usd <= 0) return '';
+        if (usd >= 1.0)  return '$' + usd.toFixed(2);
+        if (usd >= 0.01) return '$' + usd.toFixed(4);
+        return '$' + usd.toFixed(6);
+      }
       function renderStatsUsageTable(stats) {
         var wrap = document.getElementById('statsUsageWrap');
         if (!wrap) return;
         var keys = stats ? Object.keys(stats) : [];
-        if (keys.length === 0) { wrap.innerHTML = '<p style="font-size:11px;opacity:0.55;margin:2px 0">尚無資料</p>'; return; }
-        var html = '<table class="usage-table"><thead><tr><th>\u6a21\u578b</th><th>Tokens</th><th>\u547c\u53eb\u6b21\u6578</th><th>\u5de5\u5177\u547c\u53eb</th><th>\u8cbb\u7387</th></tr></thead><tbody>';
-        var totalTokens = 0; var totalCalls = 0; var totalTools = 0;
+        if (keys.length === 0) { wrap.innerHTML = '<p style="font-size:11px;opacity:0.55;margin:2px 0">\u5c1a\u7121\u8cc7\u6599</p>'; return; }
+        var html = '<table class="usage-table"><thead><tr><th>\u6a21\u578b</th><th>Tokens</th><th>\u547c\u53eb\u6b21\u6578</th><th>\u5de5\u5177\u547c\u53eb</th><th>\u8cbb\u7387</th><th>USD</th></tr></thead><tbody>';
+        var totalTokens = 0; var totalCalls = 0; var totalTools = 0; var totalCost = 0;
         keys.sort(function(a,b){ return (stats[b].tokens||0)-(stats[a].tokens||0); }).forEach(function(k) {
           var v = stats[k];
           var mult = v.multiplier || (v.isCopilot ? '1x' : '-');
           var cls = v.isCopilot ? ' class="usage-copilot"' : '';
-          totalTokens += v.tokens||0; totalCalls += v.calls||0; totalTools += v.toolCalls||0;
-          html += '<tr' + cls + '><td>' + k + '</td><td>' + (v.tokens||0).toLocaleString() + '</td><td>' + (v.calls||0) + '</td><td>' + (v.toolCalls||0) + '</td><td>' + mult + '</td></tr>';
+          var costStr = (v.costUsd > 0) ? formatCostUsd(v.costUsd) : (v.isCopilot ? 'sub' : '-');
+          totalTokens += v.tokens||0; totalCalls += v.calls||0; totalTools += v.toolCalls||0; totalCost += v.costUsd||0;
+          html += '<tr' + cls + '><td>' + k + '</td><td>' + (v.tokens||0).toLocaleString() + '</td><td>' + (v.calls||0) + '</td><td>' + (v.toolCalls||0) + '</td><td>' + mult + '</td><td>' + costStr + '</td></tr>';
         });
         if (keys.length > 1) {
-          html += '<tr style="font-weight:600;border-top:1px solid rgba(128,128,128,0.3)"><td>\u5408\u8a08</td><td>' + totalTokens.toLocaleString() + '</td><td>' + totalCalls + '</td><td>' + totalTools + '</td><td></td></tr>';
+          html += '<tr style="font-weight:600;border-top:1px solid rgba(128,128,128,0.3)"><td>\u5408\u8a08</td><td>' + totalTokens.toLocaleString() + '</td><td>' + totalCalls + '</td><td>' + totalTools + '</td><td></td><td>' + (totalCost > 0 ? formatCostUsd(totalCost) : '-') + '</td></tr>';
         }
         html += '</tbody></table>';
         wrap.innerHTML = html;
       }
-      function renderLatencyChart(log) {
+            function renderLatencyChart(log) {
         _latencyLog = log || [];
         var wrap = document.getElementById('statsLatencyWrap');
         if (!wrap) return;

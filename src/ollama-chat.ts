@@ -57,7 +57,8 @@ export class OllamaChatPanel {
   private _activeSessionId = 'default';
   private _chatHistory: ChatMessage[] = this._chatHistories.default;
   /** 使用量統計：各 model 累計 token 與 Copilot 費率 */
-  private _usageStats: Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }> = {};
+  private _usageStats: Record<string, { tokens: number; inputTokens: number; outputTokens: number; costUsd: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }> = {};
+  private _sessionCostUsd = 0;
   /** 延遲記錄：每次請求完成時寫入 { model, ms, ts } */
   private _latencyLog: Array<{ model: string; ms: number; ts: number }> = [];
   // 短期對話自動持久化相關
@@ -228,25 +229,33 @@ export class OllamaChatPanel {
   }
 
   /** 記錄一次 API 呼叫的 token 使用量，並推送更新到前端。 */
-  private trackUsage(model: string, tokens: number, multiplier = '', toolCall = false): void {
+  private trackUsage(model: string, tokens: number, multiplier = '', toolCall = false, inputTokens?: number, outputTokens?: number): void {
     if (!toolCall && (!tokens || tokens <= 0)) { return; }
+    const { calcCostUsd } = require('./utils/ModelPricing') as typeof import('./utils/ModelPricing');
+    const inTok  = inputTokens  ?? Math.round(tokens * 0.7);
+    const outTok = outputTokens ?? Math.round(tokens * 0.3);
+    const callCost = tokens > 0 ? calcCostUsd(model, inTok, outTok) : 0;
     const isCopilot = model.startsWith('copilot::') || model.startsWith('copilot/');
     const key = model.replace(/^copilot[::\/]+/, '');
     const existing = this._usageStats[key];
     if (existing) {
-      existing.tokens += tokens;
+      existing.tokens      += tokens;
+      existing.inputTokens  += inTok;
+      existing.outputTokens += outTok;
+      existing.costUsd      += callCost;
       if (tokens > 0) existing.calls = (existing.calls || 0) + 1;
       if (toolCall) existing.toolCalls = (existing.toolCalls || 0) + 1;
     } else {
-      this._usageStats[key] = { tokens, isCopilot, multiplier, calls: tokens > 0 ? 1 : 0, toolCalls: toolCall ? 1 : 0 };
+      this._usageStats[key] = { tokens, inputTokens: inTok, outputTokens: outTok, costUsd: callCost, isCopilot, multiplier, calls: tokens > 0 ? 1 : 0, toolCalls: toolCall ? 1 : 0 };
     }
+    this._sessionCostUsd += callCost;
     // 持久化累計值
-    const saved = this._context.globalState.get<Record<string, { tokens: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }>>('amiAiClaw.usageStats') ?? {};
+    const saved = this._context.globalState.get<Record<string, { tokens: number; inputTokens: number; outputTokens: number; costUsd: number; isCopilot: boolean; multiplier: string; calls: number; toolCalls: number }>>('amiAiClaw.usageStats') ?? {};
     const sk = saved[key];
-    if (sk) { sk.tokens += tokens; if (tokens > 0) sk.calls = (sk.calls || 0) + 1; if (toolCall) sk.toolCalls = (sk.toolCalls || 0) + 1; }
-    else { saved[key] = { tokens, isCopilot, multiplier, calls: tokens > 0 ? 1 : 0, toolCalls: toolCall ? 1 : 0 }; }
+    if (sk) { sk.tokens += tokens; sk.inputTokens = (sk.inputTokens ?? 0) + inTok; sk.outputTokens = (sk.outputTokens ?? 0) + outTok; sk.costUsd = (sk.costUsd ?? 0) + callCost; if (tokens > 0) sk.calls = (sk.calls || 0) + 1; if (toolCall) sk.toolCalls = (sk.toolCalls || 0) + 1; }
+    else { saved[key] = { tokens, inputTokens: inTok, outputTokens: outTok, costUsd: callCost, isCopilot, multiplier, calls: tokens > 0 ? 1 : 0, toolCalls: toolCall ? 1 : 0 }; }
     this._context.globalState.update('amiAiClaw.usageStats', saved);
-    this._panel.webview.postMessage({ type: 'usageUpdate', stats: this._usageStats });
+    this._panel.webview.postMessage({ type: 'usageUpdate', stats: this._usageStats, totalCostUsd: this._sessionCostUsd });
   }
 
   /** 記錄一次請求的延遲，並推送到前端。 */
@@ -2265,7 +2274,7 @@ function openaiCompatChatCallStream(
             }
             if (onStats && completionTokens > 0) {
               const elapsed = (Date.now() - startMs) / 1000;
-              onStats(promptTokens + completionTokens, elapsed > 0 ? completionTokens / elapsed : 0);
+              onStats(promptTokens + completionTokens, elapsed > 0 ? completionTokens / elapsed : 0, { input: promptTokens, output: completionTokens });
             }
             if (toolCallBuilders.size > 0) {
               const tool_calls = Array.from(toolCallBuilders.entries())

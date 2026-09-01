@@ -1,6 +1,7 @@
 ﻿import * as vscode from 'vscode';
 import { exec as nodeExec } from 'child_process';
 import { promisify } from 'util';
+import * as path from 'path';
 const exec = promisify(nodeExec);
 import { OllamaChatPanel } from './ollama-chat';
 import { setAutoPilotActive, setAutoPilotEnabledBySetting } from './autopilot';
@@ -188,6 +189,65 @@ export function activate(context: vscode.ExtensionContext) {
         } catch { /* 此 folder 沒有該檔案，繼續找下一個 */ }
       }
       vscode.window.showWarningMessage('找不到 AmiClawToClaudeToDo.md（請放在任一 workspace 根目錄）');
+    })
+  );
+
+  /** 在 workspace folders 中找出第一個存在的 AmiClawToClaudeToDo.md（找不到回傳 undefined）。 */
+  async function findTodoFileUri(): Promise<vscode.Uri | undefined> {
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const uri = vscode.Uri.joinPath(folder.uri, 'AmiClawToClaudeToDo.md');
+      try {
+        await vscode.workspace.fs.stat(uri);
+        return uri;
+      } catch { /* 此 folder 沒有該檔案，繼續找下一個 */ }
+    }
+    return undefined;
+  }
+
+  /**
+   * 清空工作檔（AmiClawToClaudeToDo.md）內容，並可選一併清空對話記錄（AmiClawTodoLog.md）。
+   * 注意：清空會觸發 onDidChange watcher，但 processTodoFile 對空檔會直接跳過，不會重複送 agent。
+   */
+  async function clearTodoFiles(todoUri: vscode.Uri, alsoClearLog: boolean): Promise<void> {
+    const empty = new Uint8Array(0);
+    await vscode.workspace.fs.writeFile(todoUri, empty);
+    todoLog.appendLine(`[clearTodoFile] 已清空 ${todoUri.fsPath}`);
+    let clearedLog = false;
+    if (alsoClearLog) {
+      const logUri = vscode.Uri.joinPath(vscode.Uri.file(path.dirname(todoUri.fsPath)), 'AmiClawTodoLog.md');
+      try {
+        await vscode.workspace.fs.stat(logUri);
+        await vscode.workspace.fs.writeFile(logUri, empty);
+        todoLog.appendLine(`[clearTodoFile] 已清空 ${logUri.fsPath}`);
+        clearedLog = true;
+      } catch { /* log 檔不存在，跳過 */ }
+    }
+    vscode.window.setStatusBarMessage(
+      `🧹 AmiClaw：已清空 AmiClawToClaudeToDo.md${clearedLog ? ' + AmiClawTodoLog.md' : ''}`, 5000
+    );
+  }
+
+  // Command Palette → "AmiClaw: 清空 AmiClawToClaudeToDo.md"
+  context.subscriptions.push(
+    vscode.commands.registerCommand('amiAiClaw.clearTodoFile', async () => {
+      const uri = await findTodoFileUri();
+      if (!uri) {
+        vscode.window.showWarningMessage('找不到 AmiClawToClaudeToDo.md（請放在任一 workspace 根目錄）');
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        ['僅清空工作檔', '一併清空對話記錄 (AmiClawTodoLog.md)'],
+        { placeHolder: '要清空哪些檔案？' }
+      );
+      if (pick === undefined) { return; } // 使用者取消
+      const alsoClearLog = pick.startsWith('一併清空');
+      try {
+        await clearTodoFiles(uri, alsoClearLog);
+      } catch (e) {
+        const msg = (e as Error)?.message ?? String(e);
+        todoLog.appendLine(`[clearTodoFile] 錯誤: ${msg}`);
+        vscode.window.showErrorMessage(`AmiClaw 清空 AmiClawToClaudeToDo.md 失敗：${msg}`);
+      }
     })
   );
 

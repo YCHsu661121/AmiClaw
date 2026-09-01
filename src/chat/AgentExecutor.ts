@@ -33,7 +33,7 @@ export interface AgentExecutorCallbacks {
   getChatHistories?: () => Record<string, AgentExecutorChatMessage[]>;
   getActiveSessionId: () => string;
   getLongTermMemory: () => string;
-  trackUsage: (model: string, tokens: number, multiplier?: string, toolCall?: boolean) => void;
+  trackUsage: (model: string, tokens: number, multiplier?: string, toolCall?: boolean, inputTokens?: number, outputTokens?: number) => void;
   trackLatency: (model: string, ms: number) => void;
   ensureModelReady: (baseUrl: string, model: string) => Promise<void>;
   executeTool: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<string>;
@@ -376,7 +376,8 @@ export class AgentExecutor {
     workerIdx: number,
   ): Promise<{ text: string; status: 'completed' | 'failed' | 'blocked' | 'error' }> {
     const { LLM_TOOLS, REPORT_RESULT_TOOL, searchExtraTools } = await import('../tools/ToolRegistry');
-    const { loadWorkflow, listWorkflows, buildWorkflowCoordinatorPrompt } = await import('../services/WorkflowEngine');
+    const { loadWorkflow, listWorkflows, buildWorkflowCoordinatorPrompt,
+            createRun, loadRun, listRuns, saveRunStep, finalizeRun, cancelRun } = await import('../services/WorkflowEngine');
 
     const workerSystemPrompt = [
       `你是 Worker Agent #${workerIdx}。你有 CORE 工具集；如需其他工具，呼叫 search_tools(query) 找到後即可使用。`,
@@ -469,22 +470,90 @@ export class AgentExecutor {
         // ── workflow_list ─────────────────────────────────────────────────────
         if (fn.name === 'workflow_list') {
           const workflows = await listWorkflows();
-          const result = workflows.length === 0
-            ? '（尚無已儲存的工作流程）'
-            : workflows.map(w => `• ${w.name}（${w.steps.length} 步）: ${w.description}`).join('\n');
-          workerMessages.push({ role: 'tool', content: result, tool_call_id: toolCall.id ?? fn.name });
+          if (workflows.length === 0) {
+            workerMessages.push({ role: 'tool', content: '（尚無已儲存的工作流程）', tool_call_id: toolCall.id ?? fn.name });
+          } else {
+            const lines = await Promise.all(workflows.map(async w => {
+              const runs = (await listRuns(w.name)).slice(0, 3);
+              const runsSummary = runs.length > 0
+                ? '  最近執行: ' + runs.map(r => `${r.runId} [${r.status}] 步驟${r.currentStep}/${r.totalSteps} @${r.startedAt.slice(0,10)}`).join(', ')
+                : '';
+              return `• ${w.name}（${w.steps.length} 步）: ${w.description}${runsSummary}`;
+            }));
+            workerMessages.push({ role: 'tool', content: lines.join('\n'), tool_call_id: toolCall.id ?? fn.name });
+          }
           continue;
         }
 
-        // ── workflow_run: load and return coordinator prompt ──────────────────
+        // ── workflow_run: create/resume run, build coordinator prompt ────────
         if (fn.name === 'workflow_run') {
-          const wfName = String(args.name ?? '');
+          const wfName        = String(args.name ?? '');
+          const resumeRunId   = String(args.resume_run_id ?? '').trim();
           const wf = await loadWorkflow(wfName);
           if (!wf) {
             workerMessages.push({ role: 'tool', content: `找不到工作流程「${wfName}」，請先用 workflow_list 確認名稱`, tool_call_id: toolCall.id ?? fn.name });
           } else {
-            const prompt = buildWorkflowCoordinatorPrompt(wf);
-            workerMessages.push({ role: 'tool', content: `工作流程已載入（${wf.steps.length} 步）：\n${prompt}`, tool_call_id: toolCall.id ?? fn.name });
+            let run = resumeRunId ? await loadRun(resumeRunId) : null;
+            if (run && run.workflowName !== wfName) {
+              workerMessages.push({ role: 'tool', content: `Run ID "${resumeRunId}" 屬於工作流程 "${run.workflowName}"，不是 "${wfName}"`, tool_call_id: toolCall.id ?? fn.name });
+              continue;
+            }
+            if (run && (run.status === 'completed' || run.status === 'cancelled')) {
+              workerMessages.push({ role: 'tool', content: `Run ${resumeRunId} 已 ${run.status}，無法繼續。請不傳 resume_run_id 開啟新執行`, tool_call_id: toolCall.id ?? fn.name });
+              continue;
+            }
+            if (!run) { run = await createRun(wf); }
+            const prompt = buildWorkflowCoordinatorPrompt(wf, run);
+            workerMessages.push({ role: 'tool', content: `工作流程已載入（${wf.steps.length} 步，RunID: ${run.runId}）：\n${prompt}`, tool_call_id: toolCall.id ?? fn.name });
+          }
+          continue;
+        }
+
+        // ── workflow_status ──────────────────────────────────────────────
+        if (fn.name === 'workflow_status') {
+          const runId = String(args.run_id ?? '').trim();
+          if (runId) {
+            const run = await loadRun(runId);
+            if (!run) { workerMessages.push({ role: 'tool', content: `找不到 Run "${runId}"`, tool_call_id: toolCall.id ?? fn.name }); continue; }
+            const steps = Array.from({ length: run.totalSteps }, (_, i) => {
+              const r = run.stepResults.find(s => s.stepIndex === i);
+              const icon = r ? (r.status === 'completed' ? '✅' : r.status === 'failed' ? '❌' : '⏭️') : (i < run.currentStep ? '❌' : i === run.currentStep ? '⏳' : '◯');
+              return `${icon} 步驟 ${i+1}${r?.summary ? ': ' + r.summary.slice(0,80) : ''}`;
+            }).join('\n');
+            workerMessages.push({ role: 'tool', content: `[${run.runId}] ${run.workflowName} [${run.status}] 第 ${run.currentStep}/${run.totalSteps} 步\n${steps}`, tool_call_id: toolCall.id ?? fn.name });
+          } else {
+            const runs = (await listRuns()).slice(0, 10);
+            const lines = runs.map(r => `${r.runId} | ${r.workflowName} | [${r.status}] 步驟${r.currentStep}/${r.totalSteps} | ${r.startedAt.slice(0,16)}`).join('\n');
+            workerMessages.push({ role: 'tool', content: runs.length ? lines : '無最近執行記錄', tool_call_id: toolCall.id ?? fn.name });
+          }
+          continue;
+        }
+
+        // ── workflow_cancel ──────────────────────────────────────────────
+        if (fn.name === 'workflow_cancel') {
+          const runId = String(args.run_id ?? '').trim();
+          const run = await cancelRun(runId);
+          const msg = run ? `✅ Run "${runId}" 已取消（完成 ${run.stepResults.length}/${run.totalSteps} 步）。可用 workflow_run(name="${run.workflowName}", resume_run_id="${runId}") 繼續。` : `找不到 Run "${runId}"`;
+          workerMessages.push({ role: 'tool', content: msg, tool_call_id: toolCall.id ?? fn.name });
+          continue;
+        }
+
+        // ── workflow_step_done ───────────────────────────────────────────
+        if (fn.name === 'workflow_step_done') {
+          const runId     = String(args.run_id    ?? '').trim();
+          const stepIndex = Math.max(0, Number(args.step_index ?? 0));
+          const status    = (String(args.status ?? 'completed')) as 'completed' | 'failed' | 'skipped';
+          const summary   = String(args.summary ?? '').slice(0, 300);
+          const run = await saveRunStep(runId, { stepIndex, status, summary, completedAt: new Date().toISOString() });
+          if (!run) {
+            workerMessages.push({ role: 'tool', content: `找不到 Run "${runId}"`, tool_call_id: toolCall.id ?? fn.name });
+          } else {
+            const allDone = run.currentStep >= run.totalSteps;
+            if (allDone) { await finalizeRun(runId, 'completed'); }
+            const msg = allDone
+              ? `✅ Run "${runId}" 全部 ${run.totalSteps} 步已完成！請呼叫 coordinator_done 。`
+              : `已記錄步驟 ${stepIndex+1} [${status}]。進度: ${run.currentStep}/${run.totalSteps} 步。`;
+            workerMessages.push({ role: 'tool', content: msg, tool_call_id: toolCall.id ?? fn.name });
           }
           continue;
         }
@@ -752,9 +821,9 @@ export class AgentExecutor {
             }
           : undefined;
         const onStats = (isOllama || isOpenAICompat)
-          ? (tokens: number, tps: number) => {
+          ? (tokens: number, tps: number, usage?: { input: number; output: number }) => {
               this._callbacks.postToWebview({ type: 'streamStats', tokens, tps });
-              this._callbacks.trackUsage(model, tokens);
+              this._callbacks.trackUsage(model, tokens, '', false, usage?.input, usage?.output);
             }
           : undefined;
         const openAiModel = isOpenAICompat ? model.slice('openai::'.length) : model;

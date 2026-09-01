@@ -1,5 +1,5 @@
 # AmiClaw vs. claude-code — 深度對比與重構優先路徑
-> 更新：2026-08-29 | AmiClaw commit `2d3800e+` (190+ commits) vs. claude-code packages/builtin-tools
+> 更新：2026-09-01 | AmiClaw commit `2d3800e+` (190+ commits) vs. claude-code packages/builtin-tools
 
 ---
 
@@ -26,7 +26,7 @@
 | Subagent 隨離 | Worker 有獨立 message history | ForkedAgent + cache-safe params | ⚠️ 無 cache sharing |
 | Task 狀態機 | TaskStore： created/claimed/blocked/completed + webview broadcast | TaskType 7種 + 完整狀態轉移 | ✅ 已完成 |
 | Proactive 自主模式 | startAuto tick loop 最多 12 輪 | SleepTool + 無限 tick | ✅ 已移植 |
-| Workflow Engine | JSON 工作流存 .amiclaw/workflows/ | YAML + persist/resume/cancel | ✅ 基礎；缺 resume |
+| Workflow Engine | JSON 工作流存 .amiclaw/workflows/ + RunID resume/cancel | YAML + persist/resume/cancel | ✅ 已完成 |
 | Cancel/Interrupt | AbortController + _agentCancel | AbortController + TaskStop tool | ⚠️ 缺 TaskStop |
 
 ### 2.2 工具系統
@@ -41,8 +41,8 @@
 | 危險命令阻擋 | ✅ 6 種模式 | ✅ 24 個安全檢查 | ⚠️ 覆蓋率較低 |
 | replace_in_file 唯一性 | ✅ 多匹配偵測 + fuzzy hint | ✅ 完整錯誤碼系統 | ✅ 已移植 |
 | LSP 整合 | ✅ 6 種操作（goto/refs/hover/diag/rename/symbols） | ✅ 9 種操作 | ✅ 已實作 |
-| 背景執行 | ❌ 無 | ✅ run_in_background + backgroundTaskId | ❌ 缺失 |
-| 超大輸出持久化 | 截斷至 8KB | 持久化到磁碟 + 流式讀取 | ❌ 缺失 |
+| 背景執行 | ✅ run_in_background + bg_task_wait + bg_task_kill | ✅ run_in_background + backgroundTaskId | ✅ 已移植 |
+| 超大輸出持久化 | ✅ 持久化到 .amiclaw/outputs/ + byte-offset delta 讀取 | 持久化到磁碟 + 流式讀取 | ✅ 已移植 |
 | Computer Use MCP | ❌ 無 | ✅ 截圖/鍵鼠/剪貼板 | ❌ 缺失 |
 
 ### 2.3 Context 管理
@@ -87,7 +87,7 @@
 | Agent 模式切換 | ✅ Ask/Agent/Team/Compare/Debate | REPL only | ✅ AmiClaw 更豐富 |
 | Shadow 差異面板 | ✅ VS Code diff toolbar | ❌ 無 | ✅ AmiClaw 獨有 |
 | START/STOP 狀態 | ✅ _agentStatusRunning 解耦（本次修正） | ✅ 完整 | ✅ 已修正 |
-| Cost 視覺化 | ✅ token + latency 圖表 | ✅ USD 成本 + 緩存效率 | ⚠️ 缺 USD 換算 |
+| Cost 視覺化 | ✅ token + latency 圖表 + USD 成本顏示 | ✅ USD 成本 + 緩存效率 | ✅ 已移植 |
 
 ---
 
@@ -125,7 +125,7 @@
 | ~~2~~ | ~~TF-IDF 升級~~（cos similarity 取代關鍵字匹配） | ~~3h~~ | ✅ 已完成 |
 | 3 | **Worker 角色硬隨離**（explorer-read-only / implementer-write） | 4h | 安全性 + claude-code 等價 |
 | 4 | **Workflow resume/cancel** 持久化 | 3h | 長工作流中斷後無法恢復 |
-| 5 | **USD 成本顯示** | 2h | 使用者看不到實際費用 |
+| ~~5~~ | ~~**USD 成本顯示**~~ | ~~2h~~ | ✅ 已完成（ModelPricing + input/output split 追蹤）|
 | ~~6~~ | ~~ToolPolicies effect-based rule DSL~~ | ~~5h~~ | ✅ 已完成 |
 | 7 | **工具 lifecycle hooks** | 6h | retry/summary/telemetry 插入點 |
 
@@ -133,8 +133,8 @@
 
 | 優先 | 項目 | 工時 |
 |---|---|---|
-| 1 | **背景執行支援**（run_in_background） | 4h |
-| 2 | **超大輸出持久化**（磁碟 + 分批讀取） | 5h |
+| ~~1~~ | ~~**背景執行支援**~~（run_in_background） | ~~4h~~ | ✅ 已完成（bg_task_wait + auto-background + win kill）|
+| ~~2~~ | ~~**超大輸出持久化**~~（磁碟 + 分批讀取） | ~~5h~~ | ✅ 已完成（byte-offset delta + _persistIfLarge）|
 | ~~3~~ | ~~Worker 結果只回摘要~~ | ~~3h~~ | ✅ 已完成（report_result） |
 | ~~4~~ | ~~LSP 工具~~（goToDefinition/findReferences/hover） | ~~8h~~ | ✅ 已完成（6 種） |
 | ~~5~~ | ~~Path-scoped 規則~~（.amiclaw/instructions/） | ~~4h~~ | ✅ 已完成（.amiclaw/RULES.md） |

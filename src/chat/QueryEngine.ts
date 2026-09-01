@@ -31,7 +31,7 @@ export interface QueryEngineCallbacks {
   getChatHistories?: () => Record<string, QueryEngineChatMessage[]>;
   getActiveSessionId: () => string;
   getLongTermMemory: () => string;
-  trackUsage: (model: string, tokens: number, multiplier?: string, toolCall?: boolean) => void;
+  trackUsage: (model: string, tokens: number, multiplier?: string, toolCall?: boolean, inputTokens?: number, outputTokens?: number) => void;
   trackLatency: (model: string, ms: number) => void;
   switchChatSession: (sessionId?: string) => void;
 }
@@ -542,9 +542,9 @@ export class QueryEngine {
 
     const onThinkChunk = (chunk: string) => this._callbacks.postToWebview({ type: 'thinkChunk', chunk, model });
     const onTextChunk = (chunk: string) => this._callbacks.postToWebview({ type: 'assistantChunk', chunk });
-    const onStats = (tokens: number, tps: number) => {
+    const onStats = (tokens: number, tps: number, usage?: { input: number; output: number }) => {
       this._callbacks.postToWebview({ type: 'streamStats', tokens, tps });
-      this._callbacks.trackUsage(model, tokens);
+      this._callbacks.trackUsage(model, tokens, '', false, usage?.input, usage?.output);
     };
 
     const MAX_STEPS = 6;

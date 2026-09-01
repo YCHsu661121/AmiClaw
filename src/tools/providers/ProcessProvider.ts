@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { runDockerPython, runDockerShell } from './DockerHelpers';
+import { _spawnTask } from './BackgroundProvider';
 import type { IToolProvider, ToolExecutionContext } from './IToolProvider';
 
 const TOOLS = new Set(['run_terminal', 'run_command', 'run_python']);
@@ -58,6 +59,7 @@ export class ProcessProvider implements IToolProvider {
     if (cfg.get<boolean>('sandboxUseDocker', false)) {
       return runDockerShell(cmd, cfg.get<string>('sandboxDockerImage', 'ubuntu:24.04'), 125000);
     }
+    const termWsRoot = (vscode.workspace.workspaceFolders ?? [])[0]?.uri.fsPath ?? process.cwd();
     const terminals = vscode.window.terminals;
     const terminal  = terminals.length > 0 ? terminals[terminals.length - 1] : vscode.window.createTerminal('Agent');
     terminal.show(true);
@@ -65,8 +67,7 @@ export class ProcessProvider implements IToolProvider {
     return new Promise<string>(resolve => {
       exec(cmd, { cwd, timeout: 120_000, shell: true as unknown as string, maxBuffer: 4 * 1024 * 1024 }, (_err, stdout, stderr) => {
         const out = (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
-        const t = out.trim();
-        resolve(t.length > 10000 ? t.slice(0, 10000) + '\n…（已截斷至 10KB）' : t || '(無輸出)');
+        resolve(_persistIfLarge(out.trim() || '(無輸出)', 'terminal', termWsRoot));
       });
     });
   }
@@ -83,7 +84,14 @@ export class ProcessProvider implements IToolProvider {
     return new Promise<string>(resolve => {
       const unixCmdPattern = /^(find|grep|ls|cat|wc|head|tail|awk|sed|chmod|which|touch|mkdir|rm|cp|mv|echo|sort|uniq|xargs|cut|tr|diff|tar|curl|wget)\s/;
       const shellOpt = (process.platform === 'win32' && unixCmdPattern.test(cmd.trim())) ? 'powershell.exe' : true;
-      exec(cmd, { cwd, timeout: 30000, shell: shellOpt as unknown as string }, (_err, stdout, stderr) => {
+      exec(cmd, { cwd, timeout: 30000, shell: shellOpt as unknown as string, maxBuffer: 4 * 1024 * 1024 }, (_err, stdout, stderr) => {
+        // When exec times out (killed=true) auto-background instead of returning truncated output
+        if (_err?.killed) {
+          const result = _spawnTask(cmd, `auto-bg: ${cmd.slice(0, 120)}`, cwd, wsRoot);
+          const info   = JSON.parse(result) as { taskId: string; outputPath: string };
+          resolve(`⏱️ 命令執行超過 30 秒，已自動背景化。\ntaskId: ${info.taskId}\n輸出路徑: ${info.outputPath}\n使用 bg_task_wait(task_id="${info.taskId}") 等待完成，或 bg_task_status 查看進度。`);
+          return;
+        }
         const out = (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
         resolve(_persistIfLarge(out.trim() || '(無輸出)', 'cmd', wsRoot));
       });
