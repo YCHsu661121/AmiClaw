@@ -1,4 +1,4 @@
-﻿import * as vscode from 'vscode';
+import * as vscode from 'vscode';
 import { DEFAULT_COMPACTABLE_TOOLS } from '../context/MicroCompactor';
 import { estimateTokensRough } from '../context/TokenBudgetManager';
 import { formatCompactSummary } from '../context/HistoryCompactor';
@@ -223,7 +223,8 @@ export class AgentExecutor {
               task:    { type: 'string', description: 'Clear description of the specific subtask for the worker' },
               context: { type: 'string', description: 'Optional background context or constraints for the worker' },
               task_id: { type: 'string', description: 'Optional: ID of a task created with create_task (transitions it created→claimed)' },
-            },
+              task_id: { type: 'string', description: 'Optional: ID of a task created with create_task (transitions it created→claimed)' },
+              role:    { type: 'string', enum: ['explorer','implementer'], description: 'Optional: explorer = read-only tools (analyse/inspect); implementer = full tool access (default)' },
             required: ['task'],
           },
         },
@@ -344,7 +345,8 @@ export class AgentExecutor {
             this._callbacks.postToWebview({ type: 'taskUpdate', tasks: taskStore.getAll() });
             this._callbacks.postToWebview({ type: 'agentStep', icon: '🔧', title: `Worker #${workerCount} [${trackId}]：${task.slice(0, 70)}`, fullPath: '' });
 
-            const result = await this._runWorker(task, context, model, baseUrl, workerCount);
+            const role = (String(args.role ?? 'implementer') === 'explorer') ? 'explorer' : 'implementer';
+            const result = await this._runWorker(task, context, model, baseUrl, workerCount, role);
 
             const resolveStatus = result.status === 'error' ? 'failed' : result.status as 'completed' | 'failed' | 'blocked';
             taskStore.resolve(trackId, resolveStatus, result.text);
@@ -374,19 +376,27 @@ export class AgentExecutor {
     model: string,
     baseUrl: string,
     workerIdx: number,
+    role: 'explorer' | 'implementer' = 'implementer',
   ): Promise<{ text: string; status: 'completed' | 'failed' | 'blocked' | 'error' }> {
-    const { LLM_TOOLS, REPORT_RESULT_TOOL, searchExtraTools } = await import('../tools/ToolRegistry');
+    const { LLM_TOOLS, READONLY_TOOLS, REPORT_RESULT_TOOL, searchExtraTools } = await import('../tools/ToolRegistry');
     const { loadWorkflow, listWorkflows, buildWorkflowCoordinatorPrompt,
             createRun, loadRun, listRuns, saveRunStep, finalizeRun, cancelRun } = await import('../services/WorkflowEngine');
 
     const workerSystemPrompt = [
-      `你是 Worker Agent #${workerIdx}。你有 CORE 工具集；如需其他工具，呼叫 search_tools(query) 找到後即可使用。`,
+    const projectRules = this._callbacks.getProjectRules?.() ?? '';
+    const roleLabel = role === 'explorer' ? 'Explorer（唯讀）' : 'Implementer（可寫入執行）';
+    const workerSystemPrompt = [
+      你是 Worker Agent #（角色：）。,
+      role === 'explorer'
+        ? '你只有唯讀工具集（read/search/inspect），不能寫入、執行或 commit。'
+        : '你有 CORE 工具集；如需其他工具，呼叫 search_tools(query) 找到後即可使用。',
       '你的職責：使用工具完成協調員委派的子任務，最後**必須**呼叫 report_result 回報。',
       '規則：',
       '1. 直接用工具完成任務，勿過多解說',
       '2. 完成後呼叫 report_result(status, summary, files_changed?)，summary 限 500 字',
       '3. 協調員只看 report_result 的摘要，不看工具輸出詳情',
-      `工作區：${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()}`,
+      工作區：,
+      ...(projectRules ? [\n## Project Rules\n] : []),
     ].join('\n');
 
     const workerMessages: AgentExecutorChatMessage[] = [
@@ -395,7 +405,11 @@ export class AgentExecutor {
     ];
 
     // Dynamically extended tool set — starts with LLM_TOOLS + report_result
-    let activeLlmTools: unknown[] = [...LLM_TOOLS, REPORT_RESULT_TOOL];
+    // explorer = read-only tools; implementer = full LLM_TOOLS
+    let activeLlmTools: unknown[] = [
+      ...(role === 'explorer' ? [...READONLY_TOOLS, SEARCH_TOOLS_TOOL] : LLM_TOOLS),
+      REPORT_RESULT_TOOL,
+    ];
     const MAX_WORKER_STEPS = 30;
     let finalText = '';
     let finalStatus: 'completed' | 'failed' | 'blocked' | 'error' = 'completed';
@@ -573,7 +587,6 @@ export class AgentExecutor {
           result = '工具錯誤：' + (e instanceof Error ? e.message : String(e));
         }
 
-        this._callbacks.recordAuditEntry(fn.name, args, false);
         this._callbacks.postToWebview({ type: 'agentStepDone', result: result.slice(0, 300), isError: false });
         workerMessages.push({ role: 'tool', content: result, tool_call_id: toolCall.id ?? fn.name });
 
@@ -946,7 +959,6 @@ export class AgentExecutor {
               result = this._services.filterSensitiveInfo(result);
             }
 
-            this._callbacks.recordAuditEntry(fn.name, args, isError);
             this._callbacks.trackUsage(model, 0, '', true);
 
             // ── Carry-over 追蹤（仿 OpenHarness _record_tool_carryover）──

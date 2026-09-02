@@ -31,6 +31,8 @@ export interface QueryEngineCallbacks {
   getChatHistories?: () => Record<string, QueryEngineChatMessage[]>;
   getActiveSessionId: () => string;
   getLongTermMemory: () => string;
+  /** Layer-1 project rules (RULES.md); injected before memory index */
+  getProjectRules?: () => string;
   trackUsage: (model: string, tokens: number, multiplier?: string, toolCall?: boolean, inputTokens?: number, outputTokens?: number) => void;
   trackLatency: (model: string, ms: number) => void;
   switchChatSession: (sessionId?: string) => void;
@@ -661,6 +663,7 @@ export class QueryEngine {
     const cfg = vscode.workspace.getConfiguration('amiAiClaw');
     const persona = (cfg.get<string>('systemPrompt') ?? '').trim();
     const ltm = this._callbacks.getLongTermMemory();
+    const projectRules = this._callbacks.getProjectRules?.() ?? '';
 
     const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
     const workspaceRoot = workspaceFolders.length > 0 ? workspaceFolders.map((folder) => folder.uri.fsPath).join(', ') : process.cwd();
@@ -705,6 +708,7 @@ export class QueryEngine {
       : '';
 
     return buildSystemPrompt({
+      rules: projectRules,
       persona,
       extraSections: [
         { title: '工作區資訊', content: workspaceBody },

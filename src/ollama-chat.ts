@@ -428,6 +428,7 @@ export class OllamaChatPanel {
         trackUsage: (m, t, mul, tc) => this.trackUsage(m, t, mul, tc),
         trackLatency: (m, ms) => this.trackLatency(m, ms),
         switchChatSession: (sid) => this.switchChatSession(sid),
+        getProjectRules: () => this._rulesCache,
       },
       {
         getOllamaUrls,

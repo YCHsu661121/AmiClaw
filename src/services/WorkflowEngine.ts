@@ -57,6 +57,16 @@ function getRunsDir(): string {
   return path.join(getWorkflowsDir(), 'runs');
 }
 
+
+/** Validates a Workflow object; throws a descriptive Error on invalid input. */
+export function validateWorkflow(wf: Partial<Workflow>): asserts wf is Workflow {
+  if (!wf.name?.trim()) { throw new Error('Workflow 名稱不得為空'); }
+  if (!wf.description?.trim()) { throw new Error('Workflow 說明不得為空'); }
+  if (!Array.isArray(wf.steps) || wf.steps.length === 0) { throw new Error('Workflow 至少需要一個步驟'); }
+  for (let i = 0; i < wf.steps.length; i++) {
+    if (!wf.steps[i]?.prompt?.trim()) { throw new Error(步驟  的 prompt 不得為空); }
+  }
+}
 function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_').slice(0, 60);
 }
@@ -72,6 +82,7 @@ function workflowHash(wf: Workflow): string {
 
 export async function saveWorkflow(workflow: Workflow): Promise<void> {
   const dir = getWorkflowsDir();
+  validateWorkflow(workflow);
   await fs.mkdir(dir, { recursive: true });
   const file = path.join(dir, `${sanitizeName(workflow.name)}.json`);
   await fs.writeFile(file, JSON.stringify(workflow, null, 2), 'utf8');

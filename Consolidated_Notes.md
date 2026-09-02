@@ -34,7 +34,7 @@
 | 工具總數 | 60+ | 59 builtin + MCP 擴充 | ≈ 相當 |
 | 工具層分 | CORE(27) / EXTRA(40+) / ALL_TOOLS | CORE(38) + deferred | ✅ 已擴充 |
 | TF-IDF 搜尋 | 完整 TF-IDF + 餘弦相似度 | 完整 TF-IDF + 餘弦相似度 | ✅ 已升級 |
-| 工具 lifecycle hooks | 無 | beforeTool/afterTool/onFailure | ❌ 完全缺失 |
+| 工具 lifecycle hooks | ✅ beforeTool/afterTool/onToolFailure + audit/telemetry | PreToolUse/PostToolUse/PostToolUseFailure | ✅ 已移植 |
 | 檔案衝突偵測 | ✅ _fileReadTimes mtime 比對 | ✅ readTimestamp | ✅ 已移植 |
 | 危險命令阻擋 | ✅ 6 種模式 | ✅ 24 個安全檢查 | ⚠️ 覆蓋率較低 |
 | replace_in_file 唯一性 | ✅ 多匹配偵測 + fuzzy hint | ✅ 完整錯誤碼系統 | ✅ 已移植 |
@@ -102,14 +102,14 @@
 *目標：消除與 claude-code 的功能差距，強化基礎工具鏈。*
 - [ ] **Worker 角色硬隔離**：實作 `explorer-read-only` 與 `implementer-write` 權限分離。
 - [ ] **Workflow 持久化**：實現 `Workflow resume/cancel` 功能。
-- [ ] **工具生命週期**：實作 `Tool lifecycle hooks` (retry/summary/telemetry)。
+- [x] **工具生命週期**：已實作 `beforeTool / afterTool / onToolFailure`，含 audit、telemetry 與 slow-tool warning。
 - [ ] **Artifacts Engine**：開發 Webview 渲染器，支援 Markdown, Mermaid 與程式碼高亮。
 - [ ] **增強型 Markdown 上傳**：支援 Provider 資源的直接渲染。
 
 ### 🟡 Phase 2: 標準化與規模化 (Standardization & Scalability)
 *目標：建立標準通訊協議，提升系統的可擴展性與開發效率。*
 - [ ] **Ami-ACP (Agent Communication Protocol)**：建立 Coordinator 與 Worker 的版本化通訊標準。
-- [ ] **Workflow Schema 驗證**：為 Workflow Engine 實作嚴格的 JSON/YAML 驗Schema。
+- [x] **Workflow Schema 驗證**：已加入 alidateWorkflow() 斷言函式，saveWorkflow() 呼叫前強制驗證。
 - [ ] **記憶分層架構**：正式落地 `Layer1 (Rules) + Layer2 (Memory) + Layer3 (Session)`。
 - [ ] **ToolExecutor 模組化**：重構 Giant Switch，實現 `ToolHandler` 介面化。
 - [ ] **UDS (Unified Data Service)**：實現多 AmiClaw 實例間的點對點通訊協作。

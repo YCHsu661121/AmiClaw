@@ -158,6 +158,24 @@ export const ALL_TOOLS = [...AGENT_TOOLS, SEARCH_TOOLS_TOOL, WORKFLOW_RUN_TOOL, 
 /** LLM-facing toolset: core tools + meta-tools. */
 export const LLM_TOOLS = [...CORE_TOOLS, SEARCH_TOOLS_TOOL, WORKFLOW_RUN_TOOL, WORKFLOW_LIST_TOOL, WORKFLOW_STATUS_TOOL, WORKFLOW_CANCEL_TOOL, WORKFLOW_STEP_DONE_TOOL];
 
+/** Read-only (explorer) tool names — no writes, no execution, no git commits. */
+const READONLY_TOOL_NAMES = new Set([
+  'get_active_file','read_file','read_files','read_file_smart','grep_file',
+  'list_dir','glob','outline_file','read_workspace','file_info','diff_files',
+  'search_workspace','search_regex','agentic_file_search',
+  'git_status','git_diff','git_log',
+  'memory_read',
+  'lsp_diagnostics','lsp_goto_definition','lsp_find_references',
+  'lsp_hover','lsp_document_symbols',
+  'bg_task_status','bg_task_read',
+  'search_tools',
+  'jira_fetch','jira_search','jira_open',
+]);
+
+/** Tool subset for explorer Workers (read-only, no write/execute/commit). */
+export const READONLY_TOOLS = (AGENT_TOOLS as { type: string; function: { name: string } }[])
+  .filter(t => READONLY_TOOL_NAMES.has(t.function.name));
+
 // ── TF-IDF tool search ──────────────────────────────────────────────────────
 
 function _tokenize(text: string): string[] {
